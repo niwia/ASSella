@@ -1101,8 +1101,11 @@ def purge_and_sanitize_for_dlc_only(
     summary: Dict[str, Any] = {
         "base_app_removed": False,
         "dlcs_added": [],
+        "dlcs_already_present": [],
         "base_depots_removed": [],
+        "base_depots_kept": [],
         "base_keys_removed": [],
+        "base_keys_kept": [],
         "fake_app_removed": False,
         "launch_options_removed": False,
         "manifest_ids_removed": [],
@@ -1114,9 +1117,11 @@ def purge_and_sanitize_for_dlc_only(
         return summary
 
     from utils.yaml_config_manager import (
+        WriteOutcome,
         get_user_config_path,
         remove_additional_app,
         add_additional_app,
+        add_additional_app_outcome,
         remove_additional_depot,
         add_additional_depot,
         add_additional_depots_batch,
@@ -1191,8 +1196,11 @@ def purge_and_sanitize_for_dlc_only(
             remove_dlc_data(config_path, appid_str)
             for did, dname in pure_dlcs.items():
                 comment = f"[DLC] {dname} / {game_name}" if game_name else f"[DLC] {dname}"
-                if add_additional_app(config_path, did, comment):
+                outcome = add_additional_app_outcome(config_path, did, comment)
+                if outcome is WriteOutcome.CHANGED:
                     summary["dlcs_added"].append(did)
+                elif outcome is WriteOutcome.ALREADY_PRESENT:
+                    summary["dlcs_already_present"].append(did)
 
         # 2. AdditionalDepots: ONLY selected DLC depots, NEVER parent AppID and NEVER base game main depots!
         sel_dlc_depots.discard(appid_str)
@@ -1201,6 +1209,9 @@ def purge_and_sanitize_for_dlc_only(
             if d in existing_depots and d not in sel_dlc_depots:
                 if remove_additional_depot(config_path, d, excluding_appid=appid_str):
                     summary["base_depots_removed"].append(d)
+                elif d in get_additional_depots(config_path):
+                    # Still mounted: the shared-depot guard kept it.
+                    summary["base_depots_kept"].append(d)
 
         depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
         depots_to_add = []
@@ -1219,11 +1230,15 @@ def purge_and_sanitize_for_dlc_only(
         if appid_str not in sel_dlcappid_set and appid_str in existing_keys:
             if remove_decryption_key(config_path, appid_str, excluding_appid=appid_str):
                 summary["base_keys_removed"].append(appid_str)
+            elif appid_str in get_decryption_keys(config_path):
+                summary["base_keys_kept"].append(appid_str)
 
         for d in all_game_depots:
             if d in existing_keys and d not in sel_dlc_depots and d not in sel_dlcappid_set:
                 if remove_decryption_key(config_path, d, excluding_appid=appid_str):
                     summary["base_keys_removed"].append(d)
+                elif d in get_decryption_keys(config_path):
+                    summary["base_keys_kept"].append(d)
 
         # Ensure keys for selected DLC depots and DLC AppIDs are added so Steam can decrypt DLC content
         depot_keys = {}
@@ -1255,7 +1270,8 @@ def purge_and_sanitize_for_dlc_only(
                     else:
                         comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
                     if add_decryption_key(config_path, str(d), k, comment=comment):
-                        summary.setdefault("keys_added", []).append(str(d))
+                        if str(d) not in summary.setdefault("keys_added", []):
+                            summary["keys_added"].append(str(d))
 
         # 4b. Sync DLC manifests to Steam depotcache so Steam does not fail on MRC
         try:
@@ -1327,6 +1343,7 @@ def sync_dlc_only_sls_config(
     """
     from utils.yaml_config_manager import (
         add_additional_app,
+        add_additional_app_outcome,
         remove_additional_app,
         add_dlc_data_batch,
         remove_dlc_data,
@@ -1412,7 +1429,7 @@ def sync_dlc_only_sls_config(
                 dlc_id = str(dlc_entry["dlc_appid"]).strip()
                 dlc_name = dlc_entry.get("dlc_name") or f"DLC {dlc_id}"
                 comment = f"[DLC] {dlc_name} / {game_name}" if game_name else f"[DLC] {dlc_name}"
-                add_additional_app(config_path, dlc_id, comment)
+                add_additional_app_outcome(config_path, dlc_id, comment)
 
         logger.info(
             "[DLC Sync] AppID %s: selected=%d, removed=%d, storage=%s",

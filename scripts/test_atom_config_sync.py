@@ -32,6 +32,7 @@ if str(SRC_DIR) not in sys.path:
 
 from utils.helpers import get_base_path
 from utils.yaml_config_manager import (
+    WriteOutcome,
     get_user_config_path,
     batch_config_edit,
     get_additional_apps,
@@ -293,7 +294,7 @@ def run_tests() -> bool:
             # 3a. Disabling a key in DecryptionKeys (simulating user turning toggle OFF)
             log_info("Simulating user toggling root AppKey 581630 OFF in Depots tab...")
             res_rem = editor.remove_key(appid_2, check_shared=False)
-            if not res_rem:
+            if res_rem is not WriteOutcome.CHANGED:
                 log_fail(f"Failed to remove key '{appid_2}' from DecryptionKeys")
                 test_passed = False
             else:
@@ -310,7 +311,7 @@ def run_tests() -> bool:
             # 3b. Re-enabling a key in DecryptionKeys (simulating user turning toggle ON)
             log_info("Simulating user toggling root AppKey 581630 ON in Depots tab...")
             res_add = editor.add_key(appid_2, root_key_2, comment=f"{name_2} [AppKey]")
-            if not res_add:
+            if not res_add.ok:
                 log_fail(f"CRITICAL: editor.add_key refused to re-add root AppKey '{appid_2}'!")
                 test_passed = False
             else:
@@ -327,7 +328,7 @@ def run_tests() -> bool:
             # 3c. Attempting illegal action: adding base AppID to AdditionalDepots
             log_info("Verifying that adding base AppID to AdditionalDepots is strictly refused...")
             res_illegal = editor.add_depot(appid_2, comment="Illegal Base AppID", app_id=appid_2)
-            if not res_illegal:
+            if res_illegal is WriteOutcome.REFUSED:
                 log_pass("Strict guard rejected adding base AppID to AdditionalDepots as expected")
             else:
                 log_fail("CRITICAL: Strict guard failed! Base AppID was allowed in AdditionalDepots!")
@@ -343,7 +344,7 @@ def run_tests() -> bool:
                 test_passed = False
 
             res_remove_depot = editor.remove_depot(depot_2, check_shared=True, excluding_appid=appid_2)
-            if res_remove_depot:
+            if res_remove_depot is WriteOutcome.CHANGED:
                 log_pass(f"Depot '{depot_2}' successfully removed from AdditionalDepots (self-referencing comment bug fix confirmed)")
             else:
                 log_fail(f"CRITICAL: Failed to remove depot '{depot_2}' from AdditionalDepots!")
@@ -372,14 +373,14 @@ def run_tests() -> bool:
             log_info("Verifying DLC AppID can be added to AdditionalDepots while base AppID is rejected...")
             editor.add_app("401920", comment="Isaac DLC (401920)")
             dlc_depot_ok = editor.add_depot("401920", comment="Isaac DLC Depot (401920)", app_id="250900")
-            if dlc_depot_ok:
+            if dlc_depot_ok.ok:
                 log_pass("DLC AppID '401920' was successfully allowed in AdditionalDepots for game '250900'")
             else:
                 log_fail("CRITICAL: DLC AppID was incorrectly blocked from AdditionalDepots!")
                 test_passed = False
 
             base_depot_blocked = editor.add_depot("250900", comment="Isaac Base Depot", app_id="250900")
-            if not base_depot_blocked:
+            if base_depot_blocked is WriteOutcome.REFUSED:
                 log_pass("Base AppID '250900' was strictly blocked from AdditionalDepots")
             else:
                 log_fail("CRITICAL: Base AppID '250900' was allowed in AdditionalDepots!")
@@ -388,7 +389,7 @@ def run_tests() -> bool:
             # 3g. Verifying foreign base AppID in AdditionalApps is rejected even if app_id mismatch
             editor.add_app("1145360", comment="Hades")
             foreign_base_blocked = editor.add_depot("1145360", comment="Hades Depot", app_id="250900")
-            if not foreign_base_blocked:
+            if foreign_base_blocked is WriteOutcome.REFUSED:
                 log_pass("Foreign base AppID '1145360' was strictly blocked from AdditionalDepots despite app_id mismatch")
             else:
                 log_fail("CRITICAL: Foreign base AppID '1145360' was permitted in AdditionalDepots!")

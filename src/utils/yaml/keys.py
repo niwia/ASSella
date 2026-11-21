@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from utils.yaml.constants import SHARED_REDISTS
-from utils.yaml.core import _get_section_bounds, _read_config_content, batch_config_edit, get_user_config_path
+from utils.yaml.core import (
+    WriteOutcome,
+    _get_section_bounds,
+    _read_config_content,
+    batch_config_edit,
+    get_user_config_path,
+)
 from utils.yaml.plugins import ensure_plugins_enabled
 
 logger = logging.getLogger(__name__)
@@ -50,7 +56,7 @@ def add_decryption_keys_batch(
                     comm = ""
                 else:
                     continue
-                if editor.add_key(did, k, comment=comm):
+                if editor.add_key(did, k, comment=comm).ok:
                     any_added = True
     return any_added and editor.committed_successfully
 
@@ -78,7 +84,7 @@ def add_decryption_key(config_path: Path, depot_id: Union[str, int], key: str, c
     ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
         res = editor.add_key(depot_id, key, comment)
-    return res and editor.committed_successfully
+    return res.ok and editor.committed_successfully
 
 def remove_decryption_key(
     config_path: Path,
@@ -92,7 +98,7 @@ def remove_decryption_key(
     ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
         res = editor.remove_key(depot_id, check_shared=check_shared, excluding_appid=excluding_appid)
-    return res and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully
 
 def has_game_decryption_keys(
     appid: Union[str, int], game_data: Optional[Dict[str, Any]] = None

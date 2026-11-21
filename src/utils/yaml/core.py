@@ -20,6 +20,7 @@ import logging
 # --- imports ---------------------------------------------------------
 import os, re, shutil, sys, threading, time
 from contextlib import contextmanager
+from enum import Enum
 from pathlib import Path
 from typing import Dict, Iterator, Optional, Tuple, Union
 
@@ -28,6 +29,29 @@ from utils.yaml.modes import is_slssteam_config_management_enabled, is_slssteam_
 from utils.yaml.validation import _is_valid_hex64, _sanitize_comment, _sanitize_id, _validate_yaml_content
 
 logger = logging.getLogger(__name__)
+
+
+class WriteOutcome(Enum):
+    """What a config write actually did.
+
+    The editor methods used to answer with a bare bool, where False meant any
+    of "already present", "refused by a guard", "nothing to remove" or "write
+    failed". Callers that report results to the user (spelling out "added" vs
+    "already there" vs "refused") need the distinction, so the methods return
+    one of these instead and the module-level wrappers keep their bool for
+    compatibility.
+    """
+
+    CHANGED = "changed"
+    ALREADY_PRESENT = "already_present"
+    NOT_PRESENT = "not_present"
+    REFUSED = "refused"
+    FAILED = "failed"
+
+    @property
+    def ok(self) -> bool:
+        """True when the config already holds (or now holds) what was asked."""
+        return self in (WriteOutcome.CHANGED, WriteOutcome.ALREADY_PRESENT)
 
 
 _CONFIG_DISABLED = object()
@@ -252,6 +276,14 @@ def _get_section_bounds(content: str, section_name: str) -> Optional[Tuple[int, 
     next_match = TOP_LEVEL_KEY_PATTERN.search(after_section)
     section_end = (content_start + next_match.start()) if next_match else len(content)
 
+    if section_end <= content_start:
+        # An empty section (`Section:` or `Section: {}`) makes the search this
+        # side of the newline match the header itself, which would report an
+        # empty body starting on the *next* key's line. Callers insert at
+        # content_start, so that would leave the following section header
+        # childless and silently drop its entries.
+        section_end = content_start
+
     return header_start, content_start, section_end
 
 def _expand_flow_section_if_needed(
@@ -313,9 +345,10 @@ def _get_section_end(
 ) -> int:
     after_section = content[section_start:]
     next_match = next_key_pattern.search(after_section)
-    if next_match:
+    if next_match and next_match.start() > 0:
         return section_start + next_match.start()
-    return len(content)
+    # A zero-width hit is the line we started on, i.e. an empty body.
+    return section_start
 
 def _remove_entry_in_memory(
     content: str,
@@ -337,6 +370,11 @@ def _remove_entry_in_memory(
         abs_match_start = content_start + match.start()
         line_start = content.rfind("\n", 0, abs_match_start)
         line_start = 0 if line_start == -1 else line_start + 1
+        if line_start >= section_end:
+            # An empty body reports section_end == content_start, so a match
+            # here belongs to the following section. Never delete across that
+            # boundary: it would silently tombstone the next section's entries.
+            break
 
         line_end = content.find("\n", abs_match_start)
         if line_end == -1:
@@ -693,11 +731,11 @@ class BatchConfigEditor:
         finally:
             self._lock_cm.__exit__(exc_type, exc_val, exc_tb)
 
-    def add_app(self, app_id: Union[str, int], comment: str = "") -> bool:
+    def add_app(self, app_id: Union[str, int], comment: str = "") -> WriteOutcome:
         app_id_str = _sanitize_id(app_id)
         if not app_id_str:
             logger.warning(f"Invalid AppID provided: {app_id}")
-            return False
+            return WriteOutcome.REFUSED
         comment_clean = _sanitize_comment(comment)
         self.content, _ = _fix_additional_apps_indentation(self.content)
         new_content, changed = _add_list_item_in_memory(
@@ -706,13 +744,15 @@ class BatchConfigEditor:
         if changed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        if self.contains_app(app_id_str):
+            return WriteOutcome.ALREADY_PRESENT
+        return WriteOutcome.FAILED
 
-    def remove_app(self, app_id: Union[str, int]) -> bool:
+    def remove_app(self, app_id: Union[str, int]) -> WriteOutcome:
         app_id_str = _sanitize_id(app_id)
         if not app_id_str:
-            return False
+            return WriteOutcome.REFUSED
         pattern = re.compile(
             rf"^[ \t]*-[ \t]*{re.escape(app_id_str)}[ \t]*(?:#[^\r\n]*)?$",
             re.MULTILINE,
@@ -723,24 +763,24 @@ class BatchConfigEditor:
         if removed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        return WriteOutcome.NOT_PRESENT
 
     def add_depot(
         self,
         depot_id: Union[str, int],
         comment: str = "",
         app_id: Optional[Union[str, int]] = None,
-    ) -> bool:
+    ) -> WriteOutcome:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
             logger.warning(f"Invalid DepotID provided: {depot_id}")
-            return False
+            return WriteOutcome.REFUSED
 
         # Guard: never add a base game AppID into AdditionalDepots
         if app_id and depot_id_str == str(app_id).strip():
             logger.warning(f"Refusing to add base AppID '{depot_id_str}' to AdditionalDepots")
-            return False
+            return WriteOutcome.REFUSED
 
         # Guard: never add any registered base game AppID from plugin_library
         try:
@@ -748,7 +788,7 @@ class BatchConfigEditor:
             plib = load_plugin_library()
             if depot_id_str in plib and not plib[depot_id_str].get("dlc_only"):
                 logger.warning(f"Refusing to add registered base AppID '{depot_id_str}' to AdditionalDepots")
-                return False
+                return WriteOutcome.REFUSED
         except Exception:
             pass
 
@@ -792,7 +832,7 @@ class BatchConfigEditor:
                     logger.warning(
                         f"Refusing to add base AppID '{depot_id_str}' from AdditionalApps to AdditionalDepots"
                     )
-                    return False
+                    return WriteOutcome.REFUSED
 
         bounds_main = _get_section_bounds(self.content, "AppIds")
         if bounds_main:
@@ -805,7 +845,7 @@ class BatchConfigEditor:
                 logger.warning(
                     f"Refusing to add AppID '{depot_id_str}' from AppIds to AdditionalDepots"
                 )
-                return False
+                return WriteOutcome.REFUSED
 
         if depot_id_str in SHARED_REDISTS:
             comment_clean = "Steamworks Shared"
@@ -818,25 +858,27 @@ class BatchConfigEditor:
         if changed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        if self.contains_depot(depot_id_str):
+            return WriteOutcome.ALREADY_PRESENT
+        return WriteOutcome.FAILED
 
     def remove_depot(
         self,
         depot_id: Union[str, int],
         check_shared: bool = True,
         excluding_appid: Optional[Union[str, int]] = None,
-    ) -> bool:
+    ) -> WriteOutcome:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
-            return False
+            return WriteOutcome.REFUSED
         if check_shared and is_depot_shared_with_other_games(
             depot_id_str, excluding_appid=excluding_appid
         ):
             logger.info(
                 f"Preserving shared depot '{depot_id_str}' in AdditionalDepots (used by other games or redistributable)"
             )
-            return False
+            return WriteOutcome.REFUSED
         pattern = re.compile(
             rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}[ \t]*(?:#[^\r\n]*)?$",
             re.MULTILINE,
@@ -847,8 +889,8 @@ class BatchConfigEditor:
         if removed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        return WriteOutcome.NOT_PRESENT
 
     def contains_depot(self, depot_id: Union[str, int]) -> bool:
         """True when the depot id is present in the AdditionalDepots section.
@@ -872,6 +914,38 @@ class BatchConfigEditor:
                 re.MULTILINE,
             )
         )
+
+    def contains_app(self, app_id: Union[str, int]) -> bool:
+        """True when the app id is present in the AdditionalApps section."""
+        app_id_str = _sanitize_id(app_id)
+        if not app_id_str or not self.content:
+            return False
+        bounds = _get_section_bounds(self.content, "AdditionalApps")
+        if not bounds:
+            return False
+        section = self.content[bounds[1]:bounds[2]]
+        return bool(
+            re.search(
+                rf"^[ \t]*-[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*(?:#[^\r\n]*)?$",
+                section,
+                re.MULTILINE,
+            )
+        )
+
+    def _key_matches(self, depot_id_str: str, key_str: str) -> bool:
+        """True when DecryptionKeys already maps depot_id_str to exactly key_str."""
+        if not self.content:
+            return False
+        bounds = _get_section_bounds(self.content, "DecryptionKeys")
+        if not bounds:
+            return False
+        section = self.content[bounds[1]:bounds[2]]
+        match = re.search(
+            rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*['\"]?([0-9A-Fa-f]+)['\"]?",
+            section,
+            re.MULTILINE,
+        )
+        return bool(match and match.group(1).lower() == key_str.lower())
 
     def contains_key(self, depot_id: Union[str, int]) -> bool:
         """True when the depot id is present in the DecryptionKeys section."""
@@ -915,15 +989,15 @@ class BatchConfigEditor:
         key: str,
         comment: str = "",
         app_id: Optional[Union[str, int]] = None,
-    ) -> bool:
+    ) -> WriteOutcome:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
             logger.warning(f"Invalid DepotID for key: {depot_id}")
-            return False
+            return WriteOutcome.REFUSED
         key_str = str(key).strip().lower()
         if not _is_valid_hex64(key_str):
             logger.warning(f"Invalid AES decryption key (not 64 hex chars) for depot {depot_id_str}")
-            return False
+            return WriteOutcome.REFUSED
 
         if depot_id_str in SHARED_REDISTS:
             comment_clean = "Steamworks Shared"
@@ -936,25 +1010,27 @@ class BatchConfigEditor:
         if changed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        if self._key_matches(depot_id_str, key_str):
+            return WriteOutcome.ALREADY_PRESENT
+        return WriteOutcome.FAILED
 
     def remove_key(
         self,
         depot_id: Union[str, int],
         check_shared: bool = True,
         excluding_appid: Optional[Union[str, int]] = None,
-    ) -> bool:
+    ) -> WriteOutcome:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
-            return False
+            return WriteOutcome.REFUSED
         if check_shared and is_depot_shared_with_other_games(
             depot_id_str, excluding_appid=excluding_appid
         ):
             logger.info(
                 f"Preserving decryption key for shared depot '{depot_id_str}' (used by other games or redistributable)"
             )
-            return False
+            return WriteOutcome.REFUSED
         pattern = re.compile(
             rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
             re.MULTILINE,
@@ -965,8 +1041,8 @@ class BatchConfigEditor:
         if removed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        return WriteOutcome.NOT_PRESENT
 
     def add_dlc(
         self,

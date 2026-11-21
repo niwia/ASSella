@@ -37,6 +37,7 @@ from utils.yaml.apps import (  # noqa: F401
     _append_to_additional_apps,
     _init_config_with_app,
     add_additional_app,
+    add_additional_app_outcome,
     add_additional_apps_batch,
     add_additional_depot,
     add_additional_depots_batch,
@@ -58,6 +59,7 @@ from utils.yaml.constants import (  # noqa: F401
 
 from utils.yaml.core import (  # noqa: F401
     BatchConfigEditor,
+    WriteOutcome,
     _CONFIG_DISABLED,
     _add_dlc_batch_in_memory,
     _add_list_item_in_memory,

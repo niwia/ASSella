@@ -26,6 +26,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `scripts/test_config_write_safety.py`, now part of CI, covers the comment separator, nested-key isolation, scalar refusal, duplicate-key validation, concurrent batch edits and inode preservation.
 
+## [3.2.0beta1] - 2026-11-21
+
+### Fixed
+- **Config writers report what happened**: `add_app`/`add_depot`/`add_key` and their `remove_*` counterparts now return a `WriteOutcome` (`CHANGED`, `ALREADY_PRESENT`, `NOT_PRESENT`, `REFUSED`, `FAILED`) instead of one `False` for both "refused by a guard" and "already there". The public `add_*`/`remove_*` helpers keep returning `bool`, so an already-mounted entry no longer reads as a failed write to the DLC and plugin sync code.
+- **Empty sections no longer tombstone the next one**: `_get_section_bounds` reported an empty body starting on the *following* key's line, so inserting into an empty `AdditionalDepots:`/`DlcData:` inserted under the header and left the next section childless — `DlcData` came back as `None` and its DLC entries vanished. Inserts now land under their own header, and entry removal can no longer delete a look-alike line from the next section.
+- **Config repair (Settings → Tools) keeps every container you filled**: an upstream template that marks a section as `AppIds: {}` typed the key as a scalar, so the merge echoed `{}` back over the user's entries; a nested `DlcData:
+  620:
+    621: "Portal"` was flattened and lost its parent AppID. Both now round-trip, and inline-empty template keys render the user's list or map as a block.
+
+### Changed
+- Version bumped to **3.2.0beta1** (build 2026-11-21).
+
 ## [3.1.0] - 2026-11-09
 
 ### Added

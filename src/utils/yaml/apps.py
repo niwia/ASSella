@@ -17,7 +17,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from utils.yaml.constants import SHARED_REDISTS
-from utils.yaml.core import _atomic_write, _get_section_bounds, _read_config_content, batch_config_edit, get_user_config_path
+from utils.yaml.core import (
+    WriteOutcome,
+    _atomic_write,
+    _get_section_bounds,
+    _read_config_content,
+    batch_config_edit,
+    get_user_config_path,
+)
 from utils.yaml.dlc import get_dlc_data
 from utils.yaml.keys import get_decryption_keys
 from utils.yaml.plugins import ensure_plugins_enabled
@@ -75,7 +82,7 @@ def add_additional_apps_batch(
     with batch_config_edit(config_path) as editor:
         any_added = False
         for app_id, comment in apps:
-            if editor.add_app(app_id, comment):
+            if editor.add_app(app_id, comment).ok:
                 any_added = True
     return any_added and editor.committed_successfully
 
@@ -89,7 +96,7 @@ def add_additional_depots_batch(
     with batch_config_edit(config_path) as editor:
         any_added = False
         for depot_id, comment in depots:
-            if editor.add_depot(depot_id, comment):
+            if editor.add_depot(depot_id, comment).ok:
                 any_added = True
     return any_added and editor.committed_successfully
 
@@ -103,14 +110,38 @@ def add_additional_app(config_path: Path, app_id: Union[str, int], comment: str 
         return _init_config_with_app(config_path, app_id_clean, _sanitize_comment(comment))
     with batch_config_edit(config_path) as editor:
         res = editor.add_app(app_id, comment)
-    return res and editor.committed_successfully
+    return res.ok and editor.committed_successfully
+
+def add_additional_app_outcome(
+    config_path: Path, app_id: Union[str, int], comment: str = ""
+) -> WriteOutcome:
+    """Like add_additional_app but says *why* nothing changed.
+
+    Callers that report results to the user need to tell an app that was
+    already configured (ALREADY_PRESENT) from one a guard refused (REFUSED)
+    or a write that did not stick (FAILED).
+    """
+    ensure_plugins_enabled(config_path)
+    if not config_path.exists():
+        app_id_clean = _sanitize_id(app_id)
+        if not app_id_clean:
+            return WriteOutcome.REFUSED
+        if _init_config_with_app(config_path, app_id_clean, _sanitize_comment(comment)):
+            return WriteOutcome.CHANGED
+        return WriteOutcome.FAILED
+    with batch_config_edit(config_path) as editor:
+        res = editor.add_app(app_id, comment)
+        committed = editor.committed_successfully
+    if not committed:
+        return WriteOutcome.FAILED
+    return res
 
 def remove_additional_app(config_path: Path, app_id: Union[str, int]) -> bool:
     """Remove an AppID from the AdditionalApps list."""
     ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
         res = editor.remove_app(app_id)
-    return res and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully
 
 def replace_additional_app(config_path: Path, old_app_id: Union[str, int], new_app_id: Union[str, int], new_comment: str = "") -> bool:
     """Replace an existing AppID in AdditionalApps with a new AppID and optional comment.
@@ -341,7 +372,7 @@ def add_additional_depot(
     ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
         res = editor.add_depot(depot_id, comment, app_id=app_id)
-    return res and editor.committed_successfully
+    return res.ok and editor.committed_successfully
 
 def remove_additional_depot(
     config_path: Path,
@@ -355,4 +386,4 @@ def remove_additional_depot(
     ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
         res = editor.remove_depot(depot_id, check_shared=check_shared, excluding_appid=excluding_appid)
-    return res and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully

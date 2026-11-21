@@ -306,6 +306,33 @@ def fetch_template(url: str = TEMPLATE_SOURCE_URL) -> str:
 # Dynamic key-type inference
 # ──────────────────────────────────────────────────────────────
 
+def _infer_block_type(lines: list, start: int, end: int) -> str:
+    """Classify the indented block beginning at ``lines[start]``.
+
+    One implementation for both inference passes (template body and commented
+    examples), so the two cannot disagree about a key such as ``DlcData``,
+    whose children are themselves mappings and must be read as a map.
+    """
+    child = lines[start].strip().lstrip("#").strip()
+    if child.startswith("- ") or child == "-":
+        return TYPE_LIST
+
+    child_m = re.match(r'^([^:]+):\s*(.*)', child)
+    if not child_m:
+        return TYPE_UNKNOWN
+
+    # Keyed children: a grandchild decides between map-of-lists, map and the
+    # fixed-key submap shape; a child with no value and no descendants is a map.
+    k = start + 1
+    while k < end and (not lines[k].strip() or lines[k].strip().startswith("#")):
+        k += 1
+    if k < end and lines[k][:1] in (" ", "\t"):
+        grandchild = lines[k].strip().lstrip("#").strip()
+        if grandchild.startswith("- ") or grandchild == "-":
+            return TYPE_MAP_OF_LISTS
+    return TYPE_MAP
+
+
 def _parse_commented_examples(raw_hpp: str) -> dict:
     """
     Parse commented-out YAML examples from the template header to infer
@@ -327,23 +354,7 @@ def _parse_commented_examples(raw_hpp: str) -> dict:
             j += 1
 
         if j < len(lines):
-            child = lines[j].strip().lstrip("#").strip()
-            if child.startswith("- ") or child == "-":
-                inferred[key] = TYPE_LIST
-            elif ":" in child:
-                k = j + 1
-                while k < len(lines) and (not lines[k].strip() or lines[k].strip() == "#"):
-                    k += 1
-                if k < len(lines):
-                    grandchild = lines[k].strip().lstrip("#").strip()
-                    if grandchild.startswith("- ") or grandchild == "-":
-                        inferred[key] = TYPE_MAP_OF_LISTS
-                    else:
-                        inferred[key] = TYPE_MAP
-                else:
-                    inferred[key] = TYPE_MAP
-            else:
-                inferred[key] = TYPE_SUBMAP
+            inferred[key] = _infer_block_type(lines, j, len(lines))
         i += 1
 
     return inferred
@@ -380,7 +391,7 @@ def infer_key_types(raw_hpp: str) -> dict:
         key   = m2.group(1)
         value = m2.group(2).strip()
 
-        if value and not value.startswith("#"):
+        if value and not value.startswith("#") and not _is_inline_empty_container(value):
             key_types[key] = TYPE_SCALAR
             i += 1
             continue
@@ -389,25 +400,8 @@ def infer_key_types(raw_hpp: str) -> dict:
         while j < n and (not lines[j].strip() or lines[j].strip().startswith("#")):
             j += 1
 
-        if j < n and lines[j].startswith("  ") and not lines[j].strip().startswith("#"):
-            child_line = lines[j].strip()
-            if child_line.startswith("- ") or child_line == "-":
-                key_types[key] = TYPE_LIST
-            else:
-                child_m = re.match(r'^([^:]+):\s*(.*)', child_line)
-                if child_m:
-                    child_val = child_m.group(2).strip()
-                    k = j + 1
-                    while k < n and (not lines[k].strip() or lines[k].strip().startswith("#")):
-                        k += 1
-                    if k < n and lines[k].startswith("    ") and lines[k].strip().startswith("- "):
-                        key_types[key] = TYPE_MAP_OF_LISTS
-                    elif not child_val or child_val.startswith("#"):
-                        key_types[key] = TYPE_SUBMAP
-                    else:
-                        key_types[key] = TYPE_MAP
-                else:
-                    key_types[key] = TYPE_UNKNOWN
+        if j < n and lines[j].startswith("  "):
+            key_types[key] = _infer_block_type(lines, j, n)
         else:
             key_types[key] = comment_hints.get(key, TYPE_UNKNOWN)
 
@@ -440,6 +434,11 @@ class ConfigEntry:
 # SimpleYAMLReader
 # ──────────────────────────────────────────────────────────────
 
+def _is_inline_empty_container(value: str) -> bool:
+    """True for ``{}`` / ``[]`` written inline, which say nothing about shape."""
+    return value.strip() in ("{}", "[]")
+
+
 class SimpleYAMLReader:
     def __init__(self, key_types: Optional[dict] = None, lenient: bool = True):
         self._key_types = key_types or {}
@@ -471,16 +470,28 @@ class SimpleYAMLReader:
             ktype = self._ktype(key)
 
             if value and not value.startswith("#"):
-                if ktype == TYPE_LIST:
-                    result[key] = self._parse_scalar_as_list(value)
-                elif ktype == TYPE_MAP:
-                    result[key] = self._parse_scalar_as_map(key, value)
-                else:
-                    result[key] = self._clean_scalar(value)
+                # An empty container written inline (``AppIds: {}``) says nothing
+                # about the key's real shape, so keep reading the indented block
+                # that follows - otherwise ``AppIds: {}`` in the template types
+                # the key as a scalar and the user's list is dropped on merge.
+                if not _is_inline_empty_container(value):
+                    if ktype == TYPE_LIST:
+                        result[key] = self._parse_scalar_as_list(value)
+                    elif ktype == TYPE_MAP:
+                        result[key] = self._parse_scalar_as_map(key, value)
+                    else:
+                        result[key] = self._clean_scalar(value)
+                    i += 1
+                    continue
                 i += 1
-                continue
 
             children_start = i + 1
+
+            if ktype == TYPE_SCALAR:
+                # The template typed this key as a scalar (usually from an inline
+                # ``{}``), yet an indented block follows. What is written wins over
+                # the inferred type: otherwise the user's list is dropped on merge.
+                ktype = TYPE_UNKNOWN
 
             if ktype == TYPE_LIST:
                 items, i = self._read_list(lines, children_start, n, key)
@@ -670,6 +681,13 @@ class SimpleYAMLReader:
                     else:
                         break
                 result_map[k] = sub if sub else None
+            elif not val:
+                # ``DlcData:`` > ``  620:`` > ``    621: "Portal"`` - a block keyed
+                # by AppID. Reading it as a flat map would drop the parent AppID,
+                # so keep the nesting as-is.
+                nested, next_i = self._read_map(lines, i + 1, n, parent_key, ktype)
+                result_map[k] = nested if nested else None
+                i = next_i
             else:
                 cleaned = self._clean_map_value(parent_key, val)
                 if cleaned is not None:
@@ -1129,6 +1147,9 @@ def _render_map(mapping: dict, parent_key: str, indent: str = "  ") -> str:
                 out.append(f"{indent}  - {sub_val}")
         elif isinstance(v, ConfigEntry):
             out.append(f"{indent}{k}: {v.val}")
+        elif isinstance(v, dict) and v:
+            out.append(f"{indent}{k}:")
+            out.append(_render_map(v, parent_key, indent + "  "))
         elif v is not None:
             out.append(f"{indent}{k}: {v}")
     return "\n".join(out)
@@ -1140,6 +1161,34 @@ def _render_submap(submap: dict, indent: str = "  ") -> str:
         val_str = v.val if isinstance(v, ConfigEntry) else str(v)
         out.append(f"{indent}{k}: {val_str}")
     return "\n".join(out)
+
+
+def _render_block_with_template_notes(lines: list, start: int, end: int, mapping: dict, parent_key: str) -> str:
+    """Render ``mapping`` as a block, keeping the template's comments.
+
+    Comments are documentation for the user, so they belong to the rendered
+    section even when the template only carried an inline ``{}`` header. The
+    template's own indented entries are dropped: the user's data replaces them.
+    """
+    out: list = []
+    i = start
+    while i < end:
+        line = lines[i]
+        if line.strip().startswith("#"):
+            out.append(line.rstrip())
+            i += 1
+            continue
+        if line.startswith(" ") or line.startswith("\t") or not line.strip():
+            i += 1
+            continue
+        break
+    rendered = _render_map(mapping, parent_key)
+    if rendered:
+        out.append(rendered)
+        return "\n".join(out)
+    # A comment-only body would parse as null and lose the user's entries, so
+    # the data always wins over the notes describing it.
+    return rendered
 
 
 def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
@@ -1167,6 +1216,39 @@ def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
         value = m.group(2).strip()
         ktype = key_types.get(key, TYPE_UNKNOWN)
 
+        # An inline ``{}`` / ``[]`` is how the upstream template marks an empty
+        # container; keep the user's entries and render them as a block instead of
+        # echoing the empty shape over them.
+        u_val = user_data.get(key)
+        if not u_val and (key not in user_data or _is_inline_empty_container(value)):
+            # Nothing for this key yet: keep the template's own (possibly
+            # commented) body so the repair does not delete its documentation.
+            out_lines.append(line.rstrip())
+            i += 1
+            while i < n and (lines[i].startswith("  ") or not lines[i].strip()):
+                out_lines.append(lines[i].rstrip())
+                i += 1
+            continue
+
+        if _is_inline_empty_container(value) and u_val:
+            skip_to = i + 1
+            while skip_to < n and (lines[skip_to].startswith("  ") or not lines[skip_to].strip()):
+                skip_to += 1
+            if isinstance(u_val, list):
+                out_lines.append(f"{key}:")
+                out_lines.append(_render_list(u_val))
+                while skip_to < n and (lines[skip_to].startswith("  ") or not lines[skip_to].strip()):
+                    skip_to += 1
+            elif isinstance(u_val, dict):
+                out_lines.append(f"{key}:")
+                out_lines.append(_render_block_with_template_notes(lines, skip_to, n, u_val, key))
+                while skip_to < n and (lines[skip_to].startswith("  ") or not lines[skip_to].strip()):
+                    skip_to += 1
+            else:
+                out_lines.append(f"{key}:")
+            i = skip_to
+            continue
+
         if value and not value.startswith("#"):
             user_val = user_data.get(key)
             if isinstance(user_val, str) and user_val:
@@ -1190,15 +1272,18 @@ def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
 
         user_val = user_data.get(key)
 
-        if key == IDLE_STATUS_KEY or ktype == TYPE_SUBMAP:
-            if isinstance(user_val, dict) and user_val:
-                out_lines.append(_render_submap(user_val))
+        if key == IDLE_STATUS_KEY and isinstance(user_val, dict) and user_val:
+            out_lines.append(_render_submap(user_val))
 
         elif ktype == TYPE_LIST or (ktype == TYPE_UNKNOWN and isinstance(user_val, list)):
             if isinstance(user_val, list) and user_val:
                 out_lines.append(_render_list(user_val))
 
-        elif ktype in (TYPE_MAP, TYPE_MAP_OF_LISTS) or (ktype == TYPE_UNKNOWN and isinstance(user_val, dict)):
+        elif ktype in (TYPE_UNKNOWN, TYPE_SUBMAP) and isinstance(user_val, dict):
+            if user_val:
+                out_lines.append(_render_map(user_val, key))
+
+        elif ktype in (TYPE_MAP, TYPE_MAP_OF_LISTS):
             if isinstance(user_val, dict) and user_val:
                 out_lines.append(_render_map(user_val, key))
 

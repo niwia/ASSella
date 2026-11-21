@@ -317,6 +317,114 @@ def test_boot_template_is_reused():
         shutil.rmtree(td)
 
 
+def test_section_bounds_keep_the_next_section_intact():
+    print("=== an empty section never tombstones the next one ===")
+    from utils.yaml.core import _add_list_item_in_memory, _add_map_item_in_memory
+
+    shapes = [
+        ("AppIds: {}\nPlugins: yes\n", "AppIds"),
+        ("DlcData: {}\nAdditionalDepots:\n", "DlcData"),
+        ("AdditionalDepots:\nDlcData:\n  620:\n    621: \"Portal\"\n", "AdditionalDepots"),
+        ("AdditionalDepots:\n\n# adding depots\nDlcData:\n  620:\n    621: \"Portal\"\n", "AdditionalDepots"),
+    ]
+    for content, section in shapes:
+        new_content, changed = _add_list_item_in_memory(content, section, "731", "New")
+        parsed = yaml.safe_load(new_content)
+        check(changed, f"{section}: item added ({new_content!r})")
+        check(parsed.get("Plugins") in (None, True), f"{section}: does not leak into Plugins")
+        if "DlcData" in parsed:
+            check(parsed.get("DlcData") is not None, f"{section}: DlcData keeps its children")
+
+    content = "DecryptionKeys:\n\n# keys\nDlcData:\n  620:\n    621: \"Portal\"\n"
+    new_content, changed = _add_map_item_in_memory(content, "DecryptionKeys", "731", "a" * 64, "note")
+    parsed = yaml.safe_load(new_content)
+    check(changed and parsed.get("DecryptionKeys") == {731: "a" * 64}, "map entry lands in an empty map section")
+    check(parsed.get("DlcData") == {620: {621: "Portal"}}, "map entry leaves DlcData intact")
+
+
+def test_removal_never_crosses_a_section_boundary():
+    print("=== removal stays inside its own section ===")
+    import re
+
+    from utils.yaml.core import _remove_entry_in_memory
+
+    content = 'DecryptionKeys:\nDlcData:\n  620:\n    621: "Portal"\n'
+    pattern = re.compile(r"^[ \t]*620[ \t]*:[^\r\n#]+(?:#[^\r\n]*)?$", re.MULTILINE)
+    new_content, changed = _remove_entry_in_memory(content, "DecryptionKeys", pattern)
+    check(not changed, "a look-alike entry in the next section is not removed")
+    check(yaml.safe_load(new_content).get("DlcData") == {620: {621: "Portal"}}, "DlcData survives untouched")
+
+
+def test_write_outcomes_distinguish_refusal_from_presence():
+    print("=== writers say what actually happened ===")
+    from utils.yaml.apps import add_additional_app, add_additional_app_outcome, add_additional_depot
+    from utils.yaml.core import WriteOutcome
+    from utils.yaml.keys import add_decryption_key, remove_decryption_key
+
+    td, path = with_file('AdditionalApps:\n  - 730\nAdditionalDepots:\n  - 731\nAppIds:\n  - 620\n')
+    try:
+        check(
+            add_additional_app_outcome(path, "730") is WriteOutcome.ALREADY_PRESENT,
+            "an app already mounted reports ALREADY_PRESENT",
+        )
+        check(add_additional_app_outcome(path, "999") is WriteOutcome.CHANGED, "a new app reports CHANGED")
+        check(
+            add_additional_app_outcome(path, "") is WriteOutcome.REFUSED,
+            "a refused write is not mistaken for 'already present'",
+        )
+        check(add_additional_depot(path, "731") is True, "re-adding a mounted depot still reports success")
+        check(add_additional_depot(path, "620") is False, "a base AppID is still refused in AdditionalDepots")
+
+        key = "b" * 64
+        check(add_decryption_key(path, "732", key) is True, "a new key is written")
+        check(add_decryption_key(path, "732", key) is True, "the same key again reports success, not a failure")
+        check(remove_decryption_key(path, "732") is True, "the key is removed once")
+        check(remove_decryption_key(path, "732") is False, "a second removal reports 'not present'")
+        check(WriteOutcome.CHANGED.ok and WriteOutcome.ALREADY_PRESENT.ok, "both count as ok")
+        check(not WriteOutcome.REFUSED.ok and not WriteOutcome.FAILED.ok, "refusal and failure do not")
+    finally:
+        shutil.rmtree(td)
+
+
+def test_repair_keeps_every_container_the_user_filled():
+    print("=== config repair keeps nested and inline-empty containers ===")
+    from utils.assfixer import SimpleYAMLReader, infer_key_types, merge_config
+
+    template = (
+        "API: yes\nAppIds: {}\nAdditionalDepots: {}\nDecryptionKeys: {}\n"
+        "DlcData: {}\nFakeAppIds: {}\nAppTokens: {}\nAdditionalApps: {}\n"
+    )
+    user = (
+        "API: yes\n"
+        "AppIds:\n  - 480\n"
+        "AdditionalDepots:\n  - 731\n"
+        f"DecryptionKeys:\n  731: {'c' * 64}\n"
+        "DlcData:\n  620:\n    621: \"Portal\"\n"
+        "FakeAppIds:\n  481: 480\n"
+        "AppTokens:\n  730: abcdef\n"
+        "AdditionalApps:\n  - 730\n"
+    )
+    types = infer_key_types(template)
+    user_data = SimpleYAMLReader(types, lenient=True).parse(user)
+    merged = merge_config(template, user_data, types)
+    parsed = yaml.safe_load(merged)
+    check(parsed.get("AppIds") == [480], f"AppIds survive a repair ({parsed.get('AppIds')!r})")
+    check(parsed.get("AdditionalDepots") == [731], "AdditionalDepots survive")
+    check(parsed.get("DecryptionKeys") == {731: "c" * 64}, "DecryptionKeys survive")
+    check(parsed.get("DlcData") == {620: {621: "Portal"}}, f"DlcData keeps its parent AppID ({parsed.get('DlcData')!r})")
+    check(parsed.get("FakeAppIds") == {481: 480}, "FakeAppIds survive")
+    check(parsed.get("AppTokens") == {730: "abcdef"}, "AppTokens survive")
+    check(parsed.get("AdditionalApps") == [730], "AdditionalApps survive")
+    empty_user = SimpleYAMLReader(types, lenient=True).parse("API: yes\n")
+    kept = merge_config(template, empty_user, types)
+    check("AppIds: {}" in kept, "an untouched template keeps its inline-empty header")
+    parsed_kept = yaml.safe_load(kept)
+    check(
+        parsed_kept is not None and parsed_kept.get("API") is True and "AppIds" in parsed_kept,
+        f"an untouched template still parses ({parsed_kept!r})",
+    )
+
+
 def main() -> int:
     test_boolean_comment_separator()
     test_boolean_never_touches_nested_key()
@@ -329,6 +437,10 @@ def main() -> int:
     test_prerequisites_is_one_write()
     test_backup_rotation_is_capped()
     test_boot_template_is_reused()
+    test_section_bounds_keep_the_next_section_intact()
+    test_removal_never_crosses_a_section_boundary()
+    test_write_outcomes_distinguish_refusal_from_presence()
+    test_repair_keeps_every_container_the_user_filled()
 
     print("\n--------------------------------------------------")
     print(f"Results: {passed} passed, {len(failed)} failed")
