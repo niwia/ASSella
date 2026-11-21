@@ -171,11 +171,14 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
         pattern = _bool_pattern(key)
         match = pattern.search(content)
 
-        if match and re.split(r"\r?\n", content[match.end():], maxsplit=1)[0].strip():
-            # `val` is only the first word of a longer scalar ('no#tight',
-            # which YAML reads as the string "no#tight"). Rewriting the boolean
-            # prefix would change the scalar without setting the flag, so leave
-            # an unrecognised value for a human to fix.
+        # Only a trailing comment may follow the boolean on its line;
+        # `no#tight` is one scalar (the string "no#tight"), and rewriting its
+        # boolean prefix would change the value without setting the flag.
+        line_rest = re.split(r"\r?\n", content[match.end():], maxsplit=1)[0] if match else ""
+        # (A tab before an inline comment is invalid YAML and is normalised
+        # when the line is rewritten, so it still counts as a comment here.)
+        if match and line_rest.strip() and not re.match(r"[ \t]+#", line_rest.replace("\t", " ")):
+            # An unrecognised value is left for a human to fix.
             logger.warning(
                 f"Leaving '{key}' alone in {config_path}: its value is a single scalar "
                 f"that cannot be rewritten in place safely"
