@@ -42,6 +42,30 @@ from utils.yaml_config_manager import is_slssteam_mode_enabled
 logger = logging.getLogger(__name__)
 
 
+def _remove_entries_created_since(game_dir: str, keep: Set[str]) -> int:
+    """Delete entries inside ``game_dir`` that were not there when the job began.
+
+    Standalone downloads write straight into the folder the user picked, so a
+    cancel cannot simply empty it: the folder may be a shared parent. ``keep``
+    is the snapshot taken before the download started, and anything in it is
+    left untouched. Returns the number of entries removed.
+    """
+    removed = 0
+    with os.scandir(game_dir) as entries:
+        for entry in entries:
+            if entry.name in keep:
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry.path, ignore_errors=True)
+                else:
+                    os.unlink(entry.path)
+                removed += 1
+            except OSError as e:
+                logger.debug(f"[CancelCleanup] Error removing partial file {entry.path}: {e}")
+    return removed
+
+
 class TaskManager(
     PostInstallMixin,
     AchievementsMixin,
@@ -99,6 +123,9 @@ class TaskManager(
         self.current_job_metadata: Optional[Dict[str, Any]] = None
         self.game_data: Optional[Dict[str, Any]] = None
         self.current_dest_path: Optional[str] = None
+        # Names already in the standalone destination when this job started;
+        # cancel cleanup must never delete them.
+        self._pre_download_entries: Set[str] = set()
         self.slssteam_mode_was_active = False
         self.library_mode_was_active = False
         self._steamless_success = None
@@ -840,6 +867,19 @@ class TaskManager(
                 logger.error(
                     f"Error checking pre-existing installation status: {e}"
                 )
+
+        # Snapshot the destination so cancel cleanup can tell files this job
+        # created from files that were already there. It must never delete a
+        # user's pre-existing folder contents (the folder may be a shared
+        # parent such as ~/Games).
+        self._pre_download_entries = set()
+        if dest_path and self.game_data:
+            try:
+                game_dir = get_game_directory(dest_path, self.game_data)
+                if game_dir and os.path.isdir(game_dir):
+                    self._pre_download_entries = set(os.listdir(game_dir))
+            except Exception as e:
+                logger.debug(f"Could not snapshot download destination {dest_path}: {e}")
 
         self._last_steamless_success = None
         self._last_slscheevo_success = None
@@ -1984,6 +2024,7 @@ class TaskManager(
         self.main_window.speed_label.setVisible(False)
         self.game_data = None
         self.current_dest_path = None
+        self._pre_download_entries = set()
         self.current_job_metadata = None
         self.slssteam_mode_was_active = False
         self.library_mode_was_active = False
@@ -2296,17 +2337,18 @@ class TaskManager(
             )
 
             if is_standalone:
-                # Never delete the user-selected destination folder itself (e.g. ~/Games)
+                # Never delete the user-selected destination folder itself (e.g.
+                # ~/Games), and never delete entries that were already there
+                # when the download started.
                 logger.info(f"[CancelCleanup] Preserving standalone custom root folder: {game_dir}")
                 if os.path.isdir(game_dir):
-                    for entry in os.scandir(game_dir):
-                        try:
-                            if entry.is_dir():
-                                shutil.rmtree(entry.path, ignore_errors=True)
-                            else:
-                                os.unlink(entry.path)
-                        except Exception as ce:
-                            logger.debug(f"[CancelCleanup] Error removing partial file {entry.path}: {ce}")
+                    keep = getattr(self, "_pre_download_entries", set())
+                    removed = _remove_entries_created_since(game_dir, keep)
+                    if removed:
+                        logger.info(
+                            f"[CancelCleanup] Removed {removed} partial entr{'y' if removed == 1 else 'ies'} "
+                            f"from {game_dir}"
+                        )
             else:
                 steamapps_dir = os.path.join(self.current_dest_path, "steamapps")
                 common_dir = os.path.join(steamapps_dir, "common")

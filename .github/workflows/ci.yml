@@ -213,7 +213,8 @@ jobs:
                        test_steam_updates \
                        test_custom_folder_workflow \
                        test_standalone_custom_folder \
-                       test_config_write_safety; do
+                       test_config_write_safety \
+                       test_yaml_and_ratings_fixes; do
             echo "::group::$suite"
             QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp \
               python -u "scripts/$suite.py"

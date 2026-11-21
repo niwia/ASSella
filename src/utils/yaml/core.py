@@ -84,9 +84,15 @@ def config_write_lock(config_path: Path) -> Iterator[None]:
     """Serialise read-modify-write cycles on one config file across threads.
 
     Re-entrant, so a writer called from inside another writer on the same file
-    still works. All config edits are made on the GUI thread today, but the
-    headless helper, the update checker and the plugin DB sync can each issue
-    writes, and an unlocked round trip loses whichever edit lands second.
+    still works. This is a *process-local* lock: it orders the GUI thread and
+    worker threads in this process (plugin DB sync, DLC sync, background
+    tasks). A separate process (headless helper, external update checker)
+    cannot take it, so it is not a cross-process file lock.
+
+    A lock is only held for one short read-modify-write. If it cannot be
+    acquired within the timeout, another writer is stuck or deadlocked;
+    proceeding unlocked would let both writers overwrite each other's entries,
+    so fail instead of silently losing data.
     """
     key = _config_lock_key(config_path)
     with _CONFIG_LOCKS_GUARD:
@@ -94,18 +100,135 @@ def config_write_lock(config_path: Path) -> Iterator[None]:
 
     acquired = lock.acquire(timeout=_CONFIG_LOCK_TIMEOUT)
     if not acquired:
-        # Proceed rather than raise: the write is still atomic, it just is not
-        # ordered against another writer. Better than blocking a whole job.
-        logger.warning(f"Timed out waiting for the config write lock on {config_path}")
+        raise TimeoutError(
+            f"Timed out after {_CONFIG_LOCK_TIMEOUT:.0f}s waiting for the config "
+            f"write lock on {config_path}; another writer is still holding it"
+        )
     try:
         yield
     finally:
-        if acquired:
-            lock.release()
+        lock.release()
 
 
 def _config_management_enabled() -> bool:
     return is_slssteam_mode_enabled() and is_slssteam_config_management_enabled()
+
+# A top-level section written as a single-line flow collection, e.g.
+# `AdditionalApps: [111, 222]` or `DlcData: {620: {621: "Portal"}}`.
+_TOP_LEVEL_FLOW_SECTION_PATTERN = re.compile(
+    r"^(?P<key>[A-Za-z0-9_]+)[ \t]*:[ \t]*"
+    r"(?P<value>\[[^\r\n]*\]|\{[^\r\n]*\})[ \t]*"
+    r"(?P<comment>#[^\r\n]*)?[ \t]*(?=\r?$)",
+    re.MULTILINE,
+)
+
+
+# Sections whose only valid shape is a collection. Flow style is normalised
+# only for these names, so an unrelated plugin key written as `[yes, no]` is
+# never re-parsed under PyYAML's YAML 1.1 rules and rewritten.
+_EDITABLE_SECTION_NAMES = frozenset(
+    {
+        "AdditionalApps",
+        "AdditionalDepots",
+        "AppIds",
+        "AppTokens",
+        "DecryptionKeys",
+        "DenuvoGames",
+        "DlcData",
+        "FakeAppIds",
+        "ManifestIds",
+    }
+)
+
+
+def _newline_style(content: str) -> str:
+    """Return the newline sequence an editor should use for ``content``."""
+    return "\r\n" if "\r\n" in content else "\n"
+
+
+def _normalize_flow_sections(content: str) -> str:
+    """Rewrite top-level non-empty flow collections into block style.
+
+    The section editors are line based: they look for an indented list/map body
+    under a `Section:` header. A flow value (`AdditionalApps: [111, 222]`) has
+    no such body, so an insert appended a *second* `AdditionalApps:` key and
+    the duplicate-key write gate then refused the edit. Re-writing the value as
+    its block equivalent keeps the data and lets every editor see it.
+
+    Only single-line, non-empty flow collections are converted. Multi-line
+    flow values are left untouched (and therefore still refused instead of
+    being silently rewritten); the file is never written here, so a read-only
+    caller only pays for parsing a section it was already reading.
+    """
+    if not content or "[" not in content and "{" not in content:
+        return content
+
+    if not any(
+        match.group("key") in _EDITABLE_SECTION_NAMES
+        for match in _TOP_LEVEL_FLOW_SECTION_PATTERN.finditer(content)
+    ):
+        return content
+
+    try:
+        import yaml
+    except Exception:  # pragma: no cover - pyyaml is a hard dependency
+        return content
+
+    class _QuotedStringDumper(yaml.SafeDumper):
+        """Keep string scalars double-quoted, like the block writers do.
+
+        Several section readers (e.g. ``get_dlc_data``) expect the quoted form
+        that `add_dlc_data_batch` writes. An unquoted string would parse as the
+        same YAML value but look absent to those readers.
+        """
+
+    def _represent_str(dumper, data):
+        # Numeric strings are IDs in these sections; the block readers match
+        # them unquoted. Other strings keep double quotes (DLC names) so
+        # `get_dlc_data`'s quoted-value parser still sees them.
+        style = None if data.isdigit() else '"'
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+    _QuotedStringDumper.add_representer(str, _represent_str)
+
+    newline = _newline_style(content)
+    changed = False
+
+    def _replace(match: re.Match) -> str:
+        nonlocal changed
+        value = match.group("value")
+        if value in ("[]", "{}"):
+            # `_expand_flow_section_if_needed` handles the empty shapes when
+            # that section is the edit target; leave them for it.
+            return match.group(0)
+        try:
+            data = yaml.safe_load(value)
+        except Exception:
+            return match.group(0)
+        if not isinstance(data, (list, dict)) or not data:
+            return match.group(0)
+
+        try:
+            dumped = yaml.dump(
+                data,
+                Dumper=_QuotedStringDumper,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            ).rstrip("\n")
+        except Exception:
+            return match.group(0)
+
+        body = "".join(f"  {line}{newline}" for line in dumped.splitlines())
+        comment = (match.group("comment") or "").strip()
+        header = f"{match.group('key')}:" + (f" {comment}" if comment else "")
+        changed = True
+        # The original line ending is not part of the match and stays in place.
+        return header + newline + body.rstrip("\r\n")
+
+    normalized = _TOP_LEVEL_FLOW_SECTION_PATTERN.sub(_replace, content)
+    return normalized if changed else content
+
 
 def _read_config_content(config_path: Path, log_missing: bool = False) -> Optional[str]:
     if not config_path.exists():
@@ -114,7 +237,8 @@ def _read_config_content(config_path: Path, log_missing: bool = False) -> Option
         return None
 
     with open(config_path, "r", encoding="utf-8", errors="replace") as f:
-        return f.read()
+        content = f.read()
+    return _normalize_flow_sections(content)
 
 def _get_config_content_if_enabled(config_path: Path, log_missing: bool = False):
     if not _config_management_enabled():
@@ -257,8 +381,11 @@ def _get_section_bounds(content: str, section_name: str) -> Optional[Tuple[int, 
     content_start: index of the first character after the newline of the header.
     section_end: index of the start of the next top-level key line or EOF.
     """
+    # Anchored at column 0: an indented `AdditionalApps:` under another key is
+    # a nested mapping, not the top-level section this helper edits. Matching
+    # it would silently write entries into the wrong parent.
     header_pattern = re.compile(
-        r"^[ \t]*['\"]?" + re.escape(section_name) + r"['\"]?[ \t]*:[ \t]*(?:\[[ \t]*\]|\{[ \t]*\})?[ \t]*(?:#[^\r\n]*)?$",
+        r"^['\"]?" + re.escape(section_name) + r"['\"]?[ \t]*:[ \t]*(?:\[[ \t]*\]|\{[ \t]*\})?[ \t]*(?:#[^\r\n]*)?\r?$",
         re.MULTILINE,
     )
     match = header_pattern.search(content)
@@ -356,6 +483,7 @@ def _remove_entry_in_memory(
     pattern: re.Pattern,
 ) -> Tuple[str, bool]:
     """Remove matching lines only within a specific top-level YAML section in memory."""
+    content = _normalize_flow_sections(content)
     removed = False
     while True:
         bounds = _get_section_bounds(content, section_name)
@@ -417,16 +545,18 @@ def _add_list_item_in_memory(
     content: str, section_name: str, item_id: str, comment: str = ""
 ) -> Tuple[str, bool]:
     """Add an item to a YAML list section in memory."""
+    content = _normalize_flow_sections(content)
     bounds = _get_section_bounds(content, section_name)
+    newline = _newline_style(content)
     comment_suffix = f" # {comment}" if comment else ""
-    entry_line = f"  - {item_id}{comment_suffix}\n"
+    entry_line = f"  - {item_id}{comment_suffix}{newline}"
 
     if bounds:
         content, bounds = _expand_flow_section_if_needed(content, section_name, bounds)
         _, content_start, section_end = bounds
         sec_content = content[content_start:section_end]
         item_pattern = re.compile(
-            rf"^[ \t]*-[ \t]*{re.escape(item_id)}[ \t]*(?:#[^\r\n]*)?$",
+            rf"^[ \t]*-[ \t]*{re.escape(item_id)}[ \t]*(?:#[^\r\n]*)?\r?$",
             re.MULTILINE,
         )
         m = item_pattern.search(sec_content)
@@ -434,26 +564,29 @@ def _add_list_item_in_memory(
             if comment:
                 abs_start = content_start + m.start()
                 abs_end = content_start + m.end()
+                cr = "\r" if content.startswith("\r", abs_end - 1) else ""
                 new_line = f"  - {item_id}{comment_suffix}"
-                if content[abs_start:abs_end] != new_line:
-                    return content[:abs_start] + new_line + content[abs_end:], True
+                if content[abs_start:abs_end] != new_line + cr:
+                    return content[:abs_start] + new_line + cr + content[abs_end:], True
             return content, False
 
         insert_pos = _find_section_insert_pos(content, bounds)
         if insert_pos > 0 and content[insert_pos - 1] != "\n":
-            entry_line = "\n" + entry_line
+            entry_line = newline + entry_line
         return content[:insert_pos] + entry_line + content[insert_pos:], True
     else:
-        new_content = content.rstrip() + f"\n\n{section_name}:\n{entry_line}"
+        new_content = content.rstrip() + f"{newline}{newline}{section_name}:{newline}{entry_line}"
         return new_content, True
 
 def _add_map_item_in_memory(
     content: str, section_name: str, key: str, value: str, comment: str = ""
 ) -> Tuple[str, bool]:
     """Add or update a key-value pair in a YAML map section in memory."""
+    content = _normalize_flow_sections(content)
     bounds = _get_section_bounds(content, section_name)
+    newline = _newline_style(content)
     comment_suffix = f" # {comment}" if comment else ""
-    entry_line = f"  {key}: {value}{comment_suffix}\n"
+    entry_line = f"  {key}: {value}{comment_suffix}{newline}"
 
     if bounds:
         content, bounds = _expand_flow_section_if_needed(content, section_name, bounds)
@@ -476,16 +609,17 @@ def _add_map_item_in_memory(
 
             abs_start = content_start + m.start()
             abs_end = content_start + m.end()
-            if content[abs_start:abs_end] != new_line:
-                return content[:abs_start] + new_line + content[abs_end:], True
+            cr = "\r" if content.startswith("\r", abs_end - 1) else ""
+            if content[abs_start:abs_end] != new_line + cr:
+                return content[:abs_start] + new_line + cr + content[abs_end:], True
             return content, False
 
         insert_pos = _find_section_insert_pos(content, bounds)
         if insert_pos > 0 and content[insert_pos - 1] != "\n":
-            entry_line = "\n" + entry_line
+            entry_line = newline + entry_line
         return content[:insert_pos] + entry_line + content[insert_pos:], True
     else:
-        new_content = content.rstrip() + f"\n\n{section_name}:\n{entry_line}"
+        new_content = content.rstrip() + f"{newline}{newline}{section_name}:{newline}{entry_line}"
         return new_content, True
 
 def _add_dlc_batch_in_memory(
@@ -495,17 +629,19 @@ def _add_dlc_batch_in_memory(
     if not dlc_dict:
         return content, False
 
+    content = _normalize_flow_sections(content)
     parent_app_id = str(parent_app_id).strip()
     bounds = _get_section_bounds(content, "DlcData")
 
     if not bounds:
+        newline = _newline_style(content)
         lines = ["DlcData:", f"  {parent_app_id}:"]
         for did, dname in dlc_dict.items():
             did_str = _sanitize_id(did) or str(did).strip()
             cname = _sanitize_comment(dname or f"DLC {did_str}").replace('"', '\\"')
             lines.append(f'    {did_str}: "{cname}"')
-        new_entry = "\n".join(lines) + "\n"
-        new_content = content.rstrip() + "\n\n" + new_entry
+        new_entry = newline.join(lines) + newline
+        new_content = content.rstrip() + newline + newline + new_entry
         return new_content, True
 
     content, bounds = _expand_flow_section_if_needed(content, "DlcData", bounds)

@@ -94,11 +94,32 @@ def _is_steam_owned_game(game: Dict[str, Any]) -> bool:
     )
 
 
+def _has_steam_appmanifest(game: Dict[str, Any]) -> bool:
+    """True when the app has an ``appmanifest_<appid>.acf`` in its library.
+
+    A game can be installed outside ``steamapps/common`` (moved, custom
+    library, legacy ACCELA path) and still be owned by Steam. If the manifest
+    exists, Steam manages updates and uninstalling, so it is never standalone.
+    """
+    appid = str(game.get("appid") or "").strip()
+    library_path = game.get("library_path")
+    if not appid or not library_path:
+        return False
+    try:
+        return os.path.isfile(
+            os.path.join(str(library_path), "steamapps", f"appmanifest_{appid}.acf")
+        )
+    except OSError:
+        return False
+
+
 def is_standalone_game(game: Any) -> bool:
     """True when the game dict describes a Standalone Custom Folder install (decoupled from Steam/SLSsteam)."""
     if not isinstance(game, dict):
         return False
     if _is_steam_owned_game(game):
+        return False
+    if _has_steam_appmanifest(game):
         return False
     if game.get("is_standalone") or game.get("source") == "Standalone":
         return True

@@ -171,7 +171,7 @@ class TestNativeDlcEntitlements(unittest.TestCase):
 
     def test_parent_appid_never_enters_additional_depots(self):
         from utils.yaml.core import batch_config_edit
-        from utils.yaml_config_manager import get_additional_depots
+        from utils.yaml_config_manager import WriteOutcome, get_additional_depots
 
         parent = "1324780"
         other_parent = "1145350"
@@ -187,13 +187,13 @@ class TestNativeDlcEntitlements(unittest.TestCase):
 
             with batch_config_edit(cfg) as editor:
                 # 1. Direct parent AppID must be refused
-                self.assertFalse(editor.add_depot(parent, app_id=parent))
+                self.assertIs(editor.add_depot(parent, app_id=parent), WriteOutcome.REFUSED)
                 # 2. Another game's parent AppID from AdditionalApps must be refused
-                self.assertFalse(editor.add_depot(other_parent, app_id=parent))
+                self.assertIs(editor.add_depot(other_parent, app_id=parent), WriteOutcome.REFUSED)
                 # 3. Legitimate child DLC depot must be accepted
-                self.assertTrue(editor.add_depot(dlc_depot, app_id=parent))
+                self.assertIs(editor.add_depot(dlc_depot, app_id=parent), WriteOutcome.CHANGED)
                 # 4. Legitimate content depot must be accepted
-                self.assertTrue(editor.add_depot(base_depot, app_id=parent))
+                self.assertIs(editor.add_depot(base_depot, app_id=parent), WriteOutcome.CHANGED)
 
             depots = set(get_additional_depots(cfg))
             self.assertNotIn(parent, depots)

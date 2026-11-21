@@ -672,6 +672,7 @@ class NativeSteamDownloadTask(QObject):
             _get_section_bounds,
             _fix_additional_apps_indentation,
             _append_to_additional_apps,
+            _normalize_flow_sections,
             remove_fake_app_id,
             remove_launch_option,
         )
@@ -708,6 +709,9 @@ class NativeSteamDownloadTask(QObject):
             logger.info(f"[NativeSteamDL] Backed up config.yaml to {backup}")
 
         content = config_path.read_text(encoding="utf-8", errors="ignore")
+        # The AT0-M writer parses sections line by line; make flow-style
+        # collections visible before any bounds lookup rebuilds a section.
+        content = _normalize_flow_sections(content)
 
         # 1. Enable Plugins: yes in-memory
         if not re.search(r"^[ \t]*Plugins[ \t]*:[ \t]*(?:yes|true)\b", content, re.MULTILINE | re.IGNORECASE):

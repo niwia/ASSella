@@ -160,6 +160,18 @@ def test_is_standalone_game():
             "Path outside steam libraries is standalone",
         )
 
+        # A game with an appmanifest in its library is Steam-owned even when its
+        # install folder is outside steamapps/common (moved/custom library).
+        moved_install = os.path.join(td, "MovedInstall")
+        os.makedirs(moved_install, exist_ok=True)
+        with open(os.path.join(steam_lib, "steamapps", "appmanifest_102.acf"), "w") as af:
+            af.write('"AppState"\n{\n}\n')
+        g3b = {"appid": "102", "install_path": moved_install, "library_path": steam_lib}
+        check(
+            is_standalone_game(g3b) is False,
+            "An existing ACF keeps a game Steam-managed despite its install path",
+        )
+
         # 4. Standard Steam game inside steamapps/common
         g4 = {
             "appid": "103",
@@ -438,6 +450,76 @@ def test_standalone_status_and_cancel_safety():
         )
 
 
+def test_cancel_cleanup_and_uninstall_safety():
+    print("=== Cancel cleanup, uninstall guard and stale-record pruning ===")
+    from managers.task_manager import _remove_entries_created_since
+    from managers.game_manager_mixins.uninstall import (
+        _is_safe_standalone_removal_target,
+        _remove_standalone_tree,
+    )
+    from managers.game_manager_mixins.scanning import _standalone_record_is_stale
+
+    # Cancel cleanup only removes entries the job created. Files that were in
+    # the chosen folder before the download must survive.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "Games"
+        root.mkdir()
+        (root / "keep.txt").write_text("user file", encoding="utf-8")
+        (root / "GameA").mkdir()
+        (root / "GameA" / "data.bin").write_bytes(b"partial")
+
+        removed = _remove_entries_created_since(str(root), {"keep.txt"})
+        check(removed == 1, f"only the new entry is removed (got {removed})")
+        check((root / "keep.txt").exists(), "a pre-existing file survives cancel cleanup")
+        check(not (root / "GameA").exists(), "a partially downloaded folder is removed")
+        check(root.exists(), "the user-selected root folder itself is never removed")
+
+    # Uninstall refuses protected/ancestor paths and never follows a symlink.
+    with tempfile.TemporaryDirectory() as td:
+        game = Path(td) / "GameB"
+        game.mkdir()
+        (game / "data.bin").write_bytes(b"x")
+        check(_is_safe_standalone_removal_target(str(game)) is True, "a normal game folder is safe")
+        check(_is_safe_standalone_removal_target("/") is False, "filesystem root is refused")
+        check(_is_safe_standalone_removal_target(str(Path.home())) is False, "home directory is refused")
+        check(_is_safe_standalone_removal_target(str(Path.home().parent)) is False, "home's parent is refused")
+
+        real_target = Path(td) / "RealTarget"
+        real_target.mkdir()
+        (real_target / "keep.bin").write_bytes(b"must stay")
+        link = Path(td) / "LinkedGame"
+        link.symlink_to(real_target, target_is_directory=True)
+        deleted, message = _remove_standalone_tree(str(link))
+        check(deleted and not link.exists(), f"the symlink itself is removed ({message})")
+        check((real_target / "keep.bin").exists(), "the symlink target is never deleted")
+
+        deleted, _ = _remove_standalone_tree(str(game))
+        check(deleted and not game.exists(), "a safe game folder is deleted")
+
+        deleted, _ = _remove_standalone_tree("/")
+        check(deleted is False, "an unsafe path reports failure, so the record is kept")
+
+    # A missing removable drive is not a deleted install; a deleted folder is.
+    with tempfile.TemporaryDirectory() as td:
+        gone_parent = Path(td) / "Gone"
+        gone_parent.mkdir()
+        check(
+            _standalone_record_is_stale(str(gone_parent / "Game")) is True,
+            "a folder deleted from an existing parent is stale",
+        )
+        check(
+            _standalone_record_is_stale(str(Path(td) / "NoDrive" / "Game")) is False,
+            "an unmounted drive does not lose its record",
+        )
+        check(_standalone_record_is_stale("") is True, "an empty install path is stale")
+        empty = Path(td) / "Empty"; empty.mkdir()
+        check(_standalone_record_is_stale(str(empty)) is False, "an existing folder is not stale")
+        a_file = Path(td) / "not-a-dir"
+        a_file.write_text("x", encoding="utf-8")
+        check(_standalone_record_is_stale(str(a_file)) is True, "a file is not an install folder")
+
+
+
 def main():
     test_is_path_in_steam_library()
     test_get_game_directory()
@@ -447,6 +529,7 @@ def main():
     test_sls_config_sync_skipped_for_standalone()
     test_ui_gating_for_standalone()
     test_standalone_status_and_cancel_safety()
+    test_cancel_cleanup_and_uninstall_safety()
 
     print("\n--------------------------------------------------")
     print(f"Results: {passed} passed, {len(failed)} failed")

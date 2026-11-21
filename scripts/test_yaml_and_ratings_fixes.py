@@ -3,6 +3,10 @@
 Test suite verifying:
 1. Concurrent thread safety of ProtonDB and Denuvo cache flushes in core.ratings
 2. Robustness of YAML boolean and SLS settings editing against CRLF, quotes, empty keys, and duplicate prevention
+3. Flow-style YAML sections and CRLF round-trips
+
+Hermetic: both cache paths are redirected to a temporary directory, so the
+suite never reads or overwrites the real user cache.
 """
 
 import os
@@ -14,6 +18,8 @@ from pathlib import Path
 # Add src to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import core.ratings as ratings
+
 from core.ratings import (
     PROTONDB_CACHE_PATH,
     DENUVO_CACHE_PATH,
@@ -21,6 +27,13 @@ from core.ratings import (
     flush_protondb_cache,
     _save_denuvo_cache_data,
 )
+from utils.yaml.apps import (
+    add_additional_app,
+    get_additional_apps,
+    remove_additional_app,
+)
+from utils.yaml.core import _get_section_bounds
+from utils.yaml.dlc import get_dlc_data
 from utils.yaml.yaml_values import update_yaml_boolean_value, get_yaml_boolean_value
 from utils.yaml.sls_settings import ADVANCED_SETTINGS, write_sls_setting, read_sls_settings
 from utils.yaml.validation import _validate_yaml_content
@@ -145,11 +158,64 @@ def test_sls_settings_edge_cases():
     print("✅ test_sls_settings_edge_cases passed")
 
 
+def test_flow_style_sections():
+    """Flow-style sections are expanded to block style, not duplicated."""
+    print("=== flow-style sections round-trip ===")
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "config.yaml"
+        p.write_text(
+            'AdditionalApps: [111, 222] # existing\n'
+            'Plugins: yes\n'
+            'DlcData: {620: {621: "Portal"}}\n',
+            encoding="utf-8",
+        )
+
+        assert add_additional_app(p, 333, "New App") is True, "add to a flow list failed"
+        text = p.read_text(encoding="utf-8")
+        assert text.count("AdditionalApps:") == 1, f"duplicate section header: {text!r}"
+        assert "# existing" in text, f"header comment lost: {text!r}"
+        assert _validate_yaml_content(text), f"result is not valid YAML: {text!r}"
+        assert {"111", "222", "333"} <= {str(a) for a in get_additional_apps(p)}
+
+        # A nested mapping that happens to be called AdditionalApps must not be
+        # mistaken for the top-level section.
+        nested = "Parent:\n  AdditionalApps:\n    - 1\n"
+        assert _get_section_bounds(nested, "AdditionalApps") is None
+
+        dlc = get_dlc_data(p, "620")
+        assert dlc.get("621") == "Portal", f"flow DlcData lost: {dlc!r}"
+
+        assert remove_additional_app(p, 111) is True, "remove from flow list failed"
+        remaining = {str(a) for a in get_additional_apps(p)}
+        assert "111" not in remaining and {"222", "333"} <= remaining
+
+    # Direct in-memory edits (used by the AT0-M writer) keep CRLF input intact.
+    from utils.yaml.core import _add_list_item_in_memory
+
+    out, changed = _add_list_item_in_memory(
+        "AdditionalApps:\r\n  - 111\r\n", "AdditionalApps", "222"
+    )
+    assert changed and "\n" not in out.replace("\r\n", ""), f"mixed line endings: {out!r}"
+    assert out.count("AdditionalApps:") == 1
+
+    print("✅ test_flow_style_sections passed")
+
+
 def main():
-    test_concurrent_protondb_flush()
-    test_concurrent_denuvo_flush()
-    test_yaml_boolean_edge_cases()
-    test_sls_settings_edge_cases()
+    global PROTONDB_CACHE_PATH, DENUVO_CACHE_PATH
+    with tempfile.TemporaryDirectory() as td:
+        PROTONDB_CACHE_PATH = Path(td) / "protondb_cache.json"
+        DENUVO_CACHE_PATH = Path(td) / "denuvo_cache.json"
+        ratings.PROTONDB_CACHE_PATH = PROTONDB_CACHE_PATH
+        ratings.DENUVO_CACHE_PATH = DENUVO_CACHE_PATH
+        ratings._invalidate_protondb_cache()
+        ratings._invalidate_denuvo_cache()
+
+        test_concurrent_protondb_flush()
+        test_concurrent_denuvo_flush()
+        test_yaml_boolean_edge_cases()
+        test_sls_settings_edge_cases()
+        test_flow_style_sections()
     print("\n🎉 ALL TESTS PASSED!")
 
 

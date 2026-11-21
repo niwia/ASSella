@@ -193,12 +193,17 @@ class DatabaseManager:
         # deep copy so mutating a returned dict can never corrupt the cache.
         self._app_info_cache: Dict[Tuple[str, bool], Tuple[int, Dict[str, Any]]] = {}
         self._depot_enrichments_cache: Dict[str, Dict[str, dict]] = {}
+        # Set once the table has been created/migrated. If startup migration
+        # fails below, the first enrichment read/write retries it instead of
+        # querying a table that may not exist.
+        self._depot_schema_ready = False
 
         if self.conn:
             try:
                 with self._conn_lock:
                     cur = self.conn.cursor()
                     self._ensure_depot_enrichments_schema(cur)
+                    self._depot_schema_ready = True
                     self._ensure_standalone_games_table(cur)
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_apps_depots_cached ON apps(appid) WHERE depots_json IS NOT NULL;")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_depot_enrichments_appid ON depot_enrichments(appid);")
@@ -208,6 +213,18 @@ class DatabaseManager:
 
         self.is_initialized = True
         logger.info(f"DatabaseManager initialized at: {self.db_path}")
+
+    def _ensure_depot_enrichments_ready(self, cur) -> None:
+        """Cheap no-op after a successful startup migration; retries otherwise.
+
+        ``_initialize`` swallows a migration failure so a broken legacy table
+        cannot stop the app from starting. Without this retry every later
+        enrichment query would hit a table that does not exist.
+        """
+        if getattr(self, "_depot_schema_ready", False):
+            return
+        self._ensure_depot_enrichments_schema(cur)
+        self._depot_schema_ready = True
 
     @staticmethod
     def _ensure_depot_enrichments_schema(cur) -> None:
@@ -639,6 +656,7 @@ class DatabaseManager:
             with self._conn_lock:
                 self._depot_enrichments_cache.pop(str(appid), None)
                 cur = self.conn.cursor()
+                self._ensure_depot_enrichments_ready(cur)
                 now = int(time.time())
                 for dep_id, info in enrichments.items():
                     cur.execute("""
@@ -688,6 +706,7 @@ class DatabaseManager:
             with self._conn_lock:
                 self._depot_enrichments_cache.pop(aid, None)
                 cur = self.conn.cursor()
+                self._ensure_depot_enrichments_ready(cur)
                 now = int(time.time())
                 for did, (state, src) in states.items():
                     did = str(did)
@@ -717,6 +736,7 @@ class DatabaseManager:
         try:
             with self._conn_lock:
                 cur = self.conn.cursor()
+                self._ensure_depot_enrichments_ready(cur)
                 cur.execute("""
                     SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, release_src
                     FROM depot_enrichments

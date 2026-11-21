@@ -372,12 +372,12 @@ def test_write_outcomes_distinguish_refusal_from_presence():
             add_additional_app_outcome(path, "") is WriteOutcome.REFUSED,
             "a refused write is not mistaken for 'already present'",
         )
-        check(add_additional_depot(path, "731") is True, "re-adding a mounted depot still reports success")
+        check(add_additional_depot(path, "731") is False, "re-adding a mounted depot reports no change")
         check(add_additional_depot(path, "620") is False, "a base AppID is still refused in AdditionalDepots")
 
         key = "b" * 64
         check(add_decryption_key(path, "732", key) is True, "a new key is written")
-        check(add_decryption_key(path, "732", key) is True, "the same key again reports success, not a failure")
+        check(add_decryption_key(path, "732", key) is False, "the same key again reports no change")
         check(remove_decryption_key(path, "732") is True, "the key is removed once")
         check(remove_decryption_key(path, "732") is False, "a second removal reports 'not present'")
         check(WriteOutcome.CHANGED.ok and WriteOutcome.ALREADY_PRESENT.ok, "both count as ok")

@@ -74,6 +74,7 @@ from utils.yaml.core import (  # noqa: F401
     _get_section_bounds,
     _get_section_end,
     _get_section_start,
+    _normalize_flow_sections,
     _read_config_content,
     _remove_entry_from_section,
     _remove_entry_in_memory,

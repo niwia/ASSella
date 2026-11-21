@@ -25,6 +25,22 @@ from utils.wrapper_metadata import load_selected_dlcs, persist_selected_dlcs
 logger = logging.getLogger(__name__)
 
 
+def _standalone_record_is_stale(install_path: str) -> bool:
+    """True when a saved standalone install is definitely gone.
+
+    A missing path with a missing parent means the drive or parent folder is not
+    mounted right now, so the record is kept: the game must reappear when the
+    drive comes back. A missing path whose parent still exists is a deleted
+    install; an existing path that is not a directory is stale too.
+    """
+    if not install_path:
+        return True
+    if not os.path.lexists(install_path):
+        parent = os.path.dirname(os.path.normpath(install_path))
+        return bool(parent) and os.path.isdir(parent)
+    return not os.path.isdir(install_path)
+
+
 class GameManagerScanningMixin:
     """Handles Steam library discovery, ACF metadata parsing, and async size calculation."""
 
@@ -149,11 +165,24 @@ class GameManagerScanningMixin:
                 if self._scan_cancelled or generation != getattr(self, "_scan_generation", generation):
                     break
                 inst_path = s_info.get("install_path", "")
-                if not inst_path or not os.path.isdir(inst_path):
+                if _standalone_record_is_stale(inst_path):
+                    # Do not keep resurrecting a row whose folder was deleted.
+                    # Try to remove the row so the library stops advertising a
+                    # game that cannot be launched; a DB error only logs.
+                    logger.info(
+                        f"[GameManager] Removing stale standalone record {appid} "
+                        f"(install path {inst_path!r} is gone)"
+                    )
+                    try:
+                        DatabaseManager().remove_standalone_game(str(appid))
+                    except Exception as e:
+                        logger.debug(
+                            f"[GameManager] Could not remove stale standalone record {appid}: {e}"
+                        )
                     continue
                 # Skip empty directory
                 try:
-                    if not any(os.scandir(inst_path)):
+                    if not os.listdir(inst_path):
                         continue
                 except Exception as e:
                     logger.debug(f"[GameManager] Could not scan directory {inst_path}: {e}")

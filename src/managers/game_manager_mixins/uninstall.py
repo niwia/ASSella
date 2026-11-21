@@ -23,6 +23,100 @@ from utils.yaml_config_manager import (
 logger = logging.getLogger(__name__)
 
 
+def _protected_removal_paths() -> set:
+    """Directories ASSella must never delete as a "standalone game folder"."""
+    home = Path.home()
+    return {
+        Path("/"),
+        Path("/home"),
+        Path("/root"),
+        Path("/usr"),
+        Path("/usr/local"),
+        Path("/var"),
+        Path("/etc"),
+        Path("/bin"),
+        Path("/sbin"),
+        Path("/lib"),
+        Path("/lib64"),
+        Path("/opt"),
+        Path("/boot"),
+        Path("/dev"),
+        Path("/proc"),
+        Path("/sys"),
+        Path("/run"),
+        Path("/tmp"),
+        Path("/snap"),
+        Path("/mnt"),
+        Path("/media"),
+        home,
+        home / "Desktop",
+        home / "Downloads",
+        home / "Documents",
+        home / "Pictures",
+        home / "Music",
+        home / "Videos",
+        home / ".config",
+        home / ".local",
+        home / ".steam",
+        home / ".var",
+    }
+
+
+def _is_safe_standalone_removal_target(install_path: str) -> bool:
+    """True when ``install_path`` is a real directory safe to delete recursively.
+
+    Deliberately does not follow a final symlink: resolving the path first would
+    delete the link's target, which need not be the game folder the user chose.
+    Ancestors of protected locations (``/home`` for ``/home/alice``) are refused
+    too, so a corrupted record cannot turn into "delete /home".
+    """
+    if not install_path:
+        return False
+    target = Path(install_path)
+    if target.is_symlink():
+        return False
+    try:
+        # Resolve the parent (so a symlinked parent still works) but keep the
+        # final component untouched.
+        resolved = target.parent.resolve() / target.name
+    except OSError:
+        return False
+    if len(resolved.parts) <= 2:
+        return False
+    for protected in _protected_removal_paths():
+        if resolved == protected or resolved in protected.parents:
+            return False
+    return resolved.is_dir()
+
+
+def _remove_standalone_tree(install_path: str) -> tuple[bool, str]:
+    """Remove a standalone install, keeping the library record on failure.
+
+    Returns ``(deleted, message)``. A symlink is unlinked, never followed; an
+    unsafe or undeletable path returns ``False`` so the caller does not drop the
+    game from the library while its files remain.
+    """
+    target = Path(install_path)
+    if target.is_symlink():
+        try:
+            target.unlink()
+        except OSError as e:
+            return False, f"Game folder: {install_path} (symlink could not be removed: {e})"
+        return True, f"Game folder: {install_path} (symlink removed; target preserved)"
+
+    if not _is_safe_standalone_removal_target(install_path):
+        logger.critical(
+            f"[Uninstall] Refusing to rmtree unsafe standalone install path: {install_path}"
+        )
+        return False, f"Game folder: {install_path} (skipped unsafe directory)"
+
+    try:
+        shutil.rmtree(target)
+    except OSError as e:
+        return False, f"Game folder: {install_path} (could not remove: {e})"
+    return True, f"Game folder: {install_path}"
+
+
 class GameManagerUninstallMixin:
     """Handles game uninstall confirmation messages, file removal, and platform cleanup."""
 
@@ -377,50 +471,43 @@ class GameManagerUninstallMixin:
             )
 
             if is_standalone:
+                from managers.db_manager import DatabaseManager
+
                 removed_items = []
-                if remove_game_files and install_path and os.path.exists(install_path):
-                    resolved = Path(install_path).resolve()
-                    home = Path.home()
-                    protected = {
-                        Path("/"),
-                        Path("/home"),
-                        Path("/root"),
-                        Path("/usr"),
-                        Path("/var"),
-                        Path("/etc"),
-                        Path("/bin"),
-                        Path("/sbin"),
-                        Path("/lib"),
-                        Path("/opt"),
-                        Path("/tmp"),
-                        home,
-                        home / "Desktop",
-                        home / "Downloads",
-                        home / "Documents",
-                        home / ".config",
-                        home / ".local",
-                    }
-                    is_safe = resolved not in protected and resolved.is_dir() and len(resolved.parts) > 2
-                    if is_safe:
-                        shutil.rmtree(resolved, ignore_errors=True)
-                        if os.path.exists(resolved) and os.listdir(resolved):
-                            removed_items.append(f"Game folder: {resolved} (some files remaining)")
-                        else:
-                            removed_items.append(f"Game folder: {resolved}")
-                    else:
-                        logger.critical(
-                            f"[Uninstall] Refusing to rmtree unsafe standalone install path: {install_path} "
-                            f"(resolved: {resolved})"
-                        )
-                        removed_items.append(f"Game folder: {install_path} (skipped unsafe directory)")
-                elif not remove_game_files and install_path:
-                    removed_items.append(f"Game folder: {install_path} (preserved on disk)")
+                # Drop the library record only when this uninstall actually
+                # detached (or intentionally removed) the install. A refused
+                # unsafe path must keep the record, otherwise the game vanishes
+                # from the library while its files are still on disk.
+                remove_record = False
+                if not remove_game_files:
+                    if install_path:
+                        removed_items.append(f"Game folder: {install_path} (preserved on disk)")
+                    remove_record = True
+                elif not install_path or not os.path.lexists(install_path):
+                    remove_record = True
+                else:
+                    deleted, message = _remove_standalone_tree(install_path)
+                    removed_items.append(message)
+                    remove_record = deleted
+
+                if not remove_record:
+                    logger.error(
+                        f"[Uninstall] Kept standalone game '{game_name}' ({appid}) registered: "
+                        f"the install path {install_path!r} could not be removed safely"
+                    )
+                    self.last_uninstall_summary = "\n".join(
+                        [f"Could not uninstall standalone game '{game_name}'.", "", "[Not removed]"]
+                        + [f"• {item}" for item in removed_items]
+                    )
+                    return False, (
+                        f"Refusing to delete unsafe standalone install path: {install_path}. "
+                        "The game was left registered."
+                    )
 
                 if platform.system() == "Linux" and remove_shortcuts and appid:
                     self._remove_linux_shortcuts_and_icons(appid)
                     removed_items.append("Desktop application shortcuts & icons")
 
-                from managers.db_manager import DatabaseManager
                 DatabaseManager().remove_standalone_game(str(appid))
 
                 try:

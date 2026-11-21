@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils.settings import get_settings
-from utils.yaml_config_manager import _atomic_write, _get_section_bounds
+from utils.yaml_config_manager import _atomic_write, _get_section_bounds, _normalize_flow_sections
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,9 @@ def get_manifest_ids_with_comments(config_path: Path) -> Dict[str, Tuple[str, st
         return {}
 
     try:
-        content = config_path.read_text(encoding="utf-8", errors="ignore")
+        content = _normalize_flow_sections(
+            config_path.read_text(encoding="utf-8", errors="ignore")
+        )
     except OSError as e:
         logger.error(f"[ManifestPinning] Failed to read {config_path}: {e}")
         return {}
@@ -85,7 +87,9 @@ def set_manifest_ids(
             config_path.parent.mkdir(parents=True, exist_ok=True)
             content = "Plugins: yes\nManifestIds:\n"
         else:
-            content = config_path.read_text(encoding="utf-8", errors="ignore")
+            content = _normalize_flow_sections(
+                config_path.read_text(encoding="utf-8", errors="ignore")
+            )
 
         # Read existing ManifestIds with comments
         current_map = get_manifest_ids_with_comments(config_path)
@@ -130,7 +134,9 @@ def remove_manifest_ids(config_path: Path, depot_ids: List[str]) -> bool:
         config_path = Path(config_path)
         if not config_path.exists():
             return True
-        content = config_path.read_text(encoding="utf-8", errors="ignore")
+        content = _normalize_flow_sections(
+            config_path.read_text(encoding="utf-8", errors="ignore")
+        )
         bounds = _get_section_bounds(content, "ManifestIds")
         if not bounds:
             return True

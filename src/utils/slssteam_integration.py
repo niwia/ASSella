@@ -592,11 +592,20 @@ def _get_sls_log_size() -> int:
 
 
 def _write_appid_to_config(appid: str, game_name: str = "") -> bool:
-    """Write appid into SLSsteam config.yaml AdditionalApps in-place."""
-    from utils.yaml_config_manager import get_user_config_path, add_additional_app
+    """Write appid into SLSsteam config.yaml AdditionalApps in-place.
+
+    Returns True only when the entry was newly written. An already-present
+    AppID is not a fresh write: callers use this to decide whether waiting for
+    the SLSsteam license log is worthwhile.
+    """
+    from utils.yaml_config_manager import (
+        WriteOutcome,
+        add_additional_app_outcome,
+        get_user_config_path,
+    )
     config_path = get_user_config_path()
     comment = game_name if game_name else ""
-    return add_additional_app(config_path, str(appid), comment)
+    return add_additional_app_outcome(config_path, str(appid), comment) is WriteOutcome.CHANGED
 
 
 def _remove_appid_from_config(appid: str) -> bool:

@@ -1342,7 +1342,7 @@ def sync_dlc_only_sls_config(
       - If the game has 64 or more DLCs, adds them under DlcData to bypass Steam's 64 DLC limit.
     """
     from utils.yaml_config_manager import (
-        add_additional_app,
+        WriteOutcome,
         add_additional_app_outcome,
         remove_additional_app,
         add_dlc_data_batch,
@@ -1360,8 +1360,12 @@ def sync_dlc_only_sls_config(
         )
         return bool(res.get("dlcs_added") or res.get("base_app_removed"))
     else:
-        # Regular game mode - ensure base game in AdditionalApps
-        added = add_additional_app(config_path, appid_str, game_name)
+        # Regular game mode - ensure base game in AdditionalApps. "Already
+        # present" is success here: the config already holds what we need.
+        added = add_additional_app_outcome(config_path, appid_str, game_name) in (
+            WriteOutcome.CHANGED,
+            WriteOutcome.ALREADY_PRESENT,
+        )
 
         # Sync DLC entitlements based on user selection or discovered DLCs
         selected_depots_raw = (

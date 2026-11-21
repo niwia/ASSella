@@ -80,11 +80,11 @@ def add_additional_apps_batch(
         return True
     ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
-        any_added = False
+        any_changed = False
         for app_id, comment in apps:
-            if editor.add_app(app_id, comment).ok:
-                any_added = True
-    return any_added and editor.committed_successfully
+            if editor.add_app(app_id, comment) is WriteOutcome.CHANGED:
+                any_changed = True
+    return any_changed and editor.committed_successfully
 
 def add_additional_depots_batch(
     config_path: Path, depots: List[Tuple[Union[str, int], str]]
@@ -94,11 +94,11 @@ def add_additional_depots_batch(
         return True
     ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
-        any_added = False
+        any_changed = False
         for depot_id, comment in depots:
-            if editor.add_depot(depot_id, comment).ok:
-                any_added = True
-    return any_added and editor.committed_successfully
+            if editor.add_depot(depot_id, comment) is WriteOutcome.CHANGED:
+                any_changed = True
+    return any_changed and editor.committed_successfully
 
 def add_additional_app(config_path: Path, app_id: Union[str, int], comment: str = "") -> bool:
     """Add an AppID to the AdditionalApps list in SLSsteam config.yaml."""
@@ -110,7 +110,7 @@ def add_additional_app(config_path: Path, app_id: Union[str, int], comment: str 
         return _init_config_with_app(config_path, app_id_clean, _sanitize_comment(comment))
     with batch_config_edit(config_path) as editor:
         res = editor.add_app(app_id, comment)
-    return res.ok and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully
 
 def add_additional_app_outcome(
     config_path: Path, app_id: Union[str, int], comment: str = ""
@@ -372,7 +372,7 @@ def add_additional_depot(
     ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
         res = editor.add_depot(depot_id, comment, app_id=app_id)
-    return res.ok and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully
 
 def remove_additional_depot(
     config_path: Path,
