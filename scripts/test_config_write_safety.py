@@ -64,6 +64,8 @@ def test_boolean_comment_separator():
         ("Plugins:\t# enable plugins\n", True),
         ('"Plugins":  # note\n', True),
         ("Plugins: yes\t# tab before comment\n", False),
+        ("Plugins: yes \t# space then tab before comment\n", False),
+        ("Plugins: yes # note\twith tab inside comment\n", False),
         ("Plugins: # note\n", True),
     ]
     for content, value in cases:

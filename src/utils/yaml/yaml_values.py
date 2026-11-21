@@ -212,11 +212,8 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
         # Rewriting the boolean prefix would change the scalar without setting
         # the flag, so leave an unrecognised value to a human.
         line_start, line_end = match.span()
-        after_value = content[line_start + match.end("val"): line_end]
-        # `match.span()` is the (zero-width) lookahead, so the rest of the line
-        # comes from the content, not from `line_end`.
-        after_value += re.split(r"\r?\n", content[match.end():], maxsplit=1)[0]
-        if not re.fullmatch(r"[ \t]*#[^\t\r\n]*|", after_value):
+        after_value = re.split(r"\r?\n", content[match.end():], maxsplit=1)[0]
+        if not re.fullmatch(r"[ \t]*#[^\r\n]*|[ \t]*", after_value):
             logger.warning(
                 f"Leaving '{key}' alone in {config_path}: its value is a single scalar "
                 f"that cannot be rewritten in place safely"
@@ -227,15 +224,18 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
         # is left untouched because the pattern stops before it. The span is
         # re-expressed as `key:` + separator + value, so both the key's quoting
         # and the whitespace before the comment survive.
-        line_start, line_end = match.span()
         matched = content[line_start:line_end]
         prefix = matched[: len(matched) - len(match.group("val"))]
         # The span ends at a zero-width lookahead; the rest of the line (the
-        # comment) is left as it is, except that a tab before it must become a
-        # space or the whole file stops being valid YAML.
+        # comment) is left as it is, except that any tab before '#' must become
+        # a space or PyYAML refuses to parse the file.
         rest = content[line_end:]
-        if rest.startswith("\t"):
-            rest = " " + rest[1:]
+        m_comment = re.match(r"^([ \t]*)(#[^\r\n]*)?(\r?\n.*)?$", rest, re.DOTALL)
+        if m_comment:
+            sep = (m_comment.group(1) or "").replace("\t", " ")
+            comment = m_comment.group(2) or ""
+            remainder = m_comment.group(3) or ""
+            rest = sep + comment + remainder
         new_content = content[:line_start] + prefix + new_value + rest
 
         if not _atomic_write(config_path, new_content):
