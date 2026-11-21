@@ -16,7 +16,17 @@ import re
 from pathlib import Path
 from typing import Dict, Tuple
 
-from utils.yaml.core import _CONFIG_DISABLED, _atomic_write, _get_config_content_if_enabled, _get_section_bounds, _read_config_content, _remove_entry_from_section
+from utils.yaml.core import (
+    _CONFIG_DISABLED,
+    _atomic_write,
+    _add_map_item_in_memory,
+    _config_management_enabled,
+    _get_config_content_if_enabled,
+    _get_section_bounds,
+    _read_config_content,
+    _remove_entry_from_section,
+    batch_config_edit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,90 +61,74 @@ def _fix_app_tokens_indentation(content: str) -> Tuple[str, bool]:
 def add_app_token(config_path: Path, app_id: str, token: str) -> bool:
     """Add or update an AppToken in the AppTokens section in SLSsteam config.yaml."""
     try:
-        content = _get_config_content_if_enabled(config_path)
-        if content is _CONFIG_DISABLED or content is None:
+        if not config_path.exists():
             return False
-
-        fixed_content, _ = _fix_app_tokens_indentation(content)
-        content = fixed_content
+        if not _config_management_enabled():
+            return False
 
         app_id_str = str(app_id).strip()
         token_str = str(token).strip()
-
-        bounds = _get_section_bounds(content, "AppTokens")
-        new_token_line = f"  {app_id_str}: {token_str}\n"
-
-        if not bounds:
-            new_content = content.rstrip() + f"\n\nAppTokens:\n{new_token_line}"
-            if _atomic_write(config_path, new_content):
-                logger.info(f"Added AppToken for '{app_id_str}' in new AppTokens section")
-                return True
+        if not app_id_str or not token_str:
             return False
 
-        _, content_start, section_end = bounds
-        sec_content = content[content_start:section_end]
+        with batch_config_edit(config_path) as editor:
+            content, fixed_indent = _fix_app_tokens_indentation(editor.content)
+            bounds = _get_section_bounds(content, "AppTokens")
+            modified = bool(fixed_indent)
+            changed = False
 
-        dup_pattern = re.compile(
-            rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:#[^\r\n]*)?$",
-            re.MULTILINE,
-        )
-        matches = list(dup_pattern.finditer(sec_content))
+            if bounds:
+                _, content_start, section_end = bounds
+                sec_content = content[content_start:section_end]
 
-        if len(matches) == 1:
-            existing_val = matches[0].group(1).strip().strip('"').strip("'")
-            if existing_val == token_str:
-                return False
+                dup_pattern = re.compile(
+                    rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:#[^\r\n]*)?$",
+                    re.MULTILINE,
+                )
+                matches = list(dup_pattern.finditer(sec_content))
 
-        if matches:
-            while True:
-                b = _get_section_bounds(content, "AppTokens")
-                if not b:
-                    break
-                _, cs, se = b
-                sc = content[cs:se]
-                m = dup_pattern.search(sc)
-                if not m:
-                    break
-                abs_m_start = cs + m.start()
-                l_start = content.rfind("\n", 0, abs_m_start)
-                l_start = 0 if l_start == -1 else l_start + 1
-                l_end = content.find("\n", abs_m_start)
-                l_end = len(content) if l_end == -1 else l_end + 1
-                content = content[:l_start] + content[l_end:]
+                if len(matches) == 1:
+                    existing_val = matches[0].group(1).strip().strip('"').strip("'")
+                    if existing_val == token_str and not fixed_indent:
+                        return False
 
-        bounds = _get_section_bounds(content, "AppTokens")
-        if not bounds:
+                if matches:
+                    # Keep the section single-valued: write the requested token
+                    # and drop any duplicates rather than producing a duplicate key.
+                    while True:
+                        b = _get_section_bounds(content, "AppTokens")
+                        if not b:
+                            break
+                        _, cs, se = b
+                        sc = content[cs:se]
+                        m = dup_pattern.search(sc)
+                        if not m:
+                            break
+                        abs_m_start = cs + m.start()
+                        l_start = content.rfind("\n", 0, abs_m_start)
+                        l_start = 0 if l_start == -1 else l_start + 1
+                        l_end = content.find("\n", abs_m_start)
+                        l_end = len(content) if l_end == -1 else l_end + 1
+                        content = content[:l_start] + content[l_end:]
+                        modified = True
+
+            new_content, changed = _add_map_item_in_memory(
+                content, "AppTokens", app_id_str, token_str
+            )
+            if changed:
+                content = new_content
+                modified = True
+            if modified:
+                editor.content = content
+                editor.has_changes = True
+
+        if not editor.committed_successfully:
             return False
-        _, content_start, section_end = bounds
-        sec_content = content[content_start:section_end]
-
-        lines = sec_content.splitlines(keepends=True)
-        last_item_end_offset = 0
-        curr_offset = 0
-        token_entry_pat = re.compile(r"^[ \t]*\d+[ \t]*:")
-        for line in lines:
-            if token_entry_pat.match(line):
-                last_item_end_offset = curr_offset + len(line)
-            elif line.strip() and not line.strip().startswith("#") and not line.startswith(" ") and not line.startswith("\t"):
-                break
-            curr_offset += len(line)
-
-        if last_item_end_offset > 0:
-            insert_pos = content_start + last_item_end_offset
-        else:
-            insert_pos = content_start
-
-        new_content = content[:insert_pos] + new_token_line + content[insert_pos:]
-
-        if _atomic_write(config_path, new_content):
-            if len(matches) > 1:
-                logger.info(f"Updated AppToken for '{app_id_str}' and removed duplicates")
-            elif len(matches) == 1:
-                logger.info(f"Updated AppToken for '{app_id_str}'")
-            else:
-                logger.info(f"Added AppToken for '{app_id_str}'")
-            return True
-        return False
+        if changed:
+            logger.info(f"Updated AppToken for '{app_id_str}'")
+        elif modified:
+            logger.info(f"Cleaned up AppTokens for '{app_id_str}'")
+        return modified
 
     except OSError as e:
         logger.error(f"Failed to add AppToken '{app_id}': {e}", exc_info=True)

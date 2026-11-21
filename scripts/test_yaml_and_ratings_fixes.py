@@ -201,6 +201,108 @@ def test_flow_style_sections():
     print("✅ test_flow_style_sections passed")
 
 
+def test_yaml_manager_regressions():
+    """Empty flow sections, quoted IDs, unquoted DlcData, IdleStatus and one-write adds."""
+    print("=== yaml manager regressions ===")
+    from utils.yaml.apps import (
+        add_additional_app,
+        get_additional_apps,
+        remove_additional_app,
+    )
+    from utils.yaml.core import _normalize_flow_sections
+    from utils.yaml.dlc import add_dlc_data_batch, get_dlc_data
+    from utils.yaml.fakeappid import add_fake_app_id
+    from utils.yaml.maintenance import add_launch_option, get_launch_option
+    from utils.yaml.sls_settings import ADVANCED_SETTINGS, read_sls_settings, write_sls_setting
+    from utils.yaml.tokens import add_app_token
+
+    base = "Plugins: yes\nFakeAppIds: {}\nLaunchOptions: {}\nAppTokens: {}\nDlcData: {}\n"
+    for fn, args, label in (
+        (add_fake_app_id, ("2689120", "Gladio Mori", "480"), "FakeAppIds"),
+        (add_launch_option, ("2689120", "env LD_AUDIT=/tmp/x.so %command%"), "LaunchOptions"),
+        (add_app_token, ("2689120", "abc123"), "AppTokens"),
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "config.yaml"
+            p.write_text(base, encoding="utf-8")
+            assert fn(p, *args) is True, f"{label} write with an empty flow section failed"
+            text = p.read_text(encoding="utf-8")
+            assert _validate_yaml_content(text), f"{label} produced invalid YAML: {text!r}"
+            assert text.count(f"{label}:") == 1, f"{label} duplicated: {text!r}"
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "config.yaml"
+        p.write_text(base, encoding="utf-8")
+        assert add_dlc_data_batch(p, "620", {"621": "Portal"}) is True
+        assert get_dlc_data(p, "620") == {"621": "Portal"}
+        assert _validate_yaml_content(p.read_text(encoding="utf-8"))
+
+    # Quoted list IDs are recognised instead of being appended/ignored.
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "config.yaml"
+        p.write_text('Plugins: yes\nAdditionalApps:\n  - "123" # quoted\n', encoding="utf-8")
+        assert add_additional_app(p, 123) is False
+        assert get_additional_apps(p) == ["123"]
+        assert remove_additional_app(p, 123) is True
+        assert get_additional_apps(p) == []
+
+    # Unquoted DlcData values are readable and not re-added as duplicates.
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "config.yaml"
+        p.write_text("Plugins: yes\nDlcData:\n  620:\n    621: Portal\n", encoding="utf-8")
+        assert get_dlc_data(p, "620") == {"621": "Portal"}
+        assert add_dlc_data_batch(p, "620", {"621": "Portal", "622": "Other"}) is True
+        assert get_dlc_data(p, "620") == {"621": "Portal", "622": "Other"}
+
+    # A flow-style IdleStatus must keep its sibling Title.
+    idle = next(s for s in ADVANCED_SETTINGS if s.key == "IdleStatus.AppId")
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "config.yaml"
+        p.write_text('IdleStatus: {AppId: 0, Title: "Playing"}\n', encoding="utf-8")
+        ok, msg = write_sls_setting(p, idle, 480)
+        assert ok, msg
+        vals = read_sls_settings(p, ["IdleStatus.AppId", "IdleStatus.Title"])
+        assert vals["IdleStatus.AppId"] == 480
+        assert vals["IdleStatus.Title"] == "Playing"
+
+    # Long flow-style DLC names are not folded into an unreadable continuation.
+    long_name = "A very long DLC name that goes on and on and on and should not be folded across lines by the YAML dumper"
+    normalized = _normalize_flow_sections(f'DlcData: {{620: {{621: "{long_name}"}}}}\n')
+    assert long_name in normalized, f"long DLC name was folded: {normalized!r}"
+    assert "\\\n" not in normalized
+
+    # Launch option reads the command, not its YAML quoting/comment.
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "config.yaml"
+        p.write_text('LaunchOptions:\n  1: "env X=1 %command%" # note\n', encoding="utf-8")
+        assert get_launch_option(p, "1") == "env X=1 %command%"
+
+    # Plugins: yes is folded into the same write as the app.
+    import utils.yaml.core as yaml_core
+    import utils.yaml.yaml_values as yaml_values
+
+    writes = []
+    real_write = yaml_core._atomic_write
+
+    def counting_write(path, content):
+        writes.append(path)
+        return real_write(path, content)
+
+    yaml_core._atomic_write = counting_write
+    yaml_values._atomic_write = counting_write
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "config.yaml"
+            p.write_text("Plugins: no\n", encoding="utf-8")
+            assert add_additional_app(p, 123) is True
+            assert len(writes) == 1, f"add caused {len(writes)} writes, expected 1"
+    finally:
+        yaml_core._atomic_write = real_write
+        yaml_values._atomic_write = real_write
+
+    print("✅ test_yaml_manager_regressions passed")
+
+
 def main():
     global PROTONDB_CACHE_PATH, DENUVO_CACHE_PATH
     with tempfile.TemporaryDirectory() as td:
@@ -216,6 +318,7 @@ def main():
         test_yaml_boolean_edge_cases()
         test_sls_settings_edge_cases()
         test_flow_style_sections()
+        test_yaml_manager_regressions()
     print("\n🎉 ALL TESTS PASSED!")
 
 

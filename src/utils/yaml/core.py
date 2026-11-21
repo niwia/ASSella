@@ -132,11 +132,16 @@ _EDITABLE_SECTION_NAMES = frozenset(
         "AdditionalDepots",
         "AppIds",
         "AppTokens",
+        "CDKeys",
         "DecryptionKeys",
         "DenuvoGames",
         "DlcData",
         "FakeAppIds",
+        "GameTitles",
+        "IdleStatus",
+        "LaunchOptions",
         "ManifestIds",
+        "SubscriptionTimestamps",
     }
 )
 
@@ -155,10 +160,11 @@ def _normalize_flow_sections(content: str) -> str:
     the duplicate-key write gate then refused the edit. Re-writing the value as
     its block equivalent keeps the data and lets every editor see it.
 
-    Only single-line, non-empty flow collections are converted. Multi-line
-    flow values are left untouched (and therefore still refused instead of
-    being silently rewritten); the file is never written here, so a read-only
-    caller only pays for parsing a section it was already reading.
+    Only single-line flow collections are converted. A non-empty value is
+    parsed and re-emitted as a block; an empty `[]`/`{}` becomes a bare
+    `Section:` header, which is what every line-based editor expects. The file
+    is never written here, so a read-only caller only pays for parsing a
+    section it was already reading.
     """
     if not content or "[" not in content and "{" not in content:
         return content
@@ -174,33 +180,24 @@ def _normalize_flow_sections(content: str) -> str:
     except Exception:  # pragma: no cover - pyyaml is a hard dependency
         return content
 
-    class _QuotedStringDumper(yaml.SafeDumper):
-        """Keep string scalars double-quoted, like the block writers do.
-
-        Several section readers (e.g. ``get_dlc_data``) expect the quoted form
-        that `add_dlc_data_batch` writes. An unquoted string would parse as the
-        same YAML value but look absent to those readers.
-        """
-
-    def _represent_str(dumper, data):
-        # Numeric strings are IDs in these sections; the block readers match
-        # them unquoted. Other strings keep double quotes (DLC names) so
-        # `get_dlc_data`'s quoted-value parser still sees them.
-        style = None if data.isdigit() else '"'
-        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
-
-    _QuotedStringDumper.add_representer(str, _represent_str)
-
     newline = _newline_style(content)
     changed = False
 
     def _replace(match: re.Match) -> str:
         nonlocal changed
+        key = match.group("key")
         value = match.group("value")
+        comment = (match.group("comment") or "").strip()
+        header = f"{key}:" + (f" {comment}" if comment else "")
+
         if value in ("[]", "{}"):
-            # `_expand_flow_section_if_needed` handles the empty shapes when
-            # that section is the edit target; leave them for it.
-            return match.group(0)
+            # Empty collection -> bare header. The batch helpers used to do
+            # this only when that section was the edit target, so standalone
+            # writers (FakeAppIds, LaunchOptions, AppTokens, DlcData, ...)
+            # inserted a block under `{}` and the write was refused.
+            changed = True
+            return header
+
         try:
             data = yaml.safe_load(value)
         except Exception:
@@ -209,19 +206,19 @@ def _normalize_flow_sections(content: str) -> str:
             return match.group(0)
 
         try:
-            dumped = yaml.dump(
+            dumped = yaml.safe_dump(
                 data,
-                Dumper=_QuotedStringDumper,
                 default_flow_style=False,
                 sort_keys=False,
                 allow_unicode=True,
+                # No line folding: wrapping a long DLC name inserts a `\`
+                # continuation, which the line-based readers cannot parse.
+                width=10**9,
             ).rstrip("\n")
         except Exception:
             return match.group(0)
 
         body = "".join(f"  {line}{newline}" for line in dumped.splitlines())
-        comment = (match.group("comment") or "").strip()
-        header = f"{match.group('key')}:" + (f" {comment}" if comment else "")
         changed = True
         # The original line ending is not part of the match and stays in place.
         return header + newline + body.rstrip("\r\n")
@@ -556,7 +553,7 @@ def _add_list_item_in_memory(
         _, content_start, section_end = bounds
         sec_content = content[content_start:section_end]
         item_pattern = re.compile(
-            rf"^[ \t]*-[ \t]*{re.escape(item_id)}[ \t]*(?:#[^\r\n]*)?\r?$",
+            rf"^[ \t]*-[ \t]*['\"]?{re.escape(item_id)}['\"]?[ \t]*(?:#[^\r\n]*)?\r?$",
             re.MULTILINE,
         )
         m = item_pattern.search(sec_content)
@@ -648,7 +645,10 @@ def _add_dlc_batch_in_memory(
     _, dlc_start, dlc_end = bounds
     dlc_section = content[dlc_start:dlc_end]
 
-    parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_app_id)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
+    parent_pattern = re.compile(
+        rf"^[ \t]+['\"]?{re.escape(parent_app_id)}['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+        re.MULTILINE,
+    )
     parent_match = parent_pattern.search(dlc_section)
 
     if not parent_match:
@@ -669,14 +669,18 @@ def _add_dlc_batch_in_memory(
         p_start += 1
 
     p_after = content[p_start:dlc_end]
-    next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+    next_parent = re.search(
+        r"^[ \t]+['\"]?[0-9A-Za-z_]+['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+        p_after,
+        re.MULTILINE,
+    )
     parent_end = (p_start + next_parent.start()) if next_parent else dlc_end
 
     parent_block = content[p_start:parent_end]
     new_dlc_lines = []
     for did, dname in dlc_dict.items():
         did_str = _sanitize_id(did) or str(did).strip()
-        check_pat = re.compile(rf'^[ \t]*{re.escape(did_str)}[ \t]*:[ \t]*"', re.MULTILINE)
+        check_pat = re.compile(rf'^[ \t]*[\"\']?{re.escape(did_str)}[\"\']?[ \t]*:[ \t]*[\"\']?', re.MULTILINE)
         if not check_pat.search(parent_block):
             cname = _sanitize_comment(dname or f"DLC {did_str}").replace('"', '\\"')
             new_dlc_lines.append(f'    {did_str}: "{cname}"')
@@ -857,6 +861,12 @@ class BatchConfigEditor:
                 return False
 
             if self.has_changes and self.content is not None:
+                try:
+                    self.config_path.parent.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    logger.error(f"Could not create config directory for {self.config_path}: {e}")
+                    self.committed_successfully = False
+                    return False
                 if not _atomic_write(self.config_path, self.content):
                     logger.error(f"Failed to commit batch config changes to {self.config_path}")
                     self.committed_successfully = False
@@ -866,6 +876,24 @@ class BatchConfigEditor:
             return True
         finally:
             self._lock_cm.__exit__(exc_type, exc_val, exc_tb)
+
+    def ensure_plugins(self) -> bool:
+        """Apply `Plugins: yes` to this edit instead of a separate write.
+
+        The old helper wrote the boolean first and the real edit second, so one
+        add cost two config writes and two SLSsteam watcher reloads. Returns
+        True when the in-memory content changed.
+        """
+        if self.content is None:
+            return False
+        from utils.yaml.yaml_values import set_yaml_boolean_content
+
+        new_content = set_yaml_boolean_content(self.content, "Plugins", True)
+        if new_content is None:
+            return False
+        self.content = new_content
+        self.has_changes = True
+        return True
 
     def add_app(self, app_id: Union[str, int], comment: str = "") -> WriteOutcome:
         app_id_str = _sanitize_id(app_id)
@@ -890,7 +918,7 @@ class BatchConfigEditor:
         if not app_id_str:
             return WriteOutcome.REFUSED
         pattern = re.compile(
-            rf"^[ \t]*-[ \t]*{re.escape(app_id_str)}[ \t]*(?:#[^\r\n]*)?$",
+            rf"^[ \t]*-[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*(?:#[^\r\n]*)?$",
             re.MULTILINE,
         )
         new_content, removed = _remove_entry_in_memory(
@@ -1016,7 +1044,7 @@ class BatchConfigEditor:
             )
             return WriteOutcome.REFUSED
         pattern = re.compile(
-            rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}[ \t]*(?:#[^\r\n]*)?$",
+            rf"^[ \t]*-[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*(?:#[^\r\n]*)?$",
             re.MULTILINE,
         )
         new_content, removed = _remove_entry_in_memory(
@@ -1220,7 +1248,10 @@ class BatchConfigEditor:
             return False
         _, dlc_start, dlc_end = bounds
         dlc_section = self.content[dlc_start:dlc_end]
-        parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_str)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
+        parent_pattern = re.compile(
+            rf"^[ \t]+['\"]?{re.escape(parent_str)}['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
         parent_match = parent_pattern.search(dlc_section)
         if not parent_match:
             return False
@@ -1233,7 +1264,11 @@ class BatchConfigEditor:
             p_start += 1
 
         p_after = self.content[p_start:dlc_end]
-        next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+        next_parent = re.search(
+            r"^[ \t]+['\"]?[0-9A-Za-z_]+['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+            p_after,
+            re.MULTILINE,
+        )
         p_block_end = (p_start + next_parent.start()) if next_parent else dlc_end
 
         if dlc_id is None:

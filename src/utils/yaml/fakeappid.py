@@ -16,7 +16,17 @@ import re
 from pathlib import Path
 from typing import Optional, Set
 
-from utils.yaml.core import _CONFIG_DISABLED, _atomic_write, _create_backup, _get_config_content_if_enabled, _get_section_bounds, _read_config_content, _remove_entry_from_section
+from utils.yaml.core import (
+    _CONFIG_DISABLED,
+    _config_management_enabled,
+    _atomic_write,
+    _create_backup,
+    _get_config_content_if_enabled,
+    _get_section_bounds,
+    _read_config_content,
+    _remove_entry_from_section,
+    batch_config_edit,
+)
 from utils.yaml.modes import get_fake_appid_for_online, is_slssteam_config_management_enabled, is_slssteam_mode_enabled
 
 from utils.settings import get_settings
@@ -108,89 +118,21 @@ def add_fake_app_id(
         logger.error(f"Refusing to write invalid FakeAppIds entry: {app_id!r} -> {fake_appid!r}")
         return False
 
+    if not _config_management_enabled():
+        return False
+
     suffix = "Spacewar" if fake_appid == "480" else "SLSonline"
+    comment = f"{game_name} -> {suffix}" if game_name else ""
 
     try:
-        content = _get_config_content_if_enabled(config_path)
-        if content is _CONFIG_DISABLED:
+        with batch_config_edit(config_path) as editor:
+            editor.ensure_plugins()
+            changed = editor.add_fake_app_id(app_id, fake_appid, comment)
+        if not editor.committed_successfully:
             return False
-        if content is None:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            entry = f"FakeAppIds:\n  {app_id}: {fake_appid}"
-            if game_name:
-                entry += f"  # {game_name} -> {suffix}\n"
-            else:
-                entry += "\n"
-            return _atomic_write(config_path, entry)
-
-        bounds = _get_section_bounds(content, "FakeAppIds")
-
-        entry_line = f"  {app_id}: {fake_appid}"
-        if game_name:
-            entry_line += f"  # {game_name} -> {suffix}\n"
-        else:
-            entry_line += "\n"
-
-        if bounds:
-            _, content_start, section_end = bounds
-            section_content = content[content_start:section_end]
-            # Match on the AppID alone. Including the target value let a
-            # re-mapped app append a duplicate key, and the read paths then
-            # disagreed about which target applies.
-            existing_pattern = re.compile(
-                rf"^[ \t]*['\"]?{re.escape(app_id)}['\"]?[ \t]*:[^\r\n]*\r?$",
-                re.MULTILINE,
-            )
-            existing_match = existing_pattern.search(section_content)
-            if existing_match:
-                current_value = re.match(
-                    rf"^[ \t]*['\"]?{re.escape(app_id)}['\"]?[ \t]*:[ \t]*(\S+)",
-                    existing_match.group(0),
-                )
-                if (
-                    current_value
-                    and current_value.group(1).strip().strip('"').strip("'") == fake_appid
-                ):
-                    return False
-                new_section = (
-                    section_content[: existing_match.start()]
-                    + entry_line.rstrip("\r\n")
-                    + section_content[existing_match.end():]
-                )
-                new_content = content[:content_start] + new_section + content[section_end:]
-                if not _atomic_write(config_path, new_content):
-                    return False
-                logger.info(f"Updated AppID '{app_id}' in FakeAppIds in {config_path}")
-                return True
-
-            lines = section_content.splitlines(keepends=True)
-            last_entry_end_offset = 0
-            curr_offset = 0
-            for line in lines:
-                s = line.strip()
-                if s and (s[0].isdigit() or s[0] in ('"', "'")):
-                    last_entry_end_offset = curr_offset + len(line)
-                elif not s or s.startswith("#"):
-                    pass
-                else:
-                    break
-                curr_offset += len(line)
-
-            if last_entry_end_offset > 0:
-                insert_pos = content_start + last_entry_end_offset
-            else:
-                insert_pos = content_start
-
-            new_content = content[:insert_pos] + entry_line + content[insert_pos:]
-        else:
-            new_content = content.rstrip() + f"\n\nFakeAppIds:\n{entry_line}"
-
-        if not _atomic_write(config_path, new_content):
-            return False
-
-        logger.info(f"Added AppID '{app_id}' to FakeAppIds in {config_path}")
-        return True
-
+        if changed:
+            logger.info(f"Added AppID '{app_id}' to FakeAppIds in {config_path}")
+        return changed
     except OSError as e:
         logger.error(f"Failed to add FakeAppId '{app_id}': {e}", exc_info=True)
         return False

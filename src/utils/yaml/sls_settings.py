@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path  # noqa: TC003 - needed at runtime to resolve annotations (527bd57)
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.yaml.core import _atomic_write, _create_backup
+from utils.yaml.core import _atomic_write, _create_backup, _normalize_flow_sections
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +100,14 @@ _FALSE = ("no", "false", "off", "disabled", "0")
 def _read(path: Path) -> Optional[str]:
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return f.read()
+            content = f.read()
     except OSError as _silent_err:
         logger.debug("[sls_settings] _read: ignored %s", _silent_err, exc_info=False)
         return None
+    # Flow-style parents (IdleStatus: {AppId: 0, Title: "x"}) must become a
+    # block before _apply edits them; otherwise the fallback promoted the line
+    # to an empty block and silently dropped the sibling keys.
+    return _normalize_flow_sections(content)
 
 
 def _load(content: str) -> Dict[str, Any]:
@@ -195,10 +199,20 @@ def _value_regex(key: str, indent: str = "") -> re.Pattern:
 
 
 def _block_bounds(content: str, parent: str) -> Optional[Tuple[int, int]]:
-    m = re.search(r"^[ \t]*['\"]?" + re.escape(parent) + r"['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?\r?$", content, re.MULTILINE)
+    # Column 0 only: an indented IdleStatus under another key is a different
+    # setting and must never be edited as the top-level parent.
+    m = re.search(
+        r"^['\"]?" + re.escape(parent) + r"['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?\r?$",
+        content,
+        re.MULTILINE,
+    )
     if not m:
         return None
-    start = m.end() + 1
+    start = m.end()
+    if content.startswith("\r", start):
+        start += 1
+    if content.startswith("\n", start):
+        start += 1
     nxt = re.compile(r"^(?=\S)", re.MULTILINE).search(content, start)
     end = nxt.start() if nxt else len(content)
     return start, end
@@ -246,16 +260,20 @@ def _apply(content: str, setting: SlsSetting, text: str) -> Optional[str]:
     parent, child = setting.key.split(".", 1)
     bounds = _block_bounds(content, parent)
     if bounds is None:
-        parent_pattern = re.compile(
-            r"^[ \t]*['\"]?" + re.escape(parent) + r"['\"]?[ \t]*:.*$",
+        parent_line = re.compile(
+            r"^['\"]?" + re.escape(parent) + r"['\"]?[ \t]*:.*$",
             re.MULTILINE,
         )
-        pm = parent_pattern.search(content)
-        if pm is not None:
-            content = content[:pm.start()] + f"{parent}:" + content[pm.end():]
-            bounds = _block_bounds(content, parent)
-        if bounds is None:
-            return content.rstrip("\n") + f"\n\n{parent}:\n  {child}: {text}\n"
+        # The parent exists but not as an empty block (a scalar or an
+        # unrecognised shape). Replacing that line would drop its content, so
+        # refuse instead of guessing.
+        if parent_line.search(content) is not None:
+            logger.warning(
+                f"[SlsSettings] {parent} is not an editable block; "
+                f"refusing to rewrite its value into {setting.key}"
+            )
+            return None
+        return content.rstrip("\n") + f"\n\n{parent}:\n  {child}: {text}\n"
     start, end = bounds
     block = content[start:end]
     indent_m = re.search(r"^([ \t]+)\S", block, re.MULTILINE)

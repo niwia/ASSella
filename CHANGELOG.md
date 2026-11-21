@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Custom-folder CI suites** pass on a clean home: the picker test builds a usable, non-transient target instead of relying on `/tmp` or on pre-existing Steam libraries, and the home-path blacklist check skips when `HOME` is itself transient.
 - **Config writes**: rewrote the value fallbacks in `yaml_values.update_yaml_boolean_value` and `sls_settings._apply` so the separator before an inline comment survives (`Plugins:  # note` no longer becomes `yes# note`, which YAML reads as a string) and an indented look-alike key is no longer matched and duplicated. A value that YAML reads as one scalar containing `#` is refused instead of silently mangled.
 - **Flow-style sections**: a non-empty single-line collection (`AdditionalApps: [111, 222]`, `DlcData: {620: {621: "Portal"}}`) is normalised to block style before editing. Previously the line-based editors could not see it, appended a second section header, and the duplicate-key gate refused the write — so adding an app to such a config always failed.
+- **Empty flow sections**: `AdditionalApps: {}` / `DlcData: {}` (and the same shape for `FakeAppIds`, `LaunchOptions`, `AppTokens`, `ManifestIds`, …) are normalised to a bare section header before editing. The standalone writers used to insert an indented entry under `{}`, which produced invalid YAML, so enabling SLSonline/Netsock or adding a token silently did nothing.
+- **Flow-style `IdleStatus`**: `IdleStatus: {AppId: 0, Title: "Playing"}` is now read as a block before editing, so changing the idle AppID keeps `Title` instead of dropping it. A parent that is not an editable block is refused rather than overwritten.
+- **Long values in flow sections**: the normaliser no longer folds a long DLC name across lines with a `\` continuation, which the line-based readers could not parse.
+- **Quoted IDs and unquoted DLC names** are recognised by the add/remove/read helpers, so `- "123"` is not duplicated by an add and `621: Portal` is not re-added as a duplicate key.
+- **Single config write per add**: `Plugins: yes` is applied in the same `batch_config_edit` as the app/depot/key/token/launch-option/DLC entry, instead of a separate preceding write that made the SLSsteam watcher reload twice.
+- **`get_launch_option`** returns the command without its YAML quotes or inline comment.
 - **Section headers are matched at column 0**, so an indented nested `AdditionalApps:` under another key is no longer mistaken for the top-level section and edited in place.
 - **Concurrent writes**: `batch_config_edit` now serialises read-modify-write per config file through `config_write_lock`, so two writers (GUI, headless helper, update checker) no longer drop each other's entries.
 - **Config validation**: `_validate_yaml_content` rejects duplicate mapping keys at any depth, not just at column 0, so a broken edit is refused before it reaches the file.
@@ -31,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `scripts/test_config_write_safety.py`, now part of CI, covers the comment separator, nested-key isolation, scalar refusal, duplicate-key validation, concurrent batch edits and inode preservation.
-- `scripts/test_yaml_and_ratings_fixes.py` is now hermetic (its caches live in a temporary directory) and part of CI; it covers flow-style sections and CRLF-safe in-memory edits. `test_standalone_custom_folder.py` exercises cancel cleanup, uninstall safety and stale-record pruning.
+- `scripts/test_yaml_and_ratings_fixes.py` is now hermetic (its caches live in a temporary directory) and part of CI; it covers flow-style and empty sections, quoted IDs, long DLC names, `IdleStatus` preservation, single-write adds and CRLF-safe in-memory edits. `test_standalone_custom_folder.py` exercises cancel cleanup, uninstall safety and stale-record pruning.
 
 ## [3.2.0beta1] - 2026-11-21
 

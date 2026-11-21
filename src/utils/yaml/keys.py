@@ -24,7 +24,6 @@ from utils.yaml.core import (
     batch_config_edit,
     get_user_config_path,
 )
-from utils.yaml.plugins import ensure_plugins_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +35,8 @@ def add_decryption_keys_batch(
     """Add or update multiple depot AES decryption keys in DecryptionKeys in a single atomic write."""
     if not keys:
         return True
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
+        editor.ensure_plugins()
         any_changed = False
         if isinstance(keys, dict):
             for depot_id, val in keys.items():
@@ -81,8 +80,8 @@ def get_decryption_keys(config_path: Path) -> Dict[str, str]:
 
 def add_decryption_key(config_path: Path, depot_id: Union[str, int], key: str, comment: str = "") -> bool:
     """Add or update a depot AES decryption key in DecryptionKeys section in SLSsteam config.yaml."""
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
+        editor.ensure_plugins()
         res = editor.add_key(depot_id, key, comment)
     return res is WriteOutcome.CHANGED and editor.committed_successfully
 
@@ -95,8 +94,8 @@ def remove_decryption_key(
     """Remove a depot key from DecryptionKeys section in SLSsteam config.yaml.
     If check_shared is True, skips removal if the depot is shared with another game or is a common redistributable.
     """
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
+        editor.ensure_plugins()
         res = editor.remove_key(depot_id, check_shared=check_shared, excluding_appid=excluding_appid)
     return res is WriteOutcome.CHANGED and editor.committed_successfully
 
