@@ -213,7 +213,10 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
         # the flag, so leave an unrecognised value to a human.
         line_start, line_end = match.span()
         after_value = content[line_start + match.end("val"): line_end]
-        if not re.fullmatch(r"[ \t]*#[^\r\n]*|", after_value):
+        # `match.span()` is the (zero-width) lookahead, so the rest of the line
+        # comes from the content, not from `line_end`.
+        after_value += re.split(r"\r?\n", content[match.end():], maxsplit=1)[0]
+        if not re.fullmatch(r"[ \t]*#[^\t\r\n]*|", after_value):
             logger.warning(
                 f"Leaving '{key}' alone in {config_path}: its value is a single scalar "
                 f"that cannot be rewritten in place safely"
@@ -227,7 +230,13 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
         line_start, line_end = match.span()
         matched = content[line_start:line_end]
         prefix = matched[: len(matched) - len(match.group("val"))]
-        new_content = content[:line_start] + prefix + new_value + content[line_end:]
+        # The span ends at a zero-width lookahead; the rest of the line (the
+        # comment) is left as it is, except that a tab before it must become a
+        # space or the whole file stops being valid YAML.
+        rest = content[line_end:]
+        if rest.startswith("\t"):
+            rest = " " + rest[1:]
+        new_content = content[:line_start] + prefix + new_value + rest
 
         if not _atomic_write(config_path, new_content):
             return False
