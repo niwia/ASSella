@@ -36,18 +36,20 @@ def _bool_pattern(key: str) -> "re.Pattern":
       named key nested under another mapping, and `sub(..., count=1)` rewrote
       whichever came first - so `Plugins: no` nested under `Parent:` could be
       flipped instead of the real top-level setting.
+    * Tolerates quoting around the key (`"Plugins": yes`, `'Plugins': yes`).
+    * Tolerates CRLF (`\\r\\n`) and LF (`\\n`) line endings.
     * The value is matched with a lookahead rather than consumed, so a trailing
       `# comment` stays outside the match span and survives the rewrite.
     """
     return re.compile(
-        r"^" + re.escape(key) + r"[ \t]*:[ \t]*"
+        r"^['\"]?" + re.escape(key) + r"['\"]?[ \t]*:[ \t]*"
         r"(?P<quote>[\"']?)"
         r"(?P<val>" + "|".join(sorted(_BOOL_SPELLINGS, key=len, reverse=True)) + r")"
         r"(?P=quote)"
         # No trailing [ \t]* consumed here: the separator before an inline
         # comment must survive, or `yes # c` is rewritten to `yes# c`, which
         # YAML reads as the literal scalar "yes#".
-        r"(?=[ \t]*(?:#.*)?$)",
+        r"(?=[ \t]*(?:#[^\r\n]*)?\r?$)",
         re.MULTILINE | re.IGNORECASE,
     )
 
@@ -120,11 +122,21 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
         match = pattern.search(content)
 
         if not match:
-            # Genuinely absent. Note the old pattern rejected `TRUE`, `"yes"`
-            # and `enabled`, so those all landed here and appended a second
-            # copy of the key - which YAML ignores, making the write a no-op.
-            logger.info(f"Key '{key}' not found in {config_path}, appending '{key}: {new_value}'")
-            new_content = content.rstrip() + f"\n\n{key}: {new_value}\n"
+            # Check if key is already present at column 0 in any format (empty value, malformed scalar, etc.)
+            key_line_pattern = re.compile(
+                r"^['\"]?" + re.escape(key) + r"['\"]?[ \t]*:[ \t]*(?:\"[^\"]*\"|'[^']*'|[^#\r\n]*?)?(?P<tail>[ \t]*#[^\r\n]*)?\r?$",
+                re.MULTILINE,
+            )
+            key_match = key_line_pattern.search(content)
+            if key_match:
+                tail = key_match.group("tail") or ""
+                replacement = f"{key}: {new_value}{tail}"
+                new_content = content[:key_match.start()] + replacement + content[key_match.end():]
+                logger.info(f"Rewrote existing '{key}' line to '{replacement}' in {config_path}")
+            else:
+                logger.info(f"Key '{key}' not found in {config_path}, appending '{key}: {new_value}'")
+                new_content = content.rstrip() + f"\n\n{key}: {new_value}\n"
+
             if not _atomic_write(config_path, new_content):
                 return False
             _ALREADY_CORRECT.discard(memo) if memo else None

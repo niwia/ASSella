@@ -15,6 +15,7 @@ import atexit
 import inspect
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -49,8 +50,8 @@ _REFRESH_DEBOUNCE_S = 0.5
 # ---------------------------------------------------------------------------
 _denuvo_mem_cache: Optional[dict]   = None
 _protondb_mem_cache: Optional[dict] = None
-_denuvo_mem_lock   = threading.Lock()
-_protondb_mem_lock = threading.Lock()
+_denuvo_mem_lock   = threading.RLock()
+_protondb_mem_lock = threading.RLock()
 
 # ---------------------------------------------------------------------------
 # Subscriber registry & debounced notification state
@@ -180,16 +181,27 @@ def _invalidate_denuvo_cache() -> None:
 
 def _save_denuvo_cache_data(games_map: Dict[str, str]) -> None:
     _invalidate_denuvo_cache()
+    tmp: Optional[Path] = None
     try:
         DENUVO_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         data = {"last_updated": time.time(), "games": games_map}
-        tmp = DENUVO_CACHE_PATH.with_suffix(".tmp")
+        tmp = DENUVO_CACHE_PATH.with_name(
+            f"denuvo_cache_{os.getpid()}_{threading.get_ident()}_{int(time.time() * 1000)}.tmp"
+        )
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         tmp.replace(DENUVO_CACHE_PATH)
         logger.debug(f"Saved Denuvo cache with {len(games_map)} entries.")
     except Exception as e:
         logger.warning(f"Failed to write Denuvo cache: {e}")
+    finally:
+        if tmp is not None and tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError as _err:
+                logger.debug(f"Could not remove temporary Denuvo cache file: {_err}")
 
 
 # ===========================================================================
@@ -302,6 +314,7 @@ def _invalidate_protondb_cache() -> None:
 
 _dirty_protondb: bool = False
 _protondb_flush_timer: Optional[threading.Timer] = None
+_protondb_disk_lock: threading.Lock = threading.Lock()
 
 
 def flush_protondb_cache() -> None:
@@ -319,16 +332,28 @@ def flush_protondb_cache() -> None:
         cache_copy = dict(_protondb_mem_cache)
         _dirty_protondb = False
 
-    try:
-        PROTONDB_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = PROTONDB_CACHE_PATH.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cache_copy, f, separators=(",", ":"))
-        tmp.replace(PROTONDB_CACHE_PATH)
-    except Exception as e:
-        logger.warning(f"Failed to flush ProtonDB cache to disk: {e}")
-        with _protondb_mem_lock:
-            _dirty_protondb = True
+    with _protondb_disk_lock:
+        tmp: Optional[Path] = None
+        try:
+            PROTONDB_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = PROTONDB_CACHE_PATH.with_name(
+                f"protondb_cache_{os.getpid()}_{threading.get_ident()}_{int(time.time() * 1000)}.tmp"
+            )
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cache_copy, f, separators=(",", ":"))
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.replace(PROTONDB_CACHE_PATH)
+        except Exception as e:
+            logger.warning(f"Failed to flush ProtonDB cache to disk: {e}")
+            with _protondb_mem_lock:
+                _dirty_protondb = True
+        finally:
+            if tmp is not None and tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError as _err:
+                    logger.debug(f"Could not remove temporary ProtonDB cache file: {_err}")
 
 
 atexit.register(flush_protondb_cache)

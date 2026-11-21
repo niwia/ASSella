@@ -187,15 +187,15 @@ def _value_regex(key: str, indent: str = "") -> re.Pattern:
     # The value is everything up to an inline comment (" #") or end of line;
     # the separator before the comment is kept, so "yes # note" stays valid.
     return re.compile(
-        r"^(?P<lead>" + re.escape(indent) + re.escape(key) + r"[ \t]*:)(?P<sp>[ \t]*)"
-        r"(?P<val>(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\n]|'')*'|[^#\n]*?))"
-        r"(?P<tail>[ \t]+#.*)?$",
+        r"^(?P<lead>" + re.escape(indent) + r"['\"]?" + re.escape(key) + r"['\"]?[ \t]*:)(?P<sp>[ \t]*)"
+        r"(?P<val>(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\n]|'')*'|[^#\r\n]*?))"
+        r"(?P<tail>[ \t]+#[^\r\n]*)?\r?$",
         re.MULTILINE,
     )
 
 
 def _block_bounds(content: str, parent: str) -> Optional[Tuple[int, int]]:
-    m = re.search(r"^" + re.escape(parent) + r"[ \t]*:[ \t]*(?:#.*)?$", content, re.MULTILINE)
+    m = re.search(r"^[ \t]*['\"]?" + re.escape(parent) + r"['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?\r?$", content, re.MULTILINE)
     if not m:
         return None
     start = m.end() + 1
@@ -208,28 +208,59 @@ def _apply(content: str, setting: SlsSetting, text: str) -> str:
     if "." not in setting.key:
         rx = _value_regex(setting.key)
         m = rx.search(content)
-        if m is None:
-            return content.rstrip("\n") + f"\n\n{setting.key}: {text}\n"
-        return content[: m.start("sp")] + " " + text + content[m.end("val"):]
+        if m is not None:
+            lead = f"{setting.key}:"
+            return content[: m.start()] + lead + " " + text + content[m.end("val"):]
+        # Fallback: check if the top-level key exists in any form at column 0 (e.g. malformed or empty)
+        key_pattern = re.compile(
+            r"^['\"]?" + re.escape(setting.key) + r"['\"]?[ \t]*:[ \t]*(?:\"[^\"]*\"|'[^']*'|[^#\r\n]*?)?(?P<tail>[ \t]*#[^\r\n]*)?\r?$",
+            re.MULTILINE,
+        )
+        km = key_pattern.search(content)
+        if km is not None:
+            tail = km.group("tail") or ""
+            replacement = f"{setting.key}: {text}{tail}"
+            return content[: km.start()] + replacement + content[km.end():]
+        return content.rstrip("\n") + f"\n\n{setting.key}: {text}\n"
 
     parent, child = setting.key.split(".", 1)
     bounds = _block_bounds(content, parent)
     if bounds is None:
-        return content.rstrip("\n") + f"\n\n{parent}:\n  {child}: {text}\n"
+        parent_pattern = re.compile(
+            r"^[ \t]*['\"]?" + re.escape(parent) + r"['\"]?[ \t]*:.*$",
+            re.MULTILINE,
+        )
+        pm = parent_pattern.search(content)
+        if pm is not None:
+            content = content[:pm.start()] + f"{parent}:" + content[pm.end():]
+            bounds = _block_bounds(content, parent)
+        if bounds is None:
+            return content.rstrip("\n") + f"\n\n{parent}:\n  {child}: {text}\n"
     start, end = bounds
     block = content[start:end]
     indent_m = re.search(r"^([ \t]+)\S", block, re.MULTILINE)
     indent = indent_m.group(1) if indent_m else "  "
     m = _value_regex(child, indent).search(block)
     if m is None:
-        insert = f"{indent}{child}: {text}\n"
-        # after the last indented line of the block
-        last = 0
-        for lm in re.finditer(r"^[ \t]+\S.*$\n?", block, re.MULTILINE):
-            last = lm.end()
-        block = block[:last] + ("" if block[:last].endswith("\n") or not last else "\n") + insert + block[last:]
+        child_pattern = re.compile(
+            r"^(" + re.escape(indent) + r"['\"]?" + re.escape(child) + r"['\"]?[ \t]*:)[ \t]*(?:\"[^\"]*\"|'[^']*'|[^#\r\n]*?)?(?P<tail>[ \t]*#[^\r\n]*)?\r?$",
+            re.MULTILINE,
+        )
+        cm = child_pattern.search(block)
+        if cm is not None:
+            tail = cm.group("tail") or ""
+            replacement = f"{indent}{child}: {text}{tail}"
+            block = block[: cm.start()] + replacement + block[cm.end():]
+        else:
+            insert = f"{indent}{child}: {text}\n"
+            # after the last indented line of the block
+            last = 0
+            for lm in re.finditer(r"^[ \t]+\S.*$\n?", block, re.MULTILINE):
+                last = lm.end()
+            block = block[:last] + ("" if block[:last].endswith("\n") or not last else "\n") + insert + block[last:]
     else:
-        block = block[: m.start("sp")] + " " + text + block[m.end("val"):]
+        lead = f"{indent}{child}:"
+        block = block[: m.start()] + lead + " " + text + block[m.end("val"):]
     return content[:start] + block + content[end:]
 
 
