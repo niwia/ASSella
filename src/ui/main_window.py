@@ -321,6 +321,13 @@ class MainWindow(
                 logger.debug(f"SLS binary boot version check skipped/failed: {e}")
             run_boot_config_check()
 
+            # Pre-warm static depots.ini cache in background so opening Game Details has zero latency
+            try:
+                from core.ini_parser import parse_depots_ini
+                parse_depots_ini()
+            except Exception as e:
+                logger.debug(f"depots.ini background warmup skipped/failed: {e}")
+
             # Plugin check (background thread): only works out what would
             # change (retired / remotely disabled plugins, missing family
             # plugins, updates). The user is asked before anything happens.

@@ -384,6 +384,32 @@ def test_standalone_status_and_cancel_safety():
         f"Standalone badge reads 'Standalone install' (got {widget.status_label.text()!r})",
     )
 
+    # Standalone games with pending updates must display 'New version available'
+    # so 'Update All' and user notifications are not masked.
+    widget_upd = GameItemWidget(
+        {"appid": "77778", "game_name": "StandaloneUpdGame", "source": "Standalone",
+         "is_standalone": True, "update_status": "update_available"},
+        "1 GB", "#7C4DFF", "#1E1E1E",
+    )
+    check(
+        widget_upd.status_label.text() == "New version available",
+        f"Standalone badge with update_available reads 'New version available' (got {widget_upd.status_label.text()!r})",
+    )
+
+    # Calling update_status('update_available') on a standalone game preserves 'New version available'
+    widget.update_status("update_available")
+    check(
+        widget.status_label.text() == "New version available",
+        f"Dynamic update_status to update_available reads 'New version available' (got {widget.status_label.text()!r})",
+    )
+
+    # Calling update_status('up_to_date') on a standalone game restores 'Standalone install'
+    widget.update_status("up_to_date")
+    check(
+        widget.status_label.text() == "Standalone install",
+        f"Dynamic update_status to up_to_date reads 'Standalone install' (got {widget.status_label.text()!r})",
+    )
+
     # A manual "check all updates" must not reset standalone to 'checking',
     # because no check will ever run for it and it would stick on 'checking'.
     from utils.update_status_cache import PERSISTENT_STATUSES, TRANSIENT_STATUSES

@@ -810,16 +810,27 @@ def install_via_sls(
         logger.debug(f"install_via_sls: prerequisites check error: {e}")
 
     # 1. Write to config in-place (always, even if Steam is closed)
+    already_present = False
+    try:
+        from utils.yaml_config_manager import get_user_config_path, get_additional_apps
+        config_path = get_user_config_path()
+        if config_path and config_path.exists():
+            already_present = str(appid) in get_additional_apps(config_path)
+    except Exception as e:
+        logger.debug(f"install_via_sls: could not check existing apps in config: {e}")
+
     try:
         written = _write_appid_to_config(appid, game_name)
     except Exception as e:
         logger.error(f"install_via_sls: failed to write {appid} to SLS config: {e}")
         written = False
 
-    if not written:
-        logger.info(f"AppID {appid} already in SLS config or write failed")
-    else:
+    if written:
         logger.info(f"Wrote AppID {appid} to SLS config")
+    elif already_present:
+        logger.info(f"AppID {appid} is already present in SLS config")
+    else:
+        logger.warning(f"Failed to write AppID {appid} to SLS config")
 
     # 2. If SLSsteam/Steam is not available, stop here — config write is sufficient
     if not _is_slssteam_available():

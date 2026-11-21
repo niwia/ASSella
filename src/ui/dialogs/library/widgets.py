@@ -389,7 +389,8 @@ class GameItemWidget(QWidget):
             is_standalone = is_standalone_game(self.game_data)
             update_status = self.game_data.get("update_status", "cannot_determine")
             if is_standalone:
-                update_status = "standalone"
+                if update_status != "update_available":
+                    update_status = "standalone"
                 is_accela = False
                 is_at0m_game = False
             else:
@@ -629,23 +630,31 @@ class GameItemWidget(QWidget):
                 self.workshop_badge.hide()
             self._apply_assella_pending()
             return
-        is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
-        is_at0m_game = not is_accela and bool(
-            self.game_data.get("is_atom")
-            or self.game_data.get("is_vapor")
-            or self.game_data.get("is_plugin_game")
-            or self.game_data.get("source") in ("at0-m", "AT0-M", "Vapor", "plugin_native")
-            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-        )
-        if not is_at0m_game and not is_accela:
-            try:
-                from utils.plugin_games import is_plugin_game
-                is_at0m_game = is_plugin_game(self.game_data.get("appid", ""))
-            except Exception as e:
-                logger.debug(f"[GameItemWidget] is_plugin_game check: {e}")
+        from utils.game_modes import is_standalone_game
+        is_standalone = is_standalone_game(self.game_data)
+        if is_standalone:
+            if update_status != "update_available":
+                update_status = "standalone"
+            is_accela = False
+            is_at0m_game = False
+        else:
+            is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
+            is_at0m_game = not is_accela and bool(
+                self.game_data.get("is_atom")
+                or self.game_data.get("is_vapor")
+                or self.game_data.get("is_plugin_game")
+                or self.game_data.get("source") in ("at0-m", "AT0-M", "Vapor", "plugin_native")
+                or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            )
+            if not is_at0m_game and not is_accela:
+                try:
+                    from utils.plugin_games import is_plugin_game
+                    is_at0m_game = is_plugin_game(self.game_data.get("appid", ""))
+                except Exception as e:
+                    logger.debug(f"[GameItemWidget] is_plugin_game check: {e}")
 
-        if is_at0m_game and update_status not in ("update_available", "key_pending"):
-            update_status = "at0m"
+            if is_at0m_game and update_status not in ("update_available", "key_pending"):
+                update_status = "at0m"
 
         self.game_data["update_status"] = update_status
 
@@ -705,6 +714,7 @@ class GameItemWidget(QWidget):
                 "key_pending": ("Keys Pending", "#FFB74D", "rgba(255, 183, 77, 0.15)"),
                 "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
                 "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+                "standalone": ("Standalone install", "#90A4AE", "rgba(144, 164, 174, 0.15)"),
             }
 
             text, color, bg_color = status_map.get(

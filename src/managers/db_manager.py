@@ -639,33 +639,6 @@ class DatabaseManager:
             with self._conn_lock:
                 self._depot_enrichments_cache.pop(str(appid), None)
                 cur = self.conn.cursor()
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS depot_enrichments (
-                        depot_id TEXT PRIMARY KEY,
-                        appid TEXT,
-                        name TEXT,
-                        size_str TEXT,
-                        size_bytes INTEGER,
-                        dl_str TEXT,
-                        is_dlc INTEGER,
-                        oslist TEXT,
-                        osarch TEXT,
-                        updated_at INTEGER
-                    )
-                """)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN osarch TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN release_src TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-
                 now = int(time.time())
                 for dep_id, info in enrichments.items():
                     cur.execute("""
@@ -715,18 +688,6 @@ class DatabaseManager:
             with self._conn_lock:
                 self._depot_enrichments_cache.pop(aid, None)
                 cur = self.conn.cursor()
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS depot_enrichments (
-                        depot_id TEXT PRIMARY KEY, appid TEXT, name TEXT, size_str TEXT,
-                        size_bytes INTEGER, dl_str TEXT, is_dlc INTEGER, oslist TEXT,
-                        osarch TEXT, updated_at INTEGER
-                    )
-                """)
-                for col in ("releasestate", "release_src"):
-                    try:
-                        cur.execute(f"ALTER TABLE depot_enrichments ADD COLUMN {col} TEXT")
-                    except Exception as _silent_err:
-                        logger.debug("[db_manager] update_release_states: ignored %s", _silent_err, exc_info=False)
                 now = int(time.time())
                 for did, (state, src) in states.items():
                     did = str(did)
@@ -756,33 +717,6 @@ class DatabaseManager:
         try:
             with self._conn_lock:
                 cur = self.conn.cursor()
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS depot_enrichments (
-                        depot_id TEXT PRIMARY KEY,
-                        appid TEXT,
-                        name TEXT,
-                        size_str TEXT,
-                        size_bytes INTEGER,
-                        dl_str TEXT,
-                        is_dlc INTEGER,
-                        oslist TEXT,
-                        osarch TEXT,
-                        updated_at INTEGER
-                    )
-                """)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN osarch TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN release_src TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-
                 cur.execute("""
                     SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, release_src
                     FROM depot_enrichments
