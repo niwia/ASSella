@@ -19,7 +19,6 @@ import os
 import queue
 import threading
 import time
-from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 import requests
@@ -181,7 +180,7 @@ def _invalidate_denuvo_cache() -> None:
 
 def _save_denuvo_cache_data(games_map: Dict[str, str]) -> None:
     _invalidate_denuvo_cache()
-    tmp: Optional[Path] = None
+    tmp = None
     try:
         DENUVO_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         data = {"last_updated": time.time(), "games": games_map}
@@ -333,7 +332,7 @@ def flush_protondb_cache() -> None:
         _dirty_protondb = False
 
     with _protondb_disk_lock:
-        tmp: Optional[Path] = None
+        tmp = None
         try:
             PROTONDB_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
             tmp = PROTONDB_CACHE_PATH.with_name(
