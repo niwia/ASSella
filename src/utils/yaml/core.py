@@ -1407,10 +1407,26 @@ class BatchConfigEditor:
             return True
         return False
 
-    def remove_launch_option(self, app_id: Union[str, int]) -> bool:
+    def remove_launch_option(
+        self,
+        app_id: Union[str, int],
+        markers: Optional[Tuple[str, ...]] = None,
+    ) -> bool:
         app_id_str = _sanitize_id(app_id)
         if not app_id_str:
             return False
+        if markers:
+            bounds = _get_section_bounds(self.content, "LaunchOptions")
+            if not bounds:
+                return False
+            section = self.content[bounds[1]:bounds[2]]
+            match = re.search(
+                rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*([^\r\n]+)$",
+                section,
+                re.MULTILINE,
+            )
+            if not match or not any(marker in match.group(1) for marker in markers):
+                return False
         pattern = re.compile(
             rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
             re.MULTILINE,

@@ -119,6 +119,11 @@ class TaskManager(
         # A task may report a failure both through its own ``error`` signal and
         # through the worker's (the task re-raises). Show the dialog once.
         self._error_reported_for_job = False
+        # True when the current job failed for a reason other than user
+        # cancellation (worker error, hand-off failure, finalisation error).
+        # job_finished() used to treat any non-cancelled job as successful.
+        self._job_failed = False
+        self._finalize_error: Optional[str] = None
         self.current_job: Optional[str] = None
         self.current_job_metadata: Optional[Dict[str, Any]] = None
         self.game_data: Optional[Dict[str, Any]] = None
@@ -1284,13 +1289,17 @@ class TaskManager(
                     ),
                     type=bool,
                 )
+                handoff_warnings: list[str] = []
                 ok, msg = perform_steam_handoff(
                     self.game_data,
                     selected_depots,
                     dest_path,
                     progress_cb=_update_handoff_progress,
                     auto_install=auto_inst,
+                    warnings_out=handoff_warnings,
                 )
+                if ok and handoff_warnings:
+                    self._notify_handoff_warnings(handoff_warnings)
                 self._last_handoff_success = ok
                 self._is_handoff_job = True
                 if ok:
@@ -1845,6 +1854,8 @@ class TaskManager(
                     f"Handing off {name} to Steam..."
                 )
 
+        handoff_warnings: list[str] = []
+
         def _do_handoff():
             from core.native_steam.native_steam_handoff import (
                 perform_steam_handoff,
@@ -1860,6 +1871,7 @@ class TaskManager(
                 dest_path=library_path,
                 progress_cb=_update_msg,
                 auto_install=auto_install,
+                warnings_out=handoff_warnings,
             )
 
         def _on_handoff_finished(result):
@@ -1867,6 +1879,8 @@ class TaskManager(
             self._last_handoff_success = ok
             if ok:
                 logger.info(f"[TaskManager] Handoff succeeded: {msg}")
+                if handoff_warnings:
+                    self._notify_handoff_warnings(handoff_warnings)
                 if auto_install:
                     self._start_vapor_install_watcher(app_id_str)
             else:
@@ -1892,6 +1906,17 @@ class TaskManager(
             )
         )
 
+    def _notify_handoff_warnings(self, warnings):
+        """Tell the user which selected depots AT0-M had to exclude."""
+        if not warnings or not self.main_window:
+            return
+        ThemedMessageBox.warning(
+            self.main_window,
+            "AT0-M Depots Excluded",
+            "The hand-off continued, but some selected depots could not be added:\n\n"
+            + "\n\n".join(str(w) for w in warnings),
+        )
+
     def _handle_task_error(self, error_info):
         if self.is_cancelling:
             return
@@ -1900,6 +1925,7 @@ class TaskManager(
         if getattr(self, "_error_reported_for_job", False):
             return
         self._error_reported_for_job = True
+        self._job_failed = True
 
         _, error_value, _ = error_info
         ThemedMessageBox.critical(
@@ -1928,7 +1954,7 @@ class TaskManager(
             self._last_handoff_success = None
             self._is_handoff_job = False
         else:
-            ddm_ok = not self.is_cancelling
+            ddm_ok = not self.is_cancelling and not self._job_failed
 
         if not self._slscheevo_ran:
             slscheevo_ok = None
@@ -2072,6 +2098,8 @@ class TaskManager(
         self.download_task = None
         self.is_cancelling = False
         self._error_reported_for_job = False
+        self._job_failed = False
+        self._finalize_error = None
         self._delete_files_on_cancel = None
         self.active_workshop_job_id = None
 

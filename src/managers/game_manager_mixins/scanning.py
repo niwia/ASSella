@@ -856,7 +856,6 @@ class GameManagerScanningMixin:
                     marker_path = None
                     is_accela_install = False
 
-            is_managed = is_accela_install or is_vapor or is_plugin_game
             install_dir = game_name
 
             game_data = {
@@ -872,7 +871,10 @@ class GameManagerScanningMixin:
                     if ((is_vapor or is_plugin_game) and not is_accela_install)
                     else ("ACCELA" if is_accela_install else "Steam")
                 ),
-                "is_accela_install": is_managed,
+                # Keep this the ACCELA-owned flag only. It used to be
+                # `is_managed`, which is true for AT0-M/plugin games too and
+                # made game_modes prefer the ACCELA branch over is_atom.
+                "is_accela_install": is_accela_install,
                 "is_vapor": (is_vapor or is_plugin_game) and not is_accela_install,
                 "is_atom": (is_vapor or is_plugin_game) and not is_accela_install,
                 "is_plugin_game": is_plugin_game and not is_accela_install,

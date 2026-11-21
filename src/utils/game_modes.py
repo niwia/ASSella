@@ -20,6 +20,18 @@ def is_accela_managed(game: Any) -> bool:
     """True when the game dict describes an ASSella-managed install (including standalone custom folders)."""
     if not isinstance(game, dict):
         return False
+    # A physical ACCELA marker is authoritative. Without one, an AT0-M /
+    # plugin / Vapor signal wins over the legacy ``is_accela_install`` flag:
+    # older scans stamped that flag on every managed game, including plugin
+    # installs, which made is_atom_managed() reject real AT0-M games.
+    if not game.get("accela_marker_path"):
+        if (
+            str(game.get("source") or "") in ("at0-m", "AT0-M", "plugin_native")
+            or game.get("is_atom")
+            or game.get("is_vapor")
+            or game.get("is_plugin_game")
+        ):
+            return False
     return bool(
         game.get("accela_marker_path")
         or game.get("source") in ("ACCELA", "Standalone")

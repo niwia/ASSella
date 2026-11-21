@@ -253,14 +253,19 @@ def _discover_depots_from_disk(acf_path: str, appid: str) -> List[str]:
                 continue
 
             pattern = f"app{appid}_depot*.manifest"
+            manifest_name_re = re.compile(
+                rf"^app{re.escape(str(appid))}_depot(\d+)$"
+            )
             for manifest_file in depotcache_dir.glob(pattern):
-                # Filename format: app{appid}_depot{depot_id}.manifest
+                # Filename format: app{appid}_depot{depot_id}.manifest.
+                # Splitting on "_" produced only two parts, so the old
+                # len(parts) >= 3 check could never accept a real filename.
                 try:
                     name = manifest_file.stem  # e.g. "app2929250_depot2929252"
-                    parts = name.split("_")
-                    if len(parts) >= 3:
-                        depot_id = parts[-1]  # last part after split is depot ID
-                        if depot_id.isdigit() and depot_id != appid:
+                    match = manifest_name_re.match(name)
+                    if match:
+                        depot_id = match.group(1)
+                        if depot_id != str(appid):
                             discovered.append(depot_id)
                 except Exception as ex:
                     logger.debug(f"[SteamACF] Error parsing manifest filename {manifest_file}: {ex}")

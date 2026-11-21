@@ -251,8 +251,27 @@ def write_acf_file(
         existing_fields=existing_fields,
     )
 
-    with open(acf_path, "w", encoding="utf-8") as f:
-        f.write(acf_content)
+    # Never leave Steam a truncated appmanifest after a crash. Existing ACFs
+    # go through the backup+replace helper; a new one is written to a sibling
+    # temp file first.
+    if os.path.exists(acf_path):
+        from utils.steam_acf import atomic_write_acf
+        if not atomic_write_acf(acf_path, acf_content):
+            return None
+    else:
+        tmp_path = f"{acf_path}.tmp-{os.getpid()}"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(acf_content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, acf_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError as cleanup_err:
+                logger.debug(f"Could not remove temporary ACF {tmp_path}: {cleanup_err}")
+            raise
 
     return acf_path
 

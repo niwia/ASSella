@@ -1536,7 +1536,11 @@ def on_netsock_btn_clicked(dialog) -> None:
             dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
     else:
         from ui.dialogs.themed_message_box import ThemedMessageBox
-        if remove_launch_option(config, str(dialog.appid)):
+        if remove_launch_option(
+            config,
+            str(dialog.appid),
+            markers=("netsock.so", "LD_AUDIT", "#assella-bypass"),
+        ):
             dialog.netsock_tile.setChecked(False)
             dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
             dialog.netsock_tile.setToolTip("Enable Netsock LD_AUDIT patch for Steam Networking Sockets.")
@@ -1736,7 +1740,11 @@ def init_slsonline_logic(dialog) -> None:
                     from utils.yaml_config_manager import get_launch_option, remove_launch_option
                     cur_opt = get_launch_option(config, str(dialog.appid))
                     if cur_opt and "netsock.so" in cur_opt:
-                        remove_launch_option(config, str(dialog.appid))
+                        remove_launch_option(
+                            config,
+                            str(dialog.appid),
+                            markers=("netsock.so", "LD_AUDIT", "#assella-bypass"),
+                        )
                         if hasattr(dialog, "netsock_tile"):
                             dialog.netsock_tile.setChecked(False)
                 update_eos_btn_state(dialog)

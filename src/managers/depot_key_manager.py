@@ -144,7 +144,13 @@ class DepotKeyManager:
                     "SELECT depot_id, aes_key FROM depot_keys WHERE appid=?", (str(appid),)
                 ).fetchall()
                 conn.close()
-            result = {row["depot_id"]: row["aes_key"] for row in rows}
+            result = {
+                str(row["depot_id"]).strip(): str(row["aes_key"]).strip()
+                for row in rows
+                if row["aes_key"]
+                and len(str(row["aes_key"]).strip()) == 64
+                and not is_placeholder_key(str(row["aes_key"]).strip())
+            }
             if not result:
                 # Check for standalone LUA backup in cached_luas folder
                 result = self._recover_keys_from_lua_file(appid)
@@ -153,6 +159,34 @@ class DepotKeyManager:
         except Exception as e:
             logger.error(f"[DepotKeyManager] Failed to load depot keys for AppID {appid}: {e}")
             return {}
+
+    def get_depot_key(self, depot_id: str) -> Optional[str]:
+        """Return the cached AES key for one depot, or None.
+
+        Depot IDs are globally unique, so this lookup intentionally does not
+        take an appid. Placeholder/truncated rows are ignored: returning one
+        makes DepotDownloader fail with an opaque decryption error.
+        """
+        depot_id_str = str(depot_id).strip()
+        if not depot_id_str:
+            return None
+        try:
+            with _lock:
+                conn = self._connect()
+                row = conn.execute(
+                    "SELECT aes_key FROM depot_keys WHERE depot_id=? ORDER BY updated_at DESC LIMIT 1",
+                    (depot_id_str,),
+                ).fetchone()
+                conn.close()
+            if not row or not row["aes_key"]:
+                return None
+            key = str(row["aes_key"]).strip()
+            if len(key) != 64 or is_placeholder_key(key):
+                return None
+            return key
+        except Exception as e:
+            logger.debug(f"[DepotKeyManager] Failed to load depot key for {depot_id_str}: {e}")
+            return None
 
     def _recover_keys_from_lua_file(self, appid: str) -> Dict[str, str]:
         """Attempt to recover depot keys from cached_luas/{appid}.lua or accela_{appid}.lua."""

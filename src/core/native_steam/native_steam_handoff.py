@@ -204,6 +204,7 @@ def perform_steam_handoff(
     dest_path: str = "",
     progress_cb: Optional[Callable[[str], None]] = None,
     auto_install: bool = False,
+    warnings_out: Optional[List[str]] = None,
 ) -> Tuple[bool, str]:
     """
     Perform the complete handoff flow to the Steam client:
@@ -285,15 +286,53 @@ def perform_steam_handoff(
 
     # Exclude any depots without decryption keys (except shared redists) to avoid Steam DepotWithoutKey errors
     from utils.plugin_games import SHARED_REDISTS
-    valid_keyed_depots = {str(d) for d, k in depot_keys.items() if k and str(d) != str(appid)} | SHARED_REDISTS
-    unkeyed_depots = [str(d) for d in selected_depots if str(d) not in valid_keyed_depots]
+
+    def _partition_keyed(selected):
+        valid = {
+            str(d)
+            for d, k in depot_keys.items()
+            if k and str(d) != str(appid)
+        } | SHARED_REDISTS
+        excluded = [str(d) for d in selected if str(d) not in valid]
+        return [str(d) for d in selected if str(d) in valid], excluded
+
+    selected_depots, unkeyed_depots = _partition_keyed(selected_depots)
+
     if unkeyed_depots:
-        _emit(f"Warning: Excluded {len(unkeyed_depots)} depot(s) without keys (e.g. blacklisted/unavailable): {unkeyed_depots}")
-        logger.warning(f"[SteamHandoff] Excluded {len(unkeyed_depots)} unkeyed depot(s) for {appid}: {unkeyed_depots}")
-        selected_depots = [d for d in selected_depots if str(d) in valid_keyed_depots]
+        # The cache may simply be older than the selected depot. Refresh it
+        # once before telling the user content is unavailable.
+        fresh_keys, fresh_gids = task_helper._fetch_hubcap_keys(
+            game_data, appid, force_refresh=True
+        )
+        if fresh_keys:
+            depot_keys.update(fresh_keys)
+            manifest_gids.update(fresh_gids)
+            selected_depots, unkeyed_depots = _partition_keyed(selected_depots)
+
+    unkeyed_warning = ""
+    if unkeyed_depots:
+        unkeyed_warning = (
+            f"{len(unkeyed_depots)} selected depot(s) were excluded because no "
+            f"decryption key is available: {', '.join(unkeyed_depots)}. "
+            "Steam will install the remaining keyed depots, but content in "
+            "these depots may be missing until a key becomes available."
+        )
+        _emit(f"Warning: {unkeyed_warning}")
+        logger.warning(
+            f"[SteamHandoff] Excluded {len(unkeyed_depots)} unkeyed depot(s) "
+            f"for {appid}: {unkeyed_depots}"
+        )
+        if warnings_out is not None:
+            warnings_out.append(unkeyed_warning)
 
     if not selected_depots and not is_dlc:
-        return False, f"No valid keyed content depots could be resolved for {game_name} ({appid}). Steam cannot download without valid depots."
+        reason = (
+            f"No valid keyed content depots could be resolved for {game_name} "
+            f"({appid}). Steam cannot download without valid depots."
+        )
+        if unkeyed_warning:
+            reason = f"{reason} {unkeyed_warning}"
+        return False, reason
 
     # AdditionalDepots gets only actual depots. DecryptionKeys keeps depot keys AND the root AppID key.
     active_keys = {str(d): k for d, k in depot_keys.items()}
@@ -377,6 +416,9 @@ def perform_steam_handoff(
             f"Successfully added {game_name} ({appid}) to Steam! "
             f"The game and depot keys are unlocked in your Steam library, ready to install."
         )
+
+    if unkeyed_warning:
+        success_msg = f"{success_msg}\n\nWarning: {unkeyed_warning}"
 
     # Register into plugin_library so AT0-M and library management track it
     try:

@@ -168,7 +168,9 @@ class WudrmMRCFetcher:
                 cur.execute("SELECT mrc FROM mrc_cache WHERE manifest_id = ?", (manifest_id_str,))
                 row = cur.fetchone()
                 if row and row[0]:
-                    return str(row[0])
+                    cached = str(row[0]).strip()
+                    if WudrmMRCFetcher._is_valid_mrc(cached):
+                        return cached
         except Exception as e:
             logger.debug(f"[MRC Cache] Error reading cache for {manifest_id_str}: {e}")
         return None
@@ -198,9 +200,22 @@ class WudrmMRCFetcher:
 
     @staticmethod
     def _is_valid_mrc(body: str) -> bool:
-        """Returns True if body is a non-empty positive integer (valid uint64 MRC)."""
-        s = body.strip()
-        return bool(s) and s.isdigit() and int(s) > 0
+        """Return True for a plausible uint64 Manifest Request Code.
+
+        A bare HTTP status code (403, 404, 500, ...) is not an MRC. The old
+        check accepted any positive integer, so a Cloudflare/CDN error page
+        whose body was just "403" could be cached as a valid request code and
+        reused until a download failed. Real MRCs are large 64-bit values.
+        """
+        s = str(body).strip()
+        if not s or not s.isdigit() or not s.isascii():
+            return False
+        if len(s) < 8:
+            return False
+        try:
+            return int(s) > 0
+        except ValueError:
+            return False
 
     def _fetch_tier1(self, url: str) -> Optional[str]:
         """Tier 1: plain requests GET. Returns MRC string or None."""
@@ -209,6 +224,9 @@ class WudrmMRCFetcher:
             if r.status_code in (400, 404):
                 # Fatal — manifest genuinely doesn't exist on wudrm
                 raise _WudrmFatal(r.status_code)
+            if not 200 <= r.status_code < 300:
+                logger.debug(f"[MRC/Tier1] HTTP {r.status_code} — handing off to Tier 2")
+                return None
             body = r.text.strip()
             if self._is_valid_mrc(body):
                 return body
@@ -263,9 +281,10 @@ class WudrmMRCFetcher:
                     impersonate="chrome120",
                     timeout=self.timeout,
                 )
-                mrc = self._parse_mrc_payload(r.text)
-                if mrc:
-                    return mrc
+                if 200 <= r.status_code < 300:
+                    mrc = self._parse_mrc_payload(r.text)
+                    if mrc:
+                        return mrc
                 logger.debug(f"[MRC/Tier2] cffi non-valid MRC body (HTTP {r.status_code})")
             except Exception as e:
                 logger.debug(f"[MRC/Tier2] cffi request error: {e}")
@@ -667,8 +686,7 @@ def _lookup_cached_depot_key(depot_id: Union[str, int]) -> Optional[str]:
     depot_id_str = str(depot_id).strip()
     try:
         from managers.depot_key_manager import DepotKeyManager
-        dkm = DepotKeyManager()
-        key = dkm.get_depot_key(depot_id_str)
+        key = DepotKeyManager.get_instance().get_depot_key(depot_id_str)
         if key:
             return key
     except Exception:
@@ -683,7 +701,10 @@ def _lookup_cached_depot_key(depot_id: Union[str, int]) -> Optional[str]:
                 cur.execute("SELECT aes_key FROM depot_keys WHERE depot_id = ?", (depot_id_str,))
                 row = cur.fetchone()
                 if row and row[0]:
-                    return str(row[0])
+                    key = str(row[0]).strip()
+                    from utils.lua_parsing import is_placeholder_key
+                    if len(key) == 64 and not is_placeholder_key(key):
+                        return key
     except Exception:
         pass
     return None

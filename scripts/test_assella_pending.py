@@ -66,6 +66,35 @@ AdditionalApps:
         self.assertEqual(game["update_status"], "not_downloaded")
         self.assertEqual(game["source"], "ACCELA")
 
+    @patch("utils.yaml_config_manager.get_user_config_path")
+    @patch("utils.plugin_games.get_all_plugin_games")
+    @patch("utils.dlc_helpers.is_dlc_only_mode")
+    @patch("utils.library_rules.resolve_best_game_name")
+    def test_dlc_entitlements_are_not_pending_games(
+        self, mock_resolve, mock_dlc_only, mock_plugin, mock_cfg_path
+    ):
+        mock_cfg = MagicMock()
+        mock_cfg.exists.return_value = True
+        mock_cfg.read_text.return_value = """
+AdditionalApps:
+  - 620 # Base game
+  - 621 # DLC child in DlcData
+  - 622 # [DLC] plugin-owned
+  - 623 # Real pending game
+DlcData:
+  620:
+    621: "Portal"
+"""
+        mock_cfg_path.return_value = mock_cfg
+        mock_plugin.return_value = {
+            "620": {"name": "Base game", "dlc_appids": ["622"]}
+        }
+        mock_dlc_only.return_value = False
+        mock_resolve.side_effect = lambda aid, candidates=None: f"Resolved {aid}"
+
+        pending = get_pending_assella_games(set())
+        self.assertEqual([g["appid"] for g in pending], ["623"])
+
     @patch("core.steam_helpers.slssteam_api_send")
     @patch("utils.yaml_config_manager.get_user_config_path")
     @patch("utils.yaml_config_manager.get_dlc_data")

@@ -15,7 +15,7 @@ import logging
 # --- imports ---------------------------------------------------------
 import os, re, shutil
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from utils.yaml.core import (
     _CONFIG_DISABLED,
@@ -338,8 +338,22 @@ def add_launch_option(config_path: Path, app_id: str, command: str) -> bool:
         logger.error(f"Failed to add LaunchOptions for '{app_id}': {e}", exc_info=True)
         return False
 
-def remove_launch_option(config_path: Path, app_id: str) -> bool:
-    """Remove an AppID entry from the LaunchOptions section in SLSsteam config.yaml."""
+def remove_launch_option(
+    config_path: Path,
+    app_id: str,
+    markers: Optional[Tuple[str, ...]] = None,
+) -> bool:
+    """Remove an AppID entry from the LaunchOptions section.
+
+    ``markers`` limits the removal to values containing one of the markers.
+    Automatic cleanup (DLC-only mode, SLSonline disable, AT0-M conversion)
+    must pass markers so a user's own launch options survive; an explicit
+    "remove launch option" action leaves it unset and removes the whole entry.
+    """
+    if markers:
+        current = get_launch_option(config_path, app_id)
+        if not current or not any(marker in current for marker in markers):
+            return False
     app_id_pattern = re.compile(
         rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:.*$",
         re.MULTILINE

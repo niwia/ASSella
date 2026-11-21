@@ -69,6 +69,31 @@ def _extract_additional_apps_with_metadata(cfg_path) -> Tuple[List[str], Dict[st
     return appids, inline_comments, game_titles
 
 
+def _extract_dlc_data_appids(cfg_path: Any) -> set:
+    """Return every child AppID listed under any parent in DlcData.
+
+    DlcData uses two-space parent keys and four-space child keys. A parent line
+    has no value; a child line does. Those children are entitlements, not
+    games, and must not become separate pending-library cards.
+    """
+    try:
+        content = cfg_path.read_text(encoding="utf-8", errors="ignore")
+    except (OSError, AttributeError):
+        return set()
+    from utils.yaml_config_manager import _get_section_bounds
+
+    bounds = _get_section_bounds(content, "DlcData")
+    if not bounds:
+        return set()
+    _, start, end = bounds
+    result = set()
+    for line in content[start:end].splitlines():
+        match = re.match(r"^[ \t]+([0-9]+)[ \t]*:[ \t]*(\S.*)$", line)
+        if match:
+            result.add(match.group(1))
+    return result
+
+
 def get_pending_assella_games(
     installed_appids: Iterable[str],
     cfg_path: Optional[Any] = None,
@@ -96,6 +121,13 @@ def get_pending_assella_games(
             plugin_lib = {}
 
     plugin_appids = {str(a).strip() for a in plugin_lib.keys()}
+    plugin_dlc_appids = {
+        str(dlc_id).strip()
+        for record in plugin_lib.values()
+        if isinstance(record, dict)
+        for dlc_id in (record.get("dlc_appids") or [])
+    }
+    dlc_data_appids = _extract_dlc_data_appids(cfg_path)
 
     appids, comments, titles = _extract_additional_apps_with_metadata(cfg_path)
     if not appids:
@@ -106,6 +138,10 @@ def get_pending_assella_games(
 
     for appid in appids:
         if appid in seen or appid in installed or appid in plugin_appids:
+            continue
+        if appid in plugin_dlc_appids or appid in dlc_data_appids:
+            continue
+        if "[dlc]" in (comments.get(appid) or "").lower():
             continue
         if dlc_only_cache is not None:
             if dlc_only_cache.get(appid):

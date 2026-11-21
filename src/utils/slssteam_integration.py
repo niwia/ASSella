@@ -613,7 +613,11 @@ def _remove_appid_from_config(appid: str) -> bool:
     from utils.yaml_config_manager import get_user_config_path, remove_additional_app, remove_launch_option
     config_path = get_user_config_path()
     try:
-        remove_launch_option(config_path, str(appid))
+        remove_launch_option(
+            config_path,
+            str(appid),
+            markers=("netsock.so", "LD_AUDIT", "#assella-bypass"),
+        )
     except Exception:
         pass
     return remove_additional_app(config_path, str(appid))

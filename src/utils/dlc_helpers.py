@@ -489,6 +489,8 @@ def is_dlc_only_context(appid: str, *sources) -> bool:
 # so this Qt-free module never imports the dialog package.
 STUB_SIZE_LIMIT = 1024
 STUB_BYPASS_AT = 64
+# Steam/SLS handlers cap AdditionalApps; above this many DLCs use DlcData.
+DLC_DATA_THRESHOLD = 64
 
 
 @dataclass(frozen=True)
@@ -1102,6 +1104,7 @@ def purge_and_sanitize_for_dlc_only(
         "base_app_removed": False,
         "dlcs_added": [],
         "dlcs_already_present": [],
+        "dlcs_removed": [],
         "base_depots_removed": [],
         "base_depots_kept": [],
         "base_keys_removed": [],
@@ -1119,6 +1122,7 @@ def purge_and_sanitize_for_dlc_only(
     from utils.yaml_config_manager import (
         WriteOutcome,
         get_user_config_path,
+        get_dlc_data,
         remove_additional_app,
         add_additional_app,
         add_additional_app_outcome,
@@ -1189,7 +1193,41 @@ def purge_and_sanitize_for_dlc_only(
                 summary["base_app_removed"] = True
 
         pure_dlcs = {aid: dname for aid, dname in sel_dlcappid_set.items() if aid != appid_str}
-        if len(pure_dlcs) >= 64:
+
+        # Re-scoping a game must remove DLC entitlements it no longer owns.
+        # The old code only added the current selection, so deselecting a DLC
+        # left its AppID in AdditionalApps and SLS kept serving it.
+        try:
+            from utils.plugin_games import get_all_plugin_games
+
+            known_dlc_ids = {
+                str(aid)
+                for aid in build_app_to_depots_map(appid_str, game_data=game_data)
+                if str(aid) != appid_str
+            }
+            gd_dlcs_raw = (game_data or {}).get("dlcs") or {}
+            if isinstance(gd_dlcs_raw, dict):
+                known_dlc_ids.update(str(d) for d in gd_dlcs_raw.keys() if str(d).isdigit())
+            elif isinstance(gd_dlcs_raw, (list, set, tuple)):
+                known_dlc_ids.update(str(d) for d in gd_dlcs_raw if str(d).isdigit())
+            known_dlc_ids.update(get_dlc_data(config_path, appid_str).keys())
+
+            shared_dlc_ids = {
+                str(dlc_id)
+                for other_appid, rec in get_all_plugin_games(active_only=False).items()
+                if str(other_appid) != appid_str
+                for dlc_id in (rec.get("dlc_appids") or [])
+            }
+            stale_dlc_ids = (
+                known_dlc_ids - set(pure_dlcs) - shared_dlc_ids
+            )
+            for stale_id in sorted(stale_dlc_ids):
+                if remove_additional_app(config_path, stale_id):
+                    summary["dlcs_removed"].append(stale_id)
+        except Exception as e:
+            logger.debug(f"[DLCMode] Could not prune stale DLC AppIDs for {appid_str}: {e}")
+
+        if len(pure_dlcs) >= DLC_DATA_THRESHOLD:
             add_dlc_data_batch(config_path, appid_str, pure_dlcs)
             summary["dlcs_added"].extend(list(pure_dlcs.keys()))
         else:
@@ -1285,7 +1323,11 @@ def purge_and_sanitize_for_dlc_only(
             summary["fake_app_removed"] = True
 
         # 6. Remove launch options (disable Netsock LD_AUDIT / custom wrappers)
-        if remove_launch_option(config_path, appid_str):
+        if remove_launch_option(
+            config_path,
+            appid_str,
+            markers=("netsock.so", "LD_AUDIT", "#assella-bypass"),
+        ):
             summary["launch_options_removed"] = True
 
         # 7. Remove any pinned ManifestIds for unselected depots of this game
@@ -1421,7 +1463,7 @@ def sync_dlc_only_sls_config(
             remove_additional_app(config_path, str(dlc_entry["dlc_appid"]).strip())
 
         # If 64 or more selected DLCs, bypass via DlcData
-        if len(selected_dlcs) >= 64:
+        if len(selected_dlcs) >= DLC_DATA_THRESHOLD:
             remove_dlc_data(config_path, appid_str)
             dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in selected_dlcs}
             add_dlc_data_batch(config_path, appid_str, dlc_dict)
@@ -1440,7 +1482,7 @@ def sync_dlc_only_sls_config(
             appid_str,
             len(selected_dlcs),
             len(unselected_dlcs),
-            "DlcData" if len(selected_dlcs) >= 64 else "AdditionalApps",
+            "DlcData" if len(selected_dlcs) >= DLC_DATA_THRESHOLD else "AdditionalApps",
         )
         return added
 
