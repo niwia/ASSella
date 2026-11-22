@@ -5,59 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.2.0beta1] - 2026-11-22
 
 ### Added
-- **Standalone Custom Folder Installs**: download a game into any folder you pick, with no Steam library, `.acf` or SLSsteam involvement. New storage picker option in the depot-selection and Steam-library dialogs, persisted in the `standalone_games` table and re-discovered on scan; game-details tabs (fix, desktop shortcut, DLC-to-DlcData, tickets) explain why they do not apply.
+- **Standalone Custom Folder Installs**: Download a game directly into any arbitrary directory without requiring a Steam library, `.acf` manifest, or SLSsteam involvement. Features a dedicated storage picker in depot selection, persistent tracking in `standalone_games`, dedicated "Standalone install" badge in library view, safe uninstallation refusing system paths, and isolated cancel cleanup that removes only files created by the job.
+- **Modernized Interactive Uninstall Modal**: Redesigned uninstall dialog with inline option cards, reclaimable disk size calculation, pre- and post-uninstall transparency summaries, prefix preservation guarantees, and a direct "Open Prefix" tool button.
+- **Stealth Proxy Multi-Endpoint Rotation Pool**: Multi-endpoint proxy rotation with sequential benchmarking, alive probing, latency probe suppression, and automated failover guards.
+- **UI Modernization & Material You Checkmarks**: Vector checkmarks and glyphs replacing emojis and legacy controls, hero banner layout in Game Details with ProtonDB / SteamDB lockup parity, and active notifications when adding a new Steam library while Steam is running.
+- **Updated Bundled Plugins**: Upgraded bundled Styx to 2.5 and SpaceBunny to 2.0.5 with modern test harness recognition.
+- **Hermetic Testing & CI Gates**: Added `scripts/test_config_write_safety.py` and `scripts/test_yaml_and_ratings_fixes.py` to CI; made test suites completely hermetic and independent of external Hubcap network dependencies and local Steam installations.
 
 ### Fixed
-- **Library detection**: `is_path_in_steam_library` now recognises a library by the marker `ensure_steam_library` actually writes at the library root, so a freshly created or dual-boot library is no longer classed as "not a library" — which had made a chosen library root download into the root itself.
-- **Double nesting**: a destination already inside `steamapps/common` is no longer nested into `steamapps/common` a second time.
-- **Plugin and ACCELA games** are no longer classified as standalone, which had sent them through the standalone UI gating, cancel cleanup and SLS config-sync skip.
-- **Cancel cleanup** decides from the destination the job used rather than from `game_data`, so cancelling a download to a freshly picked custom folder no longer deletes that folder. Cleanup also snapshots the folder when the job starts and removes only entries the job created, so a shared parent folder cannot lose unrelated files.
-- **Standalone uninstall** no longer follows a symlinked install folder (it unlinks the link and keeps the target), refuses ancestors of system/home directories instead of only an exact-match denylist, and keeps the library record when the path is refused or cannot be deleted. A path that is simply no longer mounted is no longer treated as a deleted install.
-- **Stale standalone records** are removed on scan when the install folder was deleted (missing path with an existing parent), while a missing removable-drive mount is kept for when it returns. Directory listing also closes its `scandir` handle.
-- **Moved Steam installs** stay Steam-owned: `is_standalone_game` now checks for an `appmanifest_<appid>.acf`, so a game installed outside `steamapps/common` is not uninstalled or cleaned up as a standalone custom folder.
-- **Config write lock** documents that it is process-local and now fails on timeout instead of proceeding unlocked, which could let two writers overwrite each other's entries.
-- **Standalone status** has its own "Standalone install" badge instead of falling through to "Unable to check updates". A manual "check all updates" no longer leaves it stuck on "checking"; the single-game check may show "checking" for the duration of that call, then settles on the standalone status.
-- **Uninstall** uses the shared `is_standalone_game` classification instead of its own inline copy.
-- **Custom-folder CI suites** pass on a clean home: the picker test builds a usable, non-transient target instead of relying on `/tmp` or on pre-existing Steam libraries, and the home-path blacklist check skips when `HOME` is itself transient.
-- **Config writes**: rewrote the value fallbacks in `yaml_values.update_yaml_boolean_value` and `sls_settings._apply` so the separator before an inline comment survives (`Plugins:  # note` no longer becomes `yes# note`, which YAML reads as a string) and an indented look-alike key is no longer matched and duplicated. A value that YAML reads as one scalar containing `#` is refused instead of silently mangled.
-- **Flow-style sections**: a non-empty single-line collection (`AdditionalApps: [111, 222]`, `DlcData: {620: {621: "Portal"}}`) is normalised to block style before editing. Previously the line-based editors could not see it, appended a second section header, and the duplicate-key gate refused the write — so adding an app to such a config always failed.
-- **Empty flow sections**: `AdditionalApps: {}` / `DlcData: {}` (and the same shape for `FakeAppIds`, `LaunchOptions`, `AppTokens`, `ManifestIds`, …) are normalised to a bare section header before editing. The standalone writers used to insert an indented entry under `{}`, which produced invalid YAML, so enabling SLSonline/Netsock or adding a token silently did nothing.
-- **Flow-style `IdleStatus`**: `IdleStatus: {AppId: 0, Title: "Playing"}` is now read as a block before editing, so changing the idle AppID keeps `Title` instead of dropping it. A parent that is not an editable block is refused rather than overwritten.
-- **Long values in flow sections**: the normaliser no longer folds a long DLC name across lines with a `\` continuation, which the line-based readers could not parse.
-- **Quoted IDs and unquoted DLC names** are recognised by the add/remove/read helpers, so `- "123"` is not duplicated by an add and `621: Portal` is not re-added as a duplicate key.
-- **Single config write per add**: `Plugins: yes` is applied in the same `batch_config_edit` as the app/depot/key/token/launch-option/DLC entry, instead of a separate preceding write that made the SLSsteam watcher reload twice.
-- **`get_launch_option`** returns the command without its YAML quotes or inline comment.
-- **Section headers are matched at column 0**, so an indented nested `AdditionalApps:` under another key is no longer mistaken for the top-level section and edited in place.
-- **Concurrent writes**: `batch_config_edit` now serialises read-modify-write per config file through `config_write_lock`, so two writers (GUI, headless helper, update checker) no longer drop each other's entries.
-- **Config validation**: `_validate_yaml_content` rejects duplicate mapping keys at any depth, not just at column 0, so a broken edit is refused before it reaches the file.
-- **Config fixer (Settings → Tools)**: repairs and backup restores now go through the in-place `_atomic_write` instead of truncating or replacing the file, so the SLSsteam file watcher keeps following the same inode and never sees a half-written `config.yaml`; the CLI path does the same.
-- **Failed jobs report failed**: a worker error or a failed finalize step no longer leaves the installation history and DDM status on "Completed"; `job_finished()` now consumes an explicit failure flag, and a failed post-processing step stops the chain and is not marked up-to-date.
-- **AT0-M/plugin games stay AT0-M**: the library scan no longer stamps `is_accela_install` on every managed game, so plugin and Vapor installs are classified, checked, and updated by the AT0-M path instead of being skipped as ACCELA installs.
-- **ACF depot discovery**: the fallback that reads `app<appid>_depot<depotid>.manifest` filenames now matches the real name shape; it previously split on `_` and never found a depot, so an ACF with an empty `InstalledDepots` could not be repaired. ACF writes are atomic and describe installed depots on every platform, and adopted ACFs never pin manifest GID `0`.
-- **Unkeyed AT0-M depots are surfaced**: when selected depots have no decryption key, the hand-off refreshes Hubcap once, excludes only the still-unkeyed depots, and tells the user which ones were skipped (including when no keyed content remains). Native downloads show the same warning instead of silently producing a partial install.
-- **Re-scoping removes stale entitlements**: plugin re-registration and DLC-only purge diff the previous record and remove old DLC AppIDs, depots and keys that are no longer selected, while preserving ids shared with other registered games. Pending-library cards no longer list DLC AppIDs as separate games.
-- **Plugin library safety**: a corrupt `plugin_library.json` is never mistaken for an empty library and overwritten; writers refuse it, reads are cached by path/mtime/size and invalidated on save, and writes use a per-process temp file with an atomic replace.
-- **Key and MRC validation**: HTTP error bodies such as `403` are no longer cached as manifest request codes; cached depot keys must be 64-character non-placeholder AES keys; `_lookup_cached_depot_key()` uses the single `DepotKeyManager.get_depot_key()` lookup; and a cached Hubcap Lua is refreshed after 24 hours or when a selected depot is missing a key.
-- **User launch options survive cleanup**: automatic Netsock/DLC/AT0-M cleanup removes only entries carrying an ASSella marker; an explicit "remove launch option" still removes the whole entry. Large DLC sets (64+) now consistently use `DlcData` instead of overflowing `AdditionalApps`.
-
-### Added
-- `scripts/test_config_write_safety.py`, now part of CI, covers the comment separator, nested-key isolation, scalar refusal, duplicate-key validation, concurrent batch edits and inode preservation.
-- `scripts/test_yaml_and_ratings_fixes.py` is now hermetic (its caches live in a temporary directory) and part of CI; it covers flow-style and empty sections, quoted IDs, long DLC names, `IdleStatus` preservation, single-write adds and CRLF-safe in-memory edits. `test_standalone_custom_folder.py` exercises cancel cleanup, uninstall safety and stale-record pruning.
-
-## [3.2.0beta1] - 2026-11-21
-
-### Fixed
-- **Config writers report what happened**: `add_app`/`add_depot`/`add_key` and their `remove_*` counterparts now return a `WriteOutcome` (`CHANGED`, `ALREADY_PRESENT`, `NOT_PRESENT`, `REFUSED`, `FAILED`) instead of one `False` for both "refused by a guard" and "already there". The public `add_*`/`remove_*` helpers return `True` only when the file changed; callers that must tell "already present" from "failed" use `add_additional_app_outcome` or the editor's `WriteOutcome`.
-- **Empty sections no longer tombstone the next one**: `_get_section_bounds` reported an empty body starting on the *following* key's line, so inserting into an empty `AdditionalDepots:`/`DlcData:` inserted under the header and left the next section childless — `DlcData` came back as `None` and its DLC entries vanished. Inserts now land under their own header, and entry removal can no longer delete a look-alike line from the next section.
-- **Config repair (Settings → Tools) keeps every container you filled**: an upstream template that marks a section as `AppIds: {}` typed the key as a scalar, so the merge echoed `{}` back over the user's entries; a nested `DlcData:
-  620:
-    621: "Portal"` was flattened and lost its parent AppID. Both now round-trip, and inline-empty template keys render the user's list or map as a block.
+- **Failed Job Status Reporting**: Worker exceptions and finalize errors are now properly propagated and reported as `Failed` in terminal history and DDM status; `job_finished()` consumes an explicit failure flag, preventing failed jobs from falsely reporting success or marking games up-to-date.
+- **AT0-M & Plugin Game Classification**: Library scans no longer stamp `is_accela_install=True` onto AT0-M and plugin installs, restoring their visibility in `At0mUpdateChecker` and preventing them from being falsely routed through ACCELA update routines.
+- **ACF Depot Discovery Fallback**: Repaired the depot cache manifest discovery regex (`app<appid>_depot(\d+)`), which previously failed due to a string-split assumption; enables repair of adopted ACFs with empty `InstalledDepots`.
+- **Stale Scope Pruning on Re-registration**: Plugin re-registration and DLC-only purging now diff against previous records to remove deselected DLC AppIDs, depots, keys, and tokens from `config.yaml` while strictly preserving shared redists and entitlements.
+- **Unkeyed AT0-M Depot Transparency**: AT0-M handoff performs an emergency Hubcap refresh when encountering unkeyed depots; if still missing, displays an explicit themed warning dialog detailing the excluded depots instead of silently installing an incomplete game.
+- **Key & MRC Validation Hardening**: Rejects HTTP error bodies (such as `403` or `500`) and numbers under 8 digits from being treated as manifest request codes; validates cached depot keys to be 64-hex non-placeholder AES keys; and added `DepotKeyManager.get_depot_key()` with strict key validation.
+- **Manifest Pinning Safety**: Guards against pinning manifest GID `0` into `ManifestIds`.
+- **User Launch Options Preservation**: Automatic DLC, Netsock, and AT0-M cleanup removes only entries carrying ASSella markers (`netsock.so`, `LD_AUDIT`, `#assella-bypass`), preserving user-configured flags (e.g. `-dx11`, `PROTON_*`).
+- **Consistent Large DLC Handling**: Centralized `DLC_DATA_THRESHOLD = 64` across modules; DLC sets with 64+ entries consistently use `DlcData` instead of overflowing `AdditionalApps`.
+- **Ghost DLC Pending Game Filtering**: `assella_pending.py` filters out child DLC AppIDs found in `DlcData`, plugin records, and `[DLC]` comments, stopping DLCs from appearing as uninstalled standalone base games.
+- **Atomic ACF Writing & Linux Shape**: ACFs are written atomically via backup or PID-specific temp files; sets `include_depots=True` across all platforms so Linux/SteamOS ACFs include `InstalledDepots`.
+- **SLSsteam Config & YAML Architecture Overhaul**:
+  - `_atomic_write` and `batch_config_edit` preserve system file inodes for SLSsteam inotify watchers.
+  - Normalizes empty flow sections (`AdditionalApps: {}`, `DlcData: {}`, etc.) and single-line flow collections (`AdditionalApps: [1, 2]`) to editable block style, fixing silent write drops.
+  - Comment-safe value updates: inline comments survive boolean updates without mangling (`Plugins: yes # note`).
+  - Strict duplicate-key validation rejecting invalid edits across all YAML mapping depths.
+  - Multi-writer concurrency serialization via process-local `config_write_lock`.
+  - Config writers return explicit `WriteOutcome` codes (`CHANGED`, `ALREADY_PRESENT`, `NOT_PRESENT`, `REFUSED`, `FAILED`).
+  - Empty sections no longer tombstone the following key's line or child entries.
+- **Tolerant Manifest & Zip Handling**: Hubcap zip reader tolerates CRC-32 mismatches on modified zip streams, and guards progress dialog lifetimes during file previews.
+- **NixOS Launcher Resilience**: Defensive user resolution for NixOS PATH profile expansion and execution sentinel handling.
+- **Library Detection & Double Nesting**: Fixed `is_path_in_steam_library` recognition of fresh/dual-boot libraries, and prevented double `steamapps/common` path nesting.
+- **Standalone Lifecycle & Uninstall Safety**: Cancel cleanup snapshots created files and preserves user folders; standalone uninstallation refuses system/home ancestors.
 
 ### Changed
-- Version bumped to **3.2.0beta1** (build 2026-11-21).
+- Version bumped to **3.2.0beta1** (build 2026-11-22).
 
 ## [3.1.0] - 2026-11-09
 
