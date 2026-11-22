@@ -17,6 +17,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
+    QApplication,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -348,6 +349,81 @@ def _epsilon_install_page(dialog, page_lay, rebuild) -> None:
     page_lay.addStretch(1)
 
 
+def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
+    """Pair the AT0-M web console with this machine's Epsilon bridge.
+
+    The token is handed over in the URL fragment, which browsers never send to
+    the web server, so the page can keep it locally after the first load.
+    """
+    card, cl = dialog._create_card_frame("Web console (AT0-M)")
+    cl.addWidget(_label(
+        "Browse Steam and register games from the at0m page. It talks to Epsilon on "
+        "127.0.0.1 only, and needs the console token below. The token never leaves "
+        "this machine and is never sent to the docs site."
+    ))
+
+    token = str(info.get("console_token") or "")
+    if token:
+        display = token[:11] + "…" + token[-4:] if len(token) > 20 else token
+        cl.addWidget(_label(f"Token: {display}", "color: #FFFFFF; font-family: monospace;"
+                                 " font-size: 9pt; border: none; background: transparent;"))
+    else:
+        cl.addWidget(_label(
+            "No token yet. Start the Epsilon bridge once (or press Refresh) and it will "
+            "create one.", f"color: {WARN}; font-size: 8.5pt; border: none; background: transparent;"
+        ))
+
+    row = QHBoxLayout()
+    open_btn = _button("Open web console", primary=True)
+    copy_btn = _button("Copy token")
+    rotate_btn = _button("New token")
+    rotate_btn.setToolTip("Invalidates the current token; the console will ask to pair again.")
+    open_btn.setEnabled(bool(token))
+    copy_btn.setEnabled(bool(token))
+    rotate_btn.setEnabled(True)
+
+    def _open():
+        live = comp.epsilon_console_token() or token
+        if not live:
+            ThemedMessageBox.information(
+                dialog, "Web console",
+                "Start the Epsilon bridge first so it can create a console token.",
+            )
+            return
+        QDesktopServices.openUrl(QUrl(f"{comp.EPSILON_CONSOLE_URL}#k={live}"))
+
+    def _copy():
+        live = comp.epsilon_console_token() or token
+        if live:
+            QApplication.clipboard().setText(live)
+
+    def _rotate():
+        if ThemedMessageBox.question(
+            dialog, "New console token",
+            "Replace the current token? Any browser already paired with the web "
+            "console will have to pair again.",
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.No,
+        ) != ThemedMessageBox.StandardButton.Yes:
+            return
+        comp.rotate_console_token()
+        rebuild()
+
+    open_btn.clicked.connect(_open)
+    copy_btn.clicked.connect(_copy)
+    rotate_btn.clicked.connect(_rotate)
+    row.addWidget(open_btn)
+    row.addWidget(copy_btn)
+    row.addStretch(1)
+    row.addWidget(rotate_btn)
+    cl.addLayout(row)
+    cl.addWidget(_label(
+        "Tip: copy the token into the console if you open it on another browser. "
+        "Rotate it if you ever pasted it somewhere you no longer trust."
+    ))
+    page_lay.addWidget(card)
+
+
 def _epsilon_installed_page(dialog, page_lay, info, rebuild) -> None:
     # 1. Live status
     card, cl = dialog._create_card_frame("Epsilon")
@@ -414,6 +490,7 @@ def _epsilon_installed_page(dialog, page_lay, info, rebuild) -> None:
                                             {"manifest_api_key": k, "manifest_api_key_timestamp": ts}))
     cl3.addWidget(_label("Saved to Epsilon's own settings file; used the next time the bridge wakes."))
     page_lay.addWidget(card3)
+    _epsilon_console_card(dialog, page_lay, info, rebuild)
     page_lay.addStretch(1)
 
     busy_buttons = (refresh_btn, restart_btn, update_btn, repair_btn, uninstall_btn)

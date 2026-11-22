@@ -245,6 +245,10 @@ def set_uran_setting(key: str, value: Any) -> bool:
 
 EPSILON_INSTALL_URL = "https://raw.githubusercontent.com/niwia/Uran/main/install_epsilon.sh"
 EPSILON_GUIDE_URL = "https://assella.pages.dev/epsilon"
+# The AT0-M web console. The token travels in the fragment, which browsers
+# never send to the web host, so the page can store it locally on first load.
+EPSILON_CONSOLE_URL = "https://assella.pages.dev/at0m"
+CONSOLE_TOKEN_KEY = "epsilon_console_token"
 
 
 def _systemd_user_dirs() -> list:
@@ -277,19 +281,51 @@ def epsilon_root() -> Optional[Path]:
     return default if (default / "epsilon" / "daemon.py").is_file() else None
 
 
+def epsilon_version(root: Optional[Path]) -> str:
+    """Epsilon's own version: ``epsilon/VERSION``, else ``plugin.json``.
+
+    Uran and Epsilon ship from one repository but are released separately, so
+    the Decky plugin keeps the plugin manifest and the bridge has its own file.
+    Old installs that predate the split fall back to the manifest.
+    """
+    if root:
+        try:
+            lines = (root / "epsilon" / "VERSION").read_text(encoding="utf-8").strip().splitlines()
+            version = lines[0].strip() if lines else ""
+            if re.fullmatch(r"\d+(\.\d+)*", version):
+                return version
+        except (OSError, IndexError, UnicodeDecodeError) as e:
+            logger.debug(f"[Companions] Could not read epsilon VERSION file: {e}")
+    meta = read_json(root / "plugin.json") if root else {}
+    return str(meta.get("version") or "")
+
+
+def epsilon_console_token() -> str:
+    """The token Epsilon generated for the web console ("" until it runs)."""
+    return str(read_json(epsilon_settings_path()).get(CONSOLE_TOKEN_KEY) or "")
+
+
+def rotate_console_token() -> str:
+    """Mint a new console token. Epsilon picks it up on the next request."""
+    token = "at0m_" + os.urandom(32).hex()
+    update_json(epsilon_settings_path(), {CONSOLE_TOKEN_KEY: token})
+    return token
+
+
 def epsilon_info() -> Dict[str, Any]:
     """Local facts only (fast)."""
     root = epsilon_root()
-    meta = read_json(root / "plugin.json") if root else {}
+    stored = read_json(epsilon_settings_path())
     settings = dict(SHARED_DEFAULTS)
-    settings.update(read_json(epsilon_settings_path()))
+    settings.update(stored)
     return {
         "installed": root is not None or (_systemd_user_dir() / "epsilon.socket").is_file(),
         "units_installed": (_systemd_user_dir() / "epsilon.socket").is_file(),
         "root": str(root) if root else "",
-        "version": str(meta.get("version") or ""),
+        "version": epsilon_version(root),
         "settings_path": str(epsilon_settings_path()),
         "settings": settings,
+        "console_token": str(stored.get(CONSOLE_TOKEN_KEY) or ""),
     }
 
 
