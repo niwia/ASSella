@@ -2,11 +2,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 /* ------------------------------------------------------------------ *
- * at0m — web console (UI preview)
+ * at0m — web console
  *
  * Metro/Windows-8 design language: flat planes, 0px radius, no shadows,
  * tight tile gutters, panorama typography, accent-driven highlights.
- * Data below is a demo catalog: no Hubcap / Steam fetch is wired yet.
+ *
+ * Two data sources, one shape:
+ *   - paired with Epsilon: library + search come from 127.0.0.1:1952 /v1
+ *   - otherwise: the demo catalog below (?demo=1 keeps it on purpose)
+ * Nothing but the token, the accent and a tiny library cache is stored here.
  * ------------------------------------------------------------------ */
 
 const ACCENTS = [
@@ -33,7 +37,7 @@ const GLYPHS = {
   key: '<circle cx="23" cy="32" r="10"/><path d="M33 32h23M48 32v9M56 32v7"/>'
 }
 
-const GAMES = [
+const DEMO_GAMES = [
   {
     id: 'elden', title: 'Elden Ring', developer: 'FromSoftware', year: 2022,
     appId: '1245620', buildId: '18456314', status: 'ready', featured: true, tile: 't2x2',
@@ -192,7 +196,9 @@ const STATUS_LABEL = {
   ready: 'ready',
   'needs-key': 'needs key',
   'no-build': 'no build',
-  registered: 'registered'
+  registered: 'registered',
+  available: 'not added',
+  installing: 'downloading'
 }
 
 /* ------------------------------- state ------------------------------- */
@@ -214,7 +220,26 @@ const bridgeToken = ref('')
 const paired = ref(false)
 const probed = ref(false)
 const probing = ref(false)
+
+// Live data (Epsilon). Empty until one successful /v1/library.
+const live = ref(false)
+const loading = ref(false)
+const library = ref([])
+const hits = ref([])
+const searching = ref(false)
+const searchError = ref('')
+const syncedAt = ref(0)
+const cachedAt = ref(0)
+const hubcap = ref(null)
+const registering = ref(false)
 const charmOpen = ref(false)
+const settingsOpen = ref(false)
+const form = ref({
+  gateway: 'auto',
+  fetchDlcs: true,
+  addDelisted: true,
+  notifications: 'auto'
+})
 const bridgeOpen = ref(false)
 const toasts = ref([])
 const searchEl = ref(null)
@@ -225,11 +250,25 @@ const toastTimers = new Set()
 
 /* ----------------------------- computed ------------------------------ */
 
+const demo = ref(false)
+const searchMode = computed(() => live.value && paired.value && query.value.trim().length >= 2)
+
+// One list feeds every computed below, so the templates never care where the
+// rows came from: the demo catalog, the store, or this machine's library.
+const GAMES = computed(() => {
+  if (demo.value) return DEMO_GAMES
+  return searchMode.value ? hits.value : library.value
+})
+
 const filtered = computed(() => {
+  const list = GAMES.value
+  if (searchMode.value && !query.value.trim()) return list
   const q = query.value.trim().toLowerCase()
-  return GAMES.filter((g) => {
+  return list.filter((g) => {
     if (pivot.value !== 'catalog' && g.status !== pivot.value) return false
-    if (!q) return true
+    // The store already matched the term; filtering again would drop hits whose
+    // localised title differs from what the user typed.
+    if (!q || searchMode.value) return true
     const hay = [g.title, g.appId, g.developer, g.buildId, ...g.tags].join(' ').toLowerCase()
     return hay.includes(q)
   })
@@ -238,6 +277,19 @@ const filtered = computed(() => {
 const isSearching = computed(() => query.value.trim().length > 0 || pivot.value !== 'catalog')
 const sections = computed(() => {
   if (!filtered.value.length) return []
+  if (!demo.value) {
+    return [
+      {
+        id: searchMode.value ? 'results' : 'library',
+        label: searchMode.value
+          ? 'store results'
+          : paired.value
+            ? 'your library'
+            : 'cached library',
+        games: filtered.value
+      }
+    ]
+  }
   if (isSearching.value) return [{ id: 'results', label: 'results', games: filtered.value }]
   const featured = filtered.value.filter((g) => g.featured)
   const rest = filtered.value.filter((g) => !g.featured)
@@ -246,17 +298,34 @@ const sections = computed(() => {
   if (rest.length) out.push({ id: 'catalog', label: 'catalog', games: rest })
   return out
 })
-const activeGame = computed(() => GAMES.find((g) => g.id === activeId.value) || null)
-const selectedGames = computed(() => GAMES.filter((g) => selected.value.has(g.id)))
+const activeGame = computed(() => GAMES.value.find((g) => g.id === activeId.value) || null)
+const selectedGames = computed(() => GAMES.value.filter((g) => selected.value.has(g.id)))
 const selectedSize = computed(() => selectedGames.value.reduce((n, g) => n + totalSize(g), 0))
-const readyCount = computed(() => GAMES.filter((g) => g.status === 'ready' || g.status === 'registered').length)
+const readyCount = computed(
+  () => GAMES.value.filter((g) => g.status === 'ready' || g.status === 'registered').length
+)
 const activeDepots = computed(() => (activeGame.value ? includedDepots(activeGame.value) : []))
-const hasKey = computed(() => hubcapKey.value.trim().length >= 8)
+const hasKey = computed(() => hubcapKey.value.trim().length >= 8 || Boolean(hubcap.value?.ok))
+
+function countFor(status) {
+  return GAMES.value.filter((g) => g.status === status).length
+}
 
 /* ------------------------------ helpers ------------------------------ */
 
 function totalSize(game) {
+  if (typeof game.sizeGB === 'number' && game.sizeGB > 0) return game.sizeGB
   return game.depots.reduce((n, d) => n + d.size, 0)
+}
+
+function sizeLabel(game) {
+  const gb = totalSize(game)
+  return gb > 0 ? fmtGB(gb) : game.live ? '—' : fmtGB(0)
+}
+
+function keyCountOf(game) {
+  if (typeof game.keyCount === 'number') return game.keyCount
+  return game.depots.filter((d) => d.key).length
 }
 
 function depotOf(game, depot) {
@@ -343,6 +412,7 @@ function toast(title, sub = '') {
 function closePopovers() {
   charmOpen.value = false
   bridgeOpen.value = false
+  settingsOpen.value = false
 }
 
 function pickAccent(hex) {
@@ -406,6 +476,7 @@ async function probeBridge() {
     if (paired.value) {
       const count = body.library_count ?? 0
       toast('console paired', `epsilon ${bridgeVersion.value} · ${count} ${count === 1 ? 'game' : 'games'}`)
+      await Promise.all([loadLibrary(), loadHubcap(), loadSettings()])
     } else if (res.status === 401) {
       toast('bridge found', 'Paste the console token from ASSella → Companions → Epsilon.')
     } else if (res.status === 404) {
@@ -425,6 +496,11 @@ async function probeBridge() {
   }
 }
 
+function focusSearch() {
+  searchEl.value?.focus()
+  searchEl.value?.select?.()
+}
+
 function saveBridgeToken() {
   const token = bridgeToken.value.trim()
   try {
@@ -434,6 +510,259 @@ function saveBridgeToken() {
     /* storage unavailable */
   }
   if (token) probeBridge()
+}
+
+/* --------------------------- epsilon data ---------------------------- *
+ * Everything below talks to the local bridge. Nothing is proxied through
+ * the docs host: the page is static, and the data never leaves the machine
+ * except into this tab.
+ * -------------------------------------------------------------------- */
+
+const BRIDGE_BASE = 'http://127.0.0.1:1952'
+const CACHE_KEY = 'at0m.library'
+const CACHE_VERSION = 1
+const CACHE_MAX = 500
+
+const ACCENT_CYCLE = ['#1BA1E2', '#60A917', '#E3C800', '#FA6800', '#0050EF', '#A20025', '#00ABA9', '#AA00FF']
+
+function accentFor(appId) {
+  let hash = 0
+  for (const ch of String(appId)) hash = (hash * 31 + ch.charCodeAt(0)) % 9973
+  return ACCENT_CYCLE[hash % ACCENT_CYCLE.length]
+}
+
+// Steam's own header art, straight from the CDN. No API, no key, no CORS:
+// browsers cache it and our host never sees the request.
+function thumbFor(appId) {
+  return `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`
+}
+
+function relTime(seconds) {
+  if (!seconds) return ''
+  const diff = Date.now() / 1000 - seconds
+  if (diff < 3600) return `${Math.max(1, Math.round(diff / 60))} min ago`
+  if (diff < 86400) return `${Math.round(diff / 3600)} h ago`
+  return `${Math.round(diff / 86400)} d ago`
+}
+
+function toGame(entry) {
+  const keys = Number(entry.key_count || 0)
+  const installed = Boolean(entry.installed)
+  let status = 'registered'
+  if (entry.downloading) status = 'installing'
+  else if (!keys) status = 'needs-key'
+  else if (entry.dlc_only) status = 'no-build'
+  else if (!installed) status = 'ready'
+  return {
+    id: `app${entry.app_id}`,
+    appId: String(entry.app_id),
+    title: entry.name || `App ${entry.app_id}`,
+    developer: '',
+    year: null,
+    buildId: entry.buildid || '',
+    status,
+    featured: false,
+    tile: 't1x1',
+    accent: accentFor(entry.app_id),
+    glyph: 'cube',
+    updated: relTime(entry.updated_at),
+    tags: installed ? ['installed'] : [],
+    thumb: thumbFor(entry.app_id),
+    live: true,
+    installed,
+    downloading: Boolean(entry.downloading),
+    sizeGB: entry.size_on_disk ? entry.size_on_disk / 1024 ** 3 : 0,
+    keyCount: keys,
+    detailLoaded: false,
+    depots: (entry.depots || []).map((id) => ({
+      id: String(id), name: `depot ${id}`, size: 0, key: null, gid: null
+    })),
+    dlc: (entry.dlc_appids || []).map((id) => ({ appId: String(id), name: `DLC ${id}`, size: 0 }))
+  }
+}
+
+function toHit(row) {
+  return {
+    id: `app${row.app_id}`,
+    appId: String(row.app_id),
+    title: row.title || `App ${row.app_id}`,
+    developer: '',
+    year: null,
+    buildId: '',
+    status: 'available',
+    featured: false,
+    tile: 't1x1',
+    accent: accentFor(row.app_id),
+    glyph: 'cube',
+    updated: '',
+    tags: [],
+    thumb: thumbFor(row.app_id),
+    live: true,
+    installed: false,
+    sizeGB: 0,
+    keyCount: 0,
+    detailLoaded: false,
+    depots: [],
+    dlc: []
+  }
+}
+
+async function bridgeFetch(path, options = {}) {
+  const method = (options.method || 'GET').toUpperCase()
+  const headers = { ...(options.headers || {}) }
+  if (bridgeToken.value) headers.Authorization = `Bearer ${bridgeToken.value}`
+  if (method !== 'GET') headers['X-At0m-Client'] = '1'
+  if (options.body) headers['Content-Type'] = 'application/json'
+
+  const res = await fetch(`${BRIDGE_BASE}${path}`, {
+    ...options,
+    method,
+    headers,
+    mode: 'cors',
+    cache: 'no-store'
+  })
+  if (!res.ok) {
+    let message = `Epsilon replied ${res.status}`
+    try {
+      const body = await res.json()
+      if (body.error) message = body.error
+    } catch {
+      /* not json */
+    }
+    const error = new Error(message)
+    error.status = res.status
+    throw error
+  }
+  return res.json()
+}
+
+// The cache is deliberately tiny and boring: no keys, no paths, no depots.
+// It exists so an unpaired browser still remembers which games you own.
+function saveCache(games) {
+  try {
+    const rows = games.slice(0, CACHE_MAX).map((g) => [
+      g.appId, g.title, g.installed ? 1 : 0, g.keyCount || 0, g.buildId || ''
+    ])
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, at: Date.now(), rows }))
+  } catch {
+    /* quota or private mode */
+  }
+}
+
+function restoreCache() {
+  try {
+    const data = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null')
+    if (!data || data.v !== CACHE_VERSION || !Array.isArray(data.rows) || !data.rows.length) return false
+    library.value = data.rows.map(([appId, title, installed, keyCount, buildId]) =>
+      toGame({ app_id: appId, name: title, installed, key_count: keyCount, buildid: buildId })
+    )
+    cachedAt.value = Number(data.at) || 0
+    live.value = true
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function loadLibrary() {
+  if (!paired.value) return
+  loading.value = true
+  try {
+    const body = await bridgeFetch('/v1/library')
+    library.value = (body.games || []).map(toGame)
+    live.value = true
+    syncedAt.value = Date.now()
+    searchError.value = ''
+    saveCache(library.value)
+  } catch (error) {
+    searchError.value = error.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadSettings() {
+  if (!paired.value) return
+  try {
+    const body = await bridgeFetch('/v1/settings')
+    const stored = body.settings || {}
+    form.value = {
+      gateway: stored.hubcap_gateway || 'auto',
+      fetchDlcs: stored.fetch_dlcs_on_inject !== false,
+      addDelisted: stored.add_delisted_dlcs !== false,
+      notifications: stored.notification_mode || 'auto'
+    }
+  } catch {
+    /* a settings failure should not block the library */
+  }
+}
+
+async function saveSetting(key, value) {
+  if (!paired.value) return
+  try {
+    await bridgeFetch('/v1/settings', { method: 'POST', body: JSON.stringify({ [key]: value }) })
+    toast('setting saved', `${key.replace(/_/g, ' ')} → ${value}`)
+  } catch (error) {
+    toast('setting rejected', error.message)
+    await loadSettings()
+  }
+}
+
+async function loadHubcap() {
+  if (!paired.value) return
+  try {
+    hubcap.value = await bridgeFetch('/v1/hubcap')
+  } catch {
+    hubcap.value = null
+  }
+}
+
+let searchTimer = null
+async function runSearch(term) {
+  searching.value = true
+  try {
+    const body = await bridgeFetch(`/v1/search?q=${encodeURIComponent(term)}`)
+    hits.value = (body.results || []).map(toHit)
+    searchError.value = ''
+  } catch (error) {
+    hits.value = []
+    searchError.value = error.message
+  } finally {
+    searching.value = false
+  }
+}
+
+// Fill in depots and DLC once the flyout opens; the library list is thin on
+// purpose because it describes every game the user owns.
+async function loadDetail(game) {
+  if (!game || !paired.value || game.detailLoaded) return
+  game.detailLoaded = true
+  try {
+    const detail = await bridgeFetch(`/v1/app/${game.appId}?network=1`)
+    game.buildId = detail.buildid || game.buildId
+    game.keyCount = Number(detail.key_count ?? game.keyCount)
+    game.depots = (detail.depots_detail || []).map((d) => ({
+      id: String(d.id),
+      name: d.name || `depot ${d.id}`,
+      size: 0,
+      key: null,
+      gid: null,
+      hasKey: Boolean(d.has_key),
+      enabled: Boolean(d.in_config)
+    }))
+    game.dlc = (detail.dlcs_detail || []).map((d) => ({
+      appId: String(d.id),
+      name: d.name || `DLC ${d.id}`,
+      size: 0,
+      enabled: Boolean(d.selected)
+    }))
+    if (detail.installed) game.installed = true
+    // Only a game already in the library can be "missing" keys; a store hit is
+    // simply not added yet.
+    if (!game.keyCount && game.status !== 'available') game.status = 'needs-key'
+  } catch {
+    game.detailLoaded = false
+  }
 }
 
 function luaFor(games) {
@@ -497,6 +826,12 @@ function download(name, text, mime = 'text/plain') {
 function exportLua(games) {
   const list = games && games.length ? games : activeGame.value ? [activeGame.value] : []
   if (!list.length) return
+  if (!demo.value && live.value) {
+    // Live rows carry no keys by design, so a .lua from them would be broken
+    // rather than merely incomplete.
+    toast('keys stay on this machine', 'Registering is the supported path; nothing is exported.')
+    return
+  }
   const name = list.length === 1 ? `${list[0].appId}.lua` : `at0m-bundle-${list.length}.lua`
   download(name, luaFor(list), 'text/x-lua')
   toast(
@@ -540,19 +875,46 @@ function copyLua(games) {
   copyText(luaFor(list), '.lua contents')
 }
 
-function register(games) {
+async function register(games) {
   const list = games && games.length ? games : activeGame.value ? [activeGame.value] : []
   if (!list.length) return
-  // The catalog is still demo data. Epsilon's /v1/register would really add
-  // these appids (they are real Steam IDs), so the preview exports instead.
-  // Swap this for the real call once the tiles are fed by /v1/library.
-  toast(
-    'preview catalog',
-    paired.value
-      ? 'Registrations are disabled while the catalog is demo data — exporting instead.'
-      : 'Pair with Epsilon to enable registering — exporting instead.'
-  )
-  exportLua(list)
+
+  // The demo catalog is not real, so it can only be exported.
+  if (demo.value || !live.value) {
+    toast('demo catalog', 'These tiles are sample data — exporting the recipe instead.')
+    exportLua(list)
+    return
+  }
+  if (!paired.value) {
+    toast('not paired', 'Paste the console token from ASSella → Companions → Epsilon.')
+    return
+  }
+
+  registering.value = true
+  let added = 0
+  let failure = ''
+  for (const game of list) {
+    try {
+      // Only the AppID: Epsilon re-derives keys and manifests from Hubcap, so a
+      // page can never write arbitrary keys into config.yaml.
+      await bridgeFetch('/v1/register', { method: 'POST', body: JSON.stringify({ appid: game.appId }) })
+      added += 1
+    } catch (error) {
+      failure = failure || `${game.title}: ${error.message}`
+    }
+  }
+  registering.value = false
+
+  if (added) {
+    toast(
+      `registered ${added} ${added === 1 ? 'title' : 'titles'}`,
+      'Epsilon is writing config.yaml — Steam picks it up on the next scan.'
+    )
+    query.value = ''
+    clearSelection()
+    await loadLibrary()
+  }
+  if (failure) toast('registration failed', failure)
 }
 
 /* ----------------------------- lifecycle ----------------------------- */
@@ -587,7 +949,7 @@ function onKeydown(e) {
 
 function cycleLiveTiles() {
   if (document.hidden) return
-  const tiles = GAMES.filter((g) => filtered.value.includes(g))
+  const tiles = GAMES.value.filter((g) => filtered.value.includes(g))
   if (tiles.length < 2) return
   const next = new Set(flipped.value)
   for (let i = 0; i < 2; i += 1) {
@@ -599,6 +961,11 @@ function cycleLiveTiles() {
 }
 
 onMounted(() => {
+  if (new URLSearchParams(window.location.search).get('demo') === '1') demo.value = true
+  else if (!restoreCache()) {
+    /* nothing cached yet: show the connect state until a probe lands */
+  }
+
   try {
     const savedAccent = localStorage.getItem('at0m.accent')
     if (savedAccent) accent.value = savedAccent
@@ -652,8 +1019,22 @@ watch(accent, (value) => {
   }
 })
 
-watch(activeId, () => {
+watch(activeId, (id) => {
   closePopovers()
+  if (id) loadDetail(GAMES.value.find((g) => g.id === id))
+})
+
+watch(query, (value) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  if (demo.value || !live.value) return
+  const term = value.trim()
+  if (term.length < 2) {
+    hits.value = []
+    searchError.value = ''
+    return
+  }
+  if (!paired.value) return
+  searchTimer = setTimeout(() => runSearch(term), 320)
 })
 </script>
 
@@ -665,7 +1046,7 @@ watch(activeId, () => {
         <div class="super">
           <span class="sq" />
           <span>at0-m // web console</span>
-          <span class="chip">preview</span>
+          <span class="chip">{{ demo ? 'demo' : live ? (paired ? 'live' : 'cached') : 'offline' }}</span>
         </div>
         <h1>at0m</h1>
         <nav class="pivots" aria-label="catalog pivots">
@@ -680,7 +1061,7 @@ watch(activeId, () => {
           >
             {{ p.label }}
             <span v-if="p.id !== 'catalog'" class="pivot-count">
-              {{ GAMES.filter((g) => g.status === p.id).length }}
+              {{ countFor(p.id) }}
             </span>
           </button>
         </nav>
@@ -779,6 +1160,86 @@ watch(activeId, () => {
               <p class="pop-note">Right-click a tile to multi-select. Type anywhere to search.</p>
             </div>
           </div>
+
+          <div class="popover-anchor">
+            <button
+              type="button"
+              class="tool"
+              :class="{ live: paired }"
+              :aria-expanded="settingsOpen"
+              @click.stop="settingsOpen = !settingsOpen"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="3.2" />
+                <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+              </svg>
+              <span>settings</span>
+            </button>
+            <div v-if="settingsOpen" class="popover set-pop" @click.stop>
+              <div class="pop-k">epsilon settings</div>
+              <template v-if="paired">
+                <div class="set-row">
+                  <span class="set-k">hubcap key</span>
+                  <span class="set-v">{{ hubcap?.ok ? hubcap.masked : 'none on this machine' }}</span>
+                </div>
+                <div class="set-row">
+                  <label class="set-k" for="set-gateway">gateway</label>
+                  <select
+                    id="set-gateway"
+                    v-model="form.gateway"
+                    @change="saveSetting('hubcap_gateway', form.gateway)"
+                  >
+                    <option value="auto">auto</option>
+                    <option value="direct">direct</option>
+                    <option value="proxy">proxy</option>
+                  </select>
+                </div>
+                <div class="set-row">
+                  <label class="set-k" for="set-dlcs">fetch dlcs on inject</label>
+                  <input
+                    id="set-dlcs"
+                    v-model="form.fetchDlcs"
+                    type="checkbox"
+                    @change="saveSetting('fetch_dlcs_on_inject', form.fetchDlcs)"
+                  />
+                </div>
+                <div class="set-row">
+                  <label class="set-k" for="set-delisted">add delisted dlcs</label>
+                  <input
+                    id="set-delisted"
+                    v-model="form.addDelisted"
+                    type="checkbox"
+                    @change="saveSetting('add_delisted_dlcs', form.addDelisted)"
+                  />
+                </div>
+                <div class="set-row">
+                  <label class="set-k" for="set-notify">notifications</label>
+                  <select
+                    id="set-notify"
+                    v-model="form.notifications"
+                    @change="saveSetting('notification_mode', form.notifications)"
+                  >
+                    <option value="auto">auto</option>
+                    <option value="steam">steam</option>
+                    <option value="desktop">desktop</option>
+                    <option value="none">none</option>
+                  </select>
+                </div>
+                <p class="pop-note">
+                  Written to Epsilon's own settings.json on this machine. No secret is read here.
+                </p>
+              </template>
+              <p v-else class="pop-note">
+                Pair the bridge first — these live in Epsilon, not in this page.
+              </p>
+              <div class="pop-actions">
+                <button type="button" class="btn tiny" :disabled="probing" @click="probeBridge">
+                  refresh
+                </button>
+                <button type="button" class="btn tiny ghost" @click="settingsOpen = false">close</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </header>
@@ -838,9 +1299,48 @@ watch(activeId, () => {
       </div>
 
       <div v-if="!filtered.length" class="empty">
-        <div class="empty-title">nothing matched</div>
-        <p>Try another title, an AppID, or a tag like <em>roguelike</em> or <em>co-op</em>.</p>
-        <button type="button" class="btn primary" @click="query = ''; pivot = 'catalog'">show everything</button>
+        <template v-if="searchMode && searching">
+          <div class="empty-title">searching the store…</div>
+          <p>Valve's catalogue can take a second.</p>
+        </template>
+        <template v-else-if="searchError">
+          <div class="empty-title">the bridge said no</div>
+          <p>{{ searchError }}</p>
+          <button type="button" class="btn" @click="probeBridge">check the bridge</button>
+        </template>
+        <template v-else-if="searchMode">
+          <div class="empty-title">no store match</div>
+          <p>Nothing on Steam matched “{{ query.trim() }}”. Try a shorter term or the AppID.</p>
+          <button type="button" class="btn" @click="query = ''">back to your library</button>
+        </template>
+        <template v-else-if="demo">
+          <div class="empty-title">nothing matched</div>
+          <p>Try another title, an AppID, or a tag like <em>roguelike</em> or <em>co-op</em>.</p>
+          <button type="button" class="btn primary" @click="query = ''; pivot = 'catalog'">show everything</button>
+        </template>
+        <template v-else-if="!paired">
+          <div class="empty-title">no bridge, no catalogue</div>
+          <p>
+            The console reads your library and the store through Epsilon on
+            <code>127.0.0.1:1952</code>. Nothing is fetched from this site — so with the
+            bridge off, there is nothing to show.
+          </p>
+          <div class="empty-actions">
+            <button type="button" class="btn primary" @click="bridgeOpen = true; probeBridge()">
+              connect epsilon
+            </button>
+            <button type="button" class="btn" @click="demo = true">look at the demo</button>
+          </div>
+        </template>
+        <template v-else-if="loading">
+          <div class="empty-title">reading your library…</div>
+          <p>Epsilon is scanning config.yaml.</p>
+        </template>
+        <template v-else>
+          <div class="empty-title">nothing registered yet</div>
+          <p>Search a title above and press <strong>register</strong> to write it to config.yaml.</p>
+          <button type="button" class="btn primary" @click="focusSearch">search the store</button>
+        </template>
       </div>
 
       <template v-else>
@@ -872,6 +1372,16 @@ watch(activeId, () => {
 
               <div class="track">
                 <div class="face">
+                  <img
+                    v-if="g.thumb"
+                    class="thumb"
+                    :src="g.thumb"
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    referrerpolicy="no-referrer"
+                    @error="g.thumb = ''"
+                  />
                   <div class="face-top">
                     <span class="status"><i class="dot" />{{ STATUS_LABEL[g.status] }}</span>
                     <span class="appid">#{{ g.appId }}</span>
@@ -885,7 +1395,7 @@ watch(activeId, () => {
                       <div v-if="g.tile !== 't1x1'" class="sub">{{ g.tags.slice(0, 2).join(' · ') }}</div>
                     </div>
                     <div class="meta">
-                      <div>{{ fmtGB(totalSize(g)) }}</div>
+                      <div>{{ sizeLabel(g) }}</div>
                       <div v-if="g.tile !== 't1x1'" class="dim">
                         {{ g.depots.length }} depot{{ g.depots.length > 1 ? 's' : '' }}
                       </div>
@@ -901,7 +1411,7 @@ watch(activeId, () => {
                   <dl class="facts">
                     <div><dt>build</dt><dd>{{ g.buildId }}</dd></div>
                     <div><dt>depots</dt><dd>{{ includedDepots(g).length }} / {{ g.depots.length }}</dd></div>
-                    <div><dt>keys</dt><dd>{{ g.depots.filter((d) => d.key).length }} / {{ g.depots.length }}</dd></div>
+                    <div><dt>keys</dt><dd>{{ keyCountOf(g) }}<template v-if="g.depots.length"> / {{ g.depots.length }}</template></dd></div>
                     <div v-if="g.tile === 't2x2'"><dt>dlc</dt><dd>{{ g.dlc.length }}</dd></div>
                   </dl>
                   <div class="face-bottom">
@@ -932,7 +1442,16 @@ watch(activeId, () => {
             <span class="fo-year">{{ activeGame.year }}</span>
           </div>
           <h3>{{ activeGame.title }}</h3>
-          <p>{{ activeGame.developer }}</p>
+          <p>
+            {{
+              activeGame.developer ||
+              (activeGame.live
+                ? activeGame.installed
+                  ? 'installed on this machine'
+                  : 'in your at0-m library'
+                : '')
+            }}
+          </p>
           <div class="fo-emblem">
             <svg viewBox="0 0 64 64" v-html="GLYPHS[activeGame.glyph]" />
           </div>
@@ -943,7 +1462,7 @@ watch(activeId, () => {
             <div><dt>appid</dt><dd>{{ activeGame.appId }}</dd></div>
             <div><dt>build</dt><dd>{{ activeGame.buildId }}</dd></div>
             <div><dt>depots</dt><dd>{{ activeDepots.length }} / {{ activeGame.depots.length }}</dd></div>
-            <div><dt>size</dt><dd>{{ fmtGB(activeDepots.reduce((n, d) => n + d.size, 0)) }}</dd></div>
+            <div><dt>size</dt><dd>{{ sizeLabel(activeGame) }}</dd></div>
           </dl>
 
           <section class="fo-sec">
@@ -971,17 +1490,24 @@ watch(activeId, () => {
                     <span class="depot-size">{{ fmtGB(d.size) }}</span>
                   </div>
                   <div class="depot-line sub">
-                    <button
-                      v-if="d.key"
-                      type="button"
-                      class="key"
-                      :title="revealed.has(d.id) ? 'hide key' : 'reveal key'"
-                      @click="toggleReveal(d.id)"
-                    >
-                      {{ revealed.has(d.id) ? d.key : maskKey(d.key) }}
-                    </button>
-                    <span v-else class="key missing">no key available</span>
-                    <span class="gid">{{ d.gid ? `gid ${d.gid}` : 'no manifest' }}</span>
+                    <template v-if="activeGame.live">
+                      <span v-if="d.hasKey" class="key on-device">key on this machine</span>
+                      <span v-else class="key missing">no key yet</span>
+                      <span class="gid">{{ d.enabled ? 'in config.yaml' : 'not in config' }}</span>
+                    </template>
+                    <template v-else>
+                      <button
+                        v-if="d.key"
+                        type="button"
+                        class="key"
+                        :title="revealed.has(d.id) ? 'hide key' : 'reveal key'"
+                        @click="toggleReveal(d.id)"
+                      >
+                        {{ revealed.has(d.id) ? d.key : maskKey(d.key) }}
+                      </button>
+                      <span v-else class="key missing">no key available</span>
+                      <span class="gid">{{ d.gid ? `gid ${d.gid}` : 'no manifest' }}</span>
+                    </template>
                   </div>
                 </div>
               </li>
@@ -997,7 +1523,30 @@ watch(activeId, () => {
             </div>
           </section>
 
-          <section class="fo-sec">
+          <section v-if="activeGame.live" class="fo-sec">
+            <div class="fo-sec-hd">
+              <h4>hubcap</h4>
+              <span class="fo-note">
+                {{ !paired ? 'pair to read' : hubcap?.ok ? 'ready' : 'no key on this machine' }}
+              </span>
+            </div>
+            <div v-if="paired && hubcap?.ok" class="key-saved">
+              <code>{{ hubcap.masked }}</code>
+              <span class="gid">{{ hubcap.is_override ? 'override' : 'from settings' }}</span>
+            </div>
+            <p v-else-if="paired" class="fo-fine">
+              Epsilon has no Hubcap key, so it cannot resolve depots or manifests. Add one in
+              ASSella → Settings → Companions.
+            </p>
+            <p v-else class="fo-fine">
+              This is the last library Epsilon handed over. Pair the bridge to read live state.
+            </p>
+            <p class="fo-fine">
+              The key never reaches this page — only masked, and only through the bridge.
+            </p>
+          </section>
+
+          <section v-else class="fo-sec">
             <div class="fo-sec-hd">
               <h4>hubcap api key</h4>
               <span class="fo-note">{{ hasKey ? 'saved in this browser' : 'required for manifest fetch' }}</span>
@@ -1026,39 +1575,52 @@ watch(activeId, () => {
 
           <section class="fo-sec">
             <div class="fo-sec-hd"><h4>apply</h4></div>
-            <button
-              v-if="hasKey && bridge"
-              type="button"
-              class="btn primary wide"
-              @click="register()"
-            >
-              register to at0-m
-            </button>
-            <button
-              v-else
-              type="button"
-              class="btn primary wide"
-              @click="exportLua()"
-            >
-              export .lua
-            </button>
-            <div class="btn-row">
-              <button type="button" class="btn" @click="exportLua()">download .lua</button>
-              <button type="button" class="btn" @click="copyYaml()">copy yaml</button>
-              <button type="button" class="btn" @click="copyLua()">copy lua</button>
-            </div>
-            <p class="fo-fine">
-              <template v-if="!hasKey">Add a Hubcap key to unlock the register path.</template>
-              <template v-else-if="!bridge">
-                Bridge offline — export the recipe and import it in ASSella
-                (<span class="mono">Library → Scan for LUA</span>), or install Epsilon.
-              </template>
-              <template v-else>
-                Epsilon will write <span class="mono">config.yaml</span> and Steam will start the download.
-              </template>
-            </p>
+
+            <template v-if="!demo">
+              <button
+                type="button"
+                class="btn primary wide"
+                :disabled="registering || !paired"
+                @click="register()"
+              >
+                {{ registering ? 'registering…' : 'register to at0-m' }}
+              </button>
+              <p class="fo-fine">
+                <template v-if="!paired">
+                  Pair with Epsilon first — the console never touches
+                  <span class="mono">config.yaml</span> on its own.
+                </template>
+                <template v-else>
+                  Epsilon resolves the keys and manifests itself, writes
+                  <span class="mono">config.yaml</span>, and Steam starts the download. Nothing about
+                  this game is sent back to us, and the keys never reach this page.
+                </template>
+              </p>
+            </template>
+
+            <template v-else>
+              <button type="button" class="btn primary wide" @click="exportLua()">
+                export .lua
+              </button>
+              <div class="btn-row">
+                <button type="button" class="btn" @click="exportLua()">download .lua</button>
+                <button type="button" class="btn" @click="copyYaml()">copy yaml</button>
+                <button type="button" class="btn" @click="copyLua()">copy lua</button>
+              </div>
+              <p class="fo-fine">
+                <template v-if="!hasKey">Add a Hubcap key to unlock the register path.</template>
+                <template v-else-if="!bridge">
+                  Bridge offline — export the recipe and import it in ASSella
+                  (<span class="mono">Library → Scan for LUA</span>), or install Epsilon.
+                </template>
+                <template v-else>
+                  Epsilon will write <span class="mono">config.yaml</span> and Steam will start the
+                  download.
+                </template>
+              </p>
+            </template>
             <a
-              v-if="activeGame.status === 'registered' || activeGame.status === 'ready'"
+              v-if="activeGame.registered || activeGame.installed || activeGame.status === 'registered' || activeGame.status === 'ready'"
               class="steam-link"
               :href="`steam://install/${activeGame.appId}`"
             >
@@ -1068,7 +1630,10 @@ watch(activeId, () => {
         </div>
 
         <div class="fo-ft">
-          <span>demo catalog · hubcap + steam fetch not wired yet</span>
+          <span v-if="demo">demo catalog · sample data, keys are fake</span>
+          <span v-else-if="activeGame.live && !activeGame.detailLoaded">loading depots…</span>
+          <span v-else-if="!paired">cached from {{ cachedAt ? new Date(cachedAt).toLocaleDateString() : 'an earlier session' }} · pair to refresh</span>
+          <span v-else>{{ activeGame.installed ? 'installed' : 'not installed' }} · keys stay on this machine</span>
           <button type="button" class="link" @click="toggleSelect(activeGame.id)">
             {{ selected.has(activeGame.id) ? 'deselect' : 'select' }}
           </button>
@@ -1480,6 +2045,49 @@ code {
   outline: 1px solid #000;
   outline-offset: -4px;
 }
+.set-pop {
+  right: 0;
+  left: auto;
+  width: 300px;
+}
+
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.set-k {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #a9b0bb;
+}
+
+.set-v {
+  font-family: var(--at0m-mono, monospace);
+  font-size: 11px;
+  color: #e6e9ee;
+}
+
+.set-pop select {
+  background: #1b1f26;
+  color: #e6e9ee;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  padding: 3px 6px;
+  font-size: 11px;
+  border-radius: 0;
+}
+
+.set-pop input[type='checkbox'] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+}
+
 .pop-note {
   margin: 0.7rem 0 0;
   padding-top: 0.6rem;
@@ -1600,6 +2208,13 @@ code {
   border: 1px solid var(--line);
   background: #101010;
 }
+.empty-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
 .empty-title {
   font-size: clamp(1.5rem, 4vw, 2.25rem);
   font-weight: 200;
@@ -1801,6 +2416,17 @@ code {
 }
 .tile.light .face-2 {
   background: rgba(0, 0, 0, 0.1);
+}
+
+.thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.5;
+  filter: saturate(0.85);
+  pointer-events: none;
 }
 
 .face-top {
@@ -2238,6 +2864,11 @@ code {
 .key:hover {
   color: #fff;
 }
+.key.on-device {
+  color: #7ee2a8;
+  cursor: default;
+}
+
 .key.missing {
   color: #e0a13a;
   border: 0;
