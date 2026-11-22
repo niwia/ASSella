@@ -49,7 +49,7 @@ ASSella finds Uran wherever Decky Loader keeps its plugins (it reads Decky's own
 ---
 
 ::: tip Plugins
-Uran adds games the AT0-M way, so it relies on the same [plugins](/plugins) ASSella installs (SpaceBunny, Styx, Lobster, Lettuce). See [AT0-M](/at0m) for how the download works underneath.
+Uran adds games the AT0-M way, so it relies on the same [plugins](/plugins) ASSella installs (SpaceBunny, Styx, Lobster, Lettuce). See [AT0-M](/at0m-guide) for how the download works underneath.
 :::
 
 ## Installation via Decky Loader

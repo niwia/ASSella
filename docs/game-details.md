@@ -79,7 +79,7 @@ SLSsteam ownership tickets for this game. Drag a ticket `.yaml` onto the box, br
 ## Workshop
 
 ::: warning Retired
-The old Workshop downloader no longer works reliably and is switched off by default. Use [AT0-M](/at0m) instead: subscribe to mods in Steam and Steam downloads and updates them for you.
+The old Workshop downloader no longer works reliably and is switched off by default. Use [AT0-M](/at0m-guide) instead: subscribe to mods in Steam and Steam downloads and updates them for you.
 :::
 
 If you turn the old downloader back on (**Settings → Advanced**), this tab lists the game's installed mods and updates outdated ones.

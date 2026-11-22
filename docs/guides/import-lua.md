@@ -22,7 +22,7 @@ ASSella also checks whether your `.lua` is **outdated**, by comparing its manife
 
 1. Drag the `.lua`, `.manifest` or `.zip` file onto ASSella's main window. You can also drag a folder with several of them.
 2. ASSella reads it and shows the game, its depots and the build.
-3. Continue like a normal download: pick the method (ASSella or [AT0-M](/at0m)), then the depots.
+3. Continue like a normal download: pick the method (ASSella or [AT0-M](/at0m-guide)), then the depots.
 
 ## Way 2: Scan for LUA (several games at once)
 

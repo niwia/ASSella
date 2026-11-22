@@ -70,7 +70,7 @@ const groups = [
 ]
 const highlights = [
   { t: 'No Steam restarts, ever', d: 'ASSella talks to Steam live through the SLSsteam API. Games you install show up in Steam at once, uninstalls vanish at once, and config changes apply while Steam keeps running.', wide: true },
-  { t: 'Steam does the downloading', d: 'With AT0-M the real Steam client downloads and updates your games, like games you own.', link: '/at0m' },
+  { t: 'Steam does the downloading', d: 'With AT0-M the real Steam client downloads and updates your games, like games you own.', link: '/at0m-guide' },
   { t: 'Only what changed', d: 'Updates download just the changed parts (delta updates), and the download speed tunes itself.' },
   { t: 'Smarter updates', d: 'SteamCMD and Steam PICS are checked side by side, and all your games update in one click.' },
   { t: 'Any version you want', d: 'Roll back to any SteamDB build, pin it, or start from your own .lua and manifest files.', link: '/guides/downgrade' },
@@ -169,7 +169,7 @@ Moving over is painless, because ASSella reads the same places ACCELA used:
 1. Close ACCELA.
 2. Install ASSella ([Installation Guide](/install)).
 3. Open it. Your games and settings are already there.
-4. Optional: turn on [AT0-M](/at0m) so Steam downloads and updates games for you.
+4. Optional: turn on [AT0-M](/at0m-guide) so Steam downloads and updates games for you.
 
 ::: tip What ASSella doesn't have (yet)
 ACCELA's `accela://` links and `.zip` right-click menu on Windows, and its sound effects, aren't in ASSella yet. If you rely on one of these, keep ACCELA around for it. Both apps can be installed side by side.

@@ -17,7 +17,7 @@ If you only want to download or unlock DLCs for a game you already own, see our 
 :::
 
 ::: tip Before you start
-Finish the [Installation Guide](/install) first: your Hubcap key must be saved in **Settings → Integrations**. For the AT0-M way, also turn on **Settings → at0-m → Enable plugins** ([AT0-M setup](/at0m)).
+Finish the [Installation Guide](/install) first: your Hubcap key must be saved in **Settings → Integrations**. For the AT0-M way, also turn on **Settings → at0-m → Enable plugins** ([AT0-M setup](/at0m-guide)).
 :::
 
 ---
@@ -70,7 +70,7 @@ ASSella writes the game's apps, depots and decryption keys into SLSsteam's `conf
 
 Steam then downloads, updates and verifies the game itself, exactly like a game you own. If a game only ships Windows files, ASSella offers to force Proton for it.
 
-Want to know what happens underneath, or what each AT0-M setting does? See **[AT0-M](/at0m)** and **[Plugins](/plugins)**.
+Want to know what happens underneath, or what each AT0-M setting does? See **[AT0-M](/at0m-guide)** and **[Plugins](/plugins)**.
 
 ::: tip Also from Game Mode and your browser
 The same AT0-M library is shared with [Uran](/uran) (Decky plugin, Game Mode) and [Epsilon](/epsilon) (an *Add to at0-m* button on Steam Store and SteamDB pages).
