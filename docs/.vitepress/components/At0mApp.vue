@@ -232,7 +232,6 @@ const syncedAt = ref(0)
 const cachedAt = ref(0)
 const hubcap = ref(null)
 const registering = ref(false)
-const charmOpen = ref(false)
 const settingsOpen = ref(false)
 const form = ref({
   gateway: 'auto',
@@ -410,14 +409,12 @@ function toast(title, sub = '') {
 }
 
 function closePopovers() {
-  charmOpen.value = false
   bridgeOpen.value = false
   settingsOpen.value = false
 }
 
 function pickAccent(hex) {
   accent.value = hex
-  charmOpen.value = false
   toast('accent updated', hex)
 }
 
@@ -450,10 +447,11 @@ function forgetKey() {
   toast('key removed from this browser')
 }
 
-async function probeBridge() {
+async function probeBridge(silent = false) {
   if (probing.value) return
   probing.value = true
-  bridgeOpen.value = true
+  // Auto-probes on load must not throw a panel in the user's face.
+  if (!silent) bridgeOpen.value = true
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 2500)
   try {
@@ -494,6 +492,30 @@ async function probeBridge() {
     clearTimeout(timer)
     probing.value = false
   }
+}
+
+function hashOf(text) {
+  let hash = 0
+  for (const ch of String(text)) hash = (hash * 31 + ch.charCodeAt(0)) % 100003
+  return hash
+}
+
+// Metro start screen: the tile is sized by the name it has to hold, so long
+// titles get room and short ones stay small. Deterministic per AppID, so the
+// grid is stable across reloads instead of reshuffling on every visit.
+function sizeFor(game) {
+  if (!game.live) return game.tile
+  const len = game.title.length
+  const hash = hashOf(game.appId)
+  if (len >= 20) return hash % 2 === 0 ? 't2x2' : 't2x1'
+  if (len >= 14) return 't2x1'
+  if (len <= 9 && hash % 5 === 0) return 't1x2'
+  return 't1x1'
+}
+
+function submitSearch() {
+  const term = query.value.trim()
+  if (term.length >= 2 && paired.value) runSearch(term)
 }
 
 function focusSearch() {
@@ -992,9 +1014,8 @@ onMounted(() => {
     toast('pairing token stored', 'Checking the local bridge…')
     probeBridge()
   } else if (bridgeToken.value) {
-    // Already paired on this browser: refreshing the state is expected, and the
-    // browser's local-network prompt is a one-time cost of that choice.
-    probeBridge()
+    // Already paired on this browser: refresh quietly, no popover.
+    probeBridge(true)
   }
 
   document.addEventListener('click', onDocumentClick)
@@ -1083,7 +1104,7 @@ watch(query, (value) => {
           </div>
         </div>
 
-        <div class="search">
+        <form class="search" role="search" @submit.prevent="submitSearch">
           <input
             ref="searchEl"
             v-model="query"
@@ -1099,14 +1120,18 @@ watch(query, (value) => {
             type="button"
             class="search-clear"
             title="Clear (Esc)"
+            aria-label="Clear search"
             @click="query = ''"
           >
             ✕
           </button>
-          <div class="search-go" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" /></svg>
-          </div>
-        </div>
+          <button type="submit" class="search-go" title="Search Steam" aria-label="Search Steam">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="M16 16l4.5 4.5" />
+            </svg>
+          </button>
+        </form>
 
         <div class="tools">
           <button
@@ -1132,35 +1157,6 @@ watch(query, (value) => {
             <span>{{ selected.size ? 'clear' : 'select' }}</span>
           </button>
 
-          <div class="popover-anchor accent-wrap">
-            <button
-              type="button"
-              class="tool accent-btn"
-              :aria-expanded="charmOpen"
-              @click.stop="charmOpen = !charmOpen"
-            >
-              <span class="swatch" />
-              <span>accent</span>
-            </button>
-            <div v-if="charmOpen" class="popover accent-pop" @click.stop>
-              <div class="pop-k">start accent</div>
-              <div class="swatches">
-                <button
-                  v-for="a in ACCENTS"
-                  :key="a.hex"
-                  type="button"
-                  class="swatch-btn"
-                  :class="{ on: accent === a.hex }"
-                  :style="{ background: a.hex }"
-                  :title="a.name"
-                  :aria-label="a.name"
-                  @click="pickAccent(a.hex)"
-                />
-              </div>
-              <p class="pop-note">Right-click a tile to multi-select. Type anywhere to search.</p>
-            </div>
-          </div>
-
           <div class="popover-anchor">
             <button
               type="button"
@@ -1176,7 +1172,23 @@ watch(query, (value) => {
               <span>settings</span>
             </button>
             <div v-if="settingsOpen" class="popover set-pop" @click.stop>
-              <div class="pop-k">epsilon settings</div>
+              <div class="pop-k">settings</div>
+              <div class="set-row">
+                <span class="set-k">accent</span>
+                <div class="swatches">
+                  <button
+                    v-for="a in ACCENTS"
+                    :key="a.hex"
+                    type="button"
+                    class="swatch-btn"
+                    :class="{ on: accent === a.hex }"
+                    :style="{ background: a.hex }"
+                    :title="a.name"
+                    :aria-label="a.name"
+                    @click="pickAccent(a.hex)"
+                  />
+                </div>
+              </div>
               <template v-if="paired">
                 <div class="set-row">
                   <span class="set-k">hubcap key</span>
@@ -1354,7 +1366,7 @@ watch(query, (value) => {
               v-for="(g, i) in section.games"
               :key="g.id"
               class="tile"
-              :class="[g.tile, { light: isLight(g), sel: selected.has(g.id), act: activeId === g.id, flipped: flipped.has(g.id) }]"
+              :class="[sizeFor(g), { light: isLight(g), sel: selected.has(g.id), act: activeId === g.id, flipped: flipped.has(g.id) }]"
               :style="{ background: g.accent, animationDelay: Math.min(i * 22, 240) + 'ms' }"
               role="button"
               tabindex="0"
@@ -1382,11 +1394,12 @@ watch(query, (value) => {
                     referrerpolicy="no-referrer"
                     @error="g.thumb = ''"
                   />
+                  <span v-if="g.thumb" class="scrim" aria-hidden="true" />
                   <div class="face-top">
                     <span class="status"><i class="dot" />{{ STATUS_LABEL[g.status] }}</span>
                     <span class="appid">#{{ g.appId }}</span>
                   </div>
-                  <div class="emblem">
+                  <div v-if="!g.thumb" class="emblem">
                     <svg viewBox="0 0 64 64" v-html="GLYPHS[g.glyph]" />
                   </div>
                   <div class="face-bottom">
@@ -1902,10 +1915,13 @@ code {
   color: var(--accent);
 }
 
+/* Metro search: one field, the clear glyph inside it, and a solid square
+   that is part of the same plane — no floating buttons, no gaps. */
 .search {
   display: flex;
   align-items: stretch;
-  background: var(--panel-2);
+  height: 38px;
+  background: #191c21;
   border: 2px solid var(--line-2);
   transition: border-color 0.14s ease;
 }
@@ -1915,7 +1931,7 @@ code {
 .search-input {
   flex: 1;
   min-width: 0;
-  padding: 0.55rem 0.7rem;
+  padding: 0 0.15rem 0 0.65rem;
   background: transparent;
   border: 0;
   color: var(--text);
@@ -1924,27 +1940,40 @@ code {
   outline: none;
   appearance: none;
 }
-.search-input::-webkit-search-cancel-button {
+.search-input::-webkit-search-cancel-button,
+.search-input::-webkit-search-decoration {
   display: none;
 }
 .search-input::placeholder {
   color: #6d6d6d;
 }
-.search-clear {
-  padding: 0 0.6rem;
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-.search-clear:hover {
-  color: var(--text);
-}
+.search-clear,
 .search-go {
+  flex: none;
   display: grid;
   place-items: center;
-  width: 40px;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  line-height: 1;
+}
+.search-clear {
+  width: 28px;
+  background: transparent;
+  color: #9aa0a8;
+  font-size: 13px;
+}
+.search-clear:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+.search-go {
+  width: 36px;
   background: var(--accent);
   color: #fff;
-  flex: none;
+}
+.search-go:hover {
+  filter: brightness(1.12);
 }
 .search-go svg {
   width: 15px;
@@ -2003,13 +2032,6 @@ code {
   color: #fff;
   border-color: #3ecf6a;
 }
-.accent-btn .swatch {
-  width: 12px;
-  height: 12px;
-  background: var(--accent);
-  border: 1px solid #ffffff55;
-}
-
 .popover-anchor {
   position: relative;
 }
@@ -2032,13 +2054,16 @@ code {
   margin-bottom: 0.6rem;
 }
 .swatches {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
 }
 .swatch-btn {
-  height: 30px;
+  width: 20px;
+  height: 20px;
   border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
 }
 .swatch-btn.on {
   border-color: #fff;
@@ -2317,6 +2342,10 @@ code {
   grid-column: span 2;
   grid-row: span 1;
 }
+.t1x2 {
+  grid-column: span 1;
+  grid-row: span 2;
+}
 .t2x2 {
   grid-column: span 2;
   grid-row: span 2;
@@ -2394,11 +2423,10 @@ code {
   flex-direction: column;
   transition: transform 0.6s cubic-bezier(0.19, 1, 0.22, 1);
 }
-.tile.flipped .track {
+.tile.flipped .track,
+.tile:hover .track,
+.tile:focus-visible .track {
   transform: translateY(-50%);
-}
-.tile:hover .track {
-  transform: translateY(0);
 }
 
 .face {
@@ -2424,9 +2452,20 @@ code {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  opacity: 0.5;
-  filter: saturate(0.85);
   pointer-events: none;
+}
+
+/* Enough shadow for white text on any art, not enough to grey the tile out. */
+.scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.55) 0%,
+    rgba(0, 0, 0, 0.12) 42%,
+    rgba(0, 0, 0, 0.62) 100%
+  );
 }
 
 .face-top {
@@ -2530,6 +2569,11 @@ code {
 .title-wrap {
   min-width: 0;
 }
+.thumb ~ .face-top .status,
+.thumb ~ .face-bottom .title {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
 .title {
   font-size: 0.82rem;
   font-weight: 500;
@@ -2538,13 +2582,36 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Long names get two lines in the big tiles instead of a hard cut. */
+.t2x1 .title,
 .t2x2 .title {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: 0.9rem;
+}
+.t2x2 .title {
+  font-size: 1.05rem;
+  -webkit-line-clamp: 3;
+}
+.t2x2 .thumb ~ .face-top .status,
+.thumb ~ .face-bottom .title {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+.title {
   font-size: 1.5rem;
   font-weight: 300;
   letter-spacing: -0.02em;
   white-space: normal;
 }
-.t2x1 .title {
+.t2x1 .thumb ~ .face-top .status,
+.thumb ~ .face-bottom .title {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+.title {
   font-size: 0.95rem;
   font-weight: 500;
 }
