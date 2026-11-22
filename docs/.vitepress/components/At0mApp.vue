@@ -212,6 +212,7 @@ const bridge = ref(false)
 const bridgeVersion = ref('')
 const bridgeToken = ref('')
 const paired = ref(false)
+const probed = ref(false)
 const probing = ref(false)
 const charmOpen = ref(false)
 const bridgeOpen = ref(false)
@@ -384,36 +385,38 @@ async function probeBridge() {
   probing.value = true
   bridgeOpen.value = true
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 3200)
+  const timer = setTimeout(() => controller.abort(), 2500)
   try {
-    const res = await fetch('http://127.0.0.1:1952/health', {
+    // /v1/session is the console's own route, so it answers for every origin
+    // the console may talk from (including a local docs preview). 200 = paired,
+    // 401 = running but unpaired, 404 = running but too old to know /v1,
+    // anything else = running but refusing us.
+    const res = await fetch('http://127.0.0.1:1952/v1/session', {
       signal: controller.signal,
       mode: 'cors',
-      cache: 'no-store'
+      cache: 'no-store',
+      headers: bridgeToken.value ? { Authorization: `Bearer ${bridgeToken.value}` } : {}
     })
-    if (!res.ok) throw new Error(`http ${res.status}`)
     const body = await res.json().catch(() => ({}))
     bridge.value = true
-    bridgeVersion.value = body.version || 'running'
+    probed.value = true
+    bridgeVersion.value = body.version || ''
+    paired.value = res.ok
 
-    // The console token decides whether this machine will act for us. /health
-    // is unauthenticated, so ask /v1/session before claiming it is paired.
-    paired.value = false
-    if (bridgeToken.value) {
-      const session = await fetch('http://127.0.0.1:1952/v1/session', {
-        signal: controller.signal,
-        mode: 'cors',
-        cache: 'no-store',
-        headers: { Authorization: `Bearer ${bridgeToken.value}` }
-      })
-      paired.value = session.ok
+    if (paired.value) {
+      const count = body.library_count ?? 0
+      toast('console paired', `epsilon ${bridgeVersion.value} · ${count} ${count === 1 ? 'game' : 'games'}`)
+    } else if (res.status === 401) {
+      toast('bridge found', 'Paste the console token from ASSella → Companions → Epsilon.')
+    } else if (res.status === 404) {
+      toast('epsilon needs an update', 'This build has no console API yet — update or restart it.')
+    } else {
+      toast('bridge refused', `Epsilon replied ${res.status}. Restart it so it accepts this page.`)
     }
-
-    if (paired.value) toast('console paired', `epsilon ${bridgeVersion.value}`)
-    else if (bridge.value) toast('bridge connected', 'Paste the console token from ASSella to register games.')
   } catch {
     bridge.value = false
     paired.value = false
+    probed.value = true
     bridgeVersion.value = ''
     toast('bridge not reachable', 'Epsilon is not running on 127.0.0.1:1952 — export instead.')
   } finally {
@@ -621,6 +624,10 @@ onMounted(() => {
     window.history.replaceState(null, '', window.location.pathname + window.location.search)
     toast('pairing token stored', 'Checking the local bridge…')
     probeBridge()
+  } else if (bridgeToken.value) {
+    // Already paired on this browser: refreshing the state is expected, and the
+    // browser's local-network prompt is a one-time cost of that choice.
+    probeBridge()
   }
 
   document.addEventListener('click', onDocumentClick)
@@ -729,7 +736,7 @@ watch(activeId, () => {
             @click.stop="bridgeOpen = !bridgeOpen"
           >
             <span class="dot" />
-            <span>bridge · {{ paired ? 'paired' : bridge ? 'online' : 'offline' }}</span>
+            <span>bridge · {{ paired ? 'paired' : !probed ? 'check' : bridge ? 'online' : 'offline' }}</span>
           </button>
 
           <button
@@ -787,7 +794,19 @@ watch(activeId, () => {
         <dt>endpoint</dt>
         <dd>127.0.0.1:1952</dd>
         <dt>state</dt>
-        <dd>{{ bridge ? `connected · ${bridgeVersion}` : 'not running' }}</dd>
+        <dd>
+          {{
+            probing
+              ? 'checking…'
+              : !probed
+                ? 'not checked'
+                : paired
+                  ? `paired · ${bridgeVersion}`
+                  : bridge
+                    ? `running, not paired${bridgeVersion ? ` · ${bridgeVersion}` : ''}`
+                    : 'not running'
+          }}
+        </dd>
       </dl>
       <div v-if="bridge" class="bridge-token">
         <label for="bridge-token">console token</label>
@@ -802,7 +821,7 @@ watch(activeId, () => {
       </div>
       <div class="pop-actions">
         <button type="button" class="btn" :disabled="probing" @click="probeBridge">
-          {{ probing ? 'checking…' : 'check again' }}
+          {{ probing ? 'checking…' : probed ? 'check again' : 'check for epsilon' }}
         </button>
         <button type="button" class="btn ghost" @click="bridgeOpen = false">close</button>
       </div>
