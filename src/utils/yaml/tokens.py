@@ -20,13 +20,13 @@ from utils.yaml.core import (
     _CONFIG_DISABLED,
     _atomic_write,
     _add_map_item_in_memory,
-    _config_management_enabled,
     _get_config_content_if_enabled,
     _get_section_bounds,
     _read_config_content,
     _remove_entry_from_section,
     batch_config_edit,
 )
+from utils.yaml import core as _core
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ def add_app_token(config_path: Path, app_id: str, token: str) -> bool:
     try:
         if not config_path.exists():
             return False
-        if not _config_management_enabled():
+        if not _core._config_management_enabled():
             return False
 
         app_id_str = str(app_id).strip()

@@ -19,11 +19,11 @@ from typing import Dict, Optional
 from utils.yaml.core import (
     _CONFIG_DISABLED,
     _atomic_write,
-    _config_management_enabled,
     _get_config_content_if_enabled,
     _get_section_bounds,
     batch_config_edit,
 )
+from utils.yaml import core as _core
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def add_dlc_data_batch(
         if not dlc_dict:
             return True
 
-        if not _config_management_enabled():
+        if not _core._config_management_enabled():
             return False
 
         with batch_config_edit(config_path) as editor:

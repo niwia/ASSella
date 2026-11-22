@@ -118,10 +118,10 @@ def main() -> int:
     check(m.remove_decryption_key(cfg, "123458"), "remove_decryption_key")
 
     # ---------------------------------------------------------------- DLC
-    # DlcData and AppTokens writers go through _get_config_content_if_enabled,
-    # which returns a sentinel and writes nothing when SLSsteam config
-    # management is off. On a clean runner there is no real config, so it is off
-    # by default - force it on to exercise the write path.
+    # DlcData and AppTokens writers consult utils.yaml.core._config_management_enabled
+    # dynamically (so tests can replace it here). On a clean runner there is no
+    # real SLSsteam config, so management is off by default - force it on to
+    # exercise the write path.
     import utils.yaml.core as _core
     _core._config_management_enabled = lambda: True
 

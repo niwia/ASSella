@@ -21,7 +21,6 @@ from utils.yaml.core import (
     _CONFIG_DISABLED,
     _add_map_item_in_memory,
     _atomic_write,
-    _config_management_enabled,
     _create_backup,
     _get_config_content_if_enabled,
     _get_section_bounds,
@@ -31,6 +30,7 @@ from utils.yaml.core import (
     batch_config_edit,
     get_user_config_path,
 )
+from utils.yaml import core as _core
 
 logger = logging.getLogger(__name__)
 
@@ -307,7 +307,7 @@ def get_launch_option(config_path: Path, app_id: str) -> Optional[str]:
 def add_launch_option(config_path: Path, app_id: str, command: str) -> bool:
     """Add or replace an AppID entry in the LaunchOptions section of SLSsteam config.yaml."""
     try:
-        if not _config_management_enabled():
+        if not _core._config_management_enabled():
             return False
         app_id_str = str(app_id).strip()
         if not app_id_str:
