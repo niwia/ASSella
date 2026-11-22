@@ -20,7 +20,7 @@ The round **⋯ button** in the bottom-right corner opens the library's options:
 
 | Action | What it does |
 | :--- | :--- |
-| **Move to AT0-M** | Hands all selected ASSella games to Steam ([AT0-M](/at0m)). Pinned games are skipped, so they keep their version. |
+| **Move to AT0-M** | Hands all selected ASSella games to Steam ([AT0-M](/at0m-guide)). Pinned games are skipped, so they keep their version. |
 | **Update Selected** | Updates just these games. |
 | **Uninstall Selected** | Uninstalls them all in one go, using the [Standard uninstall](/guides/uninstall). ASSella lists the games and asks before deleting anything. |
 | **Clear Selection** | Unticks everything. |

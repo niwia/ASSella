@@ -47,7 +47,7 @@ export default defineConfig({
           { text: 'Game Details', link: '/game-details' },
           {
             text: 'AT0-M',
-            link: '/at0m',
+            link: '/at0m-guide',
             items: [
               { text: 'Plugins', link: '/plugins' }
             ]
