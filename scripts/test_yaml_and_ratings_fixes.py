@@ -32,11 +32,17 @@ from utils.yaml.apps import (
     get_additional_apps,
     remove_additional_app,
 )
+from utils.yaml import core as _yaml_core
 from utils.yaml.core import _get_section_bounds
 from utils.yaml.dlc import get_dlc_data
 from utils.yaml.yaml_values import update_yaml_boolean_value, get_yaml_boolean_value
 from utils.yaml.sls_settings import ADVANCED_SETTINGS, write_sls_setting, read_sls_settings
 from utils.yaml.validation import _validate_yaml_content
+
+# The suite writes to a temporary config, but on a clean CI runner SLSsteam
+# config management is disabled. Enable the core gate so the explicit temp
+# path is exercised exactly as it is in a configured install.
+_yaml_core._config_management_enabled = lambda: True
 
 
 def test_concurrent_protondb_flush():
