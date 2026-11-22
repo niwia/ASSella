@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 /* ------------------------------------------------------------------ *
  * at0m — web console
@@ -7,11 +7,17 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
  * Metro/Windows-8 design language: flat planes, 0px radius, no shadows,
  * tight tile gutters, panorama typography, accent-driven highlights.
  *
- * Two data sources, one shape:
- *   - paired with Epsilon: library + search come from 127.0.0.1:1952 /v1
- *   - otherwise: the demo catalog below (?demo=1 keeps it on purpose)
- * Nothing but the token, the accent and a tiny library cache is stored here.
+ * Data sources:
+ *   - paired with Epsilon: library + search from 127.0.0.1:1952 /v1
+ *   - preview metadata: public api.steamcmd.net (no Hubcap until Register)
+ *   - otherwise: demo catalog (?demo=1 keeps it on purpose)
  * ------------------------------------------------------------------ */
+
+const BRIDGE_BASE = 'http://127.0.0.1:1952'
+const CACHE_KEY = 'at0m.library'
+const CACHE_VERSION = 2
+const CACHE_MAX = 500
+const MAX_FLIPPED = 2
 
 const ACCENTS = [
   { name: 'cobalt', hex: '#0050EF' },
@@ -23,6 +29,8 @@ const ACCENTS = [
   { name: 'violet', hex: '#AA00FF' },
   { name: 'steel', hex: '#647687' }
 ]
+
+const ACCENT_CYCLE = ['#1BA1E2', '#60A917', '#E3C800', '#FA6800', '#0050EF', '#A20025', '#00ABA9', '#AA00FF']
 
 const GLYPHS = {
   ring: '<circle cx="32" cy="32" r="17"/><circle cx="32" cy="32" r="6"/>',
@@ -40,7 +48,7 @@ const GLYPHS = {
 const DEMO_GAMES = [
   {
     id: 'elden', title: 'Elden Ring', developer: 'FromSoftware', year: 2022,
-    appId: '1245620', buildId: '18456314', status: 'ready', featured: true, tile: 't2x2',
+    appId: '1245620', buildId: '18456314', status: 'installed', installed: true, owned: false, featured: true, tile: 't2x2',
     accent: '#C23B22', glyph: 'ring', updated: '2 h ago',
     tags: ['souls-like', 'open world', 'dark fantasy'],
     depots: [
@@ -51,18 +59,18 @@ const DEMO_GAMES = [
   },
   {
     id: 'bg3', title: "Baldur's Gate 3", developer: 'Larian Studios', year: 2023,
-    appId: '1086940', buildId: '17932104', status: 'ready', featured: true, tile: 't2x1',
+    appId: '1086940', buildId: '17932104', status: 'ready', installed: false, owned: false, featured: true, tile: 't2x1',
     accent: '#8C0095', glyph: 'prism', updated: '4 h ago',
     tags: ['rpg', 'turn-based', 'co-op'],
     depots: [
-      { id: '1086941', name: 'Baldur\'s Gate 3 — base', size: 142.1, key: '0e5dd8b43415e6b5fad0be29c67a420d39dab654b270d01cc2ed86aeaf009897', gid: '2488721615174967870' },
+      { id: '1086941', name: "Baldur's Gate 3 — base", size: 142.1, key: '0e5dd8b43415e6b5fad0be29c67a420d39dab654b270d01cc2ed86aeaf009897', gid: '2488721615174967870' },
       { id: '1086942', name: 'Language pack', size: 2.7, key: '6b3469834fc6d42ace327f602ca7bb3308689e39f5ae475cf21ef7b4969d8935', gid: '3797821284027531825' }
     ],
     dlc: []
   },
   {
     id: 'hades2', title: 'Hades II', developer: 'Supergiant Games', year: 2024,
-    appId: '1145350', buildId: '17304882', status: 'needs-key', featured: true, tile: 't2x1',
+    appId: '1145350', buildId: '17304882', status: 'needs-key', installed: false, owned: false, featured: true, tile: 't1x2',
     accent: '#008A00', glyph: 'shard', updated: '6 h ago',
     tags: ['action roguelike', 'mythology', 'indie'],
     depots: [
@@ -73,7 +81,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'cyberpunk', title: 'Cyberpunk 2077', developer: 'CD PROJEKT RED', year: 2020,
-    appId: '1091500', buildId: '17640033', status: 'ready', featured: true, tile: 't1x1',
+    appId: '1091500', buildId: '17640033', status: 'ready', installed: false, owned: false, featured: true, tile: 't2x1',
     accent: '#D80073', glyph: 'grid', updated: '9 h ago',
     tags: ['cyberpunk', 'open world', 'fps'],
     depots: [
@@ -84,7 +92,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'ror2', title: 'Risk of Rain 2', developer: 'Hopoo Games', year: 2020,
-    appId: '632360', buildId: '16123980', status: 'registered', featured: false, tile: 't1x1',
+    appId: '632360', buildId: '16123980', status: 'installed', installed: true, owned: true, featured: false, tile: 't1x1',
     accent: '#008299', glyph: 'helix', updated: 'yesterday',
     tags: ['roguelike', 'co-op', 'shooter'],
     depots: [
@@ -94,7 +102,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'drg', title: 'Deep Rock Galactic', developer: 'Ghost Ship Games', year: 2020,
-    appId: '548430', buildId: '15983112', status: 'ready', featured: false, tile: 't2x1',
+    appId: '548430', buildId: '15983112', status: 'ready', installed: false, owned: false, featured: false, tile: 't2x1',
     accent: '#FA6800', glyph: 'cube', updated: 'yesterday',
     tags: ['co-op', 'fps', 'procedural'],
     depots: [
@@ -104,7 +112,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'stardew', title: 'Stardew Valley', developer: 'ConcernedApe', year: 2016,
-    appId: '413150', buildId: '17234018', status: 'registered', featured: false, tile: 't1x1',
+    appId: '413150', buildId: '17234018', status: 'registered', installed: false, owned: false, featured: false, tile: 't1x1',
     accent: '#60A917', glyph: 'grid', updated: '2 days ago',
     tags: ['farming sim', 'pixel', 'relaxing'],
     depots: [
@@ -114,7 +122,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'factorio', title: 'Factorio', developer: 'Wube Software', year: 2020,
-    appId: '427520', buildId: '18005216', status: 'no-build', featured: false, tile: 't1x1',
+    appId: '427520', buildId: '18005216', status: 'no-build', installed: false, owned: false, featured: false, tile: 't1x1',
     accent: '#E3C800', glyph: 'hex', updated: '3 days ago',
     tags: ['automation', 'base building', 'strategy'],
     depots: [
@@ -124,7 +132,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'hollow', title: 'Hollow Knight', developer: 'Team Cherry', year: 2017,
-    appId: '367520', buildId: '15278912', status: 'ready', featured: false, tile: 't1x1',
+    appId: '367520', buildId: '15278912', status: 'installed', installed: true, owned: true, featured: false, tile: 't1x2',
     accent: '#1BA1E2', glyph: 'shard', updated: '3 days ago',
     tags: ['metroidvania', 'platformer', '2d'],
     depots: [
@@ -134,7 +142,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'portal2', title: 'Portal 2', developer: 'Valve', year: 2011,
-    appId: '620', buildId: '14981123', status: 'ready', featured: false, tile: 't1x1',
+    appId: '620', buildId: '14981123', status: 'ready', installed: false, owned: true, featured: false, tile: 't1x1',
     accent: '#00ABA9', glyph: 'ring', updated: '4 days ago',
     tags: ['puzzle', 'co-op', 'first-person'],
     depots: [
@@ -144,7 +152,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'disco', title: 'Disco Elysium', developer: 'ZA/UM', year: 2019,
-    appId: '632470', buildId: '15702338', status: 'needs-key', featured: false, tile: 't1x1',
+    appId: '632470', buildId: '15702338', status: 'needs-key', installed: false, owned: false, featured: false, tile: 't1x1',
     accent: '#A20025', glyph: 'disc', updated: '5 days ago',
     tags: ['detective', 'story rich', 'crpg'],
     depots: [
@@ -155,7 +163,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'celeste', title: 'Celeste', developer: 'Maddy Makes Games', year: 2018,
-    appId: '504230', buildId: '14450192', status: 'ready', featured: false, tile: 't1x1',
+    appId: '504230', buildId: '14450192', status: 'ready', installed: false, owned: false, featured: false, tile: 't1x1',
     accent: '#AA00FF', glyph: 'wave', updated: '1 week ago',
     tags: ['platformer', 'indie', 'soundtrack'],
     depots: [
@@ -165,7 +173,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'tabletop', title: 'Tabletop Simulator', developer: 'Berserk Games', year: 2015,
-    appId: '286160', buildId: '15118840', status: 'ready', featured: false, tile: 't1x1',
+    appId: '286160', buildId: '15118840', status: 'installed', installed: true, owned: true, featured: false, tile: 't2x1',
     accent: '#0050EF', glyph: 'grid', updated: '1 week ago',
     tags: ['board game', 'sandbox', 'physics'],
     depots: [
@@ -175,7 +183,7 @@ const DEMO_GAMES = [
   },
   {
     id: 'ftk', title: 'For The King', developer: 'IronOak Games', year: 2018,
-    appId: '527230', buildId: '14330622', status: 'no-build', featured: false, tile: 't1x1',
+    appId: '527230', buildId: '14330622', status: 'no-build', installed: false, owned: false, featured: false, tile: 't1x1',
     accent: '#647687', glyph: 'cube', updated: '2 weeks ago',
     tags: ['turn-based', 'roguelike', 'co-op'],
     depots: [
@@ -186,17 +194,20 @@ const DEMO_GAMES = [
 ]
 
 const PIVOTS = [
-  { id: 'catalog', label: 'catalog' },
+  { id: 'catalog', label: 'all' },
+  { id: 'installed', label: 'installed' },
+  { id: 'registered', label: 'registered' },
   { id: 'ready', label: 'ready' },
-  { id: 'needs-key', label: 'needs key' },
-  { id: 'registered', label: 'registered' }
+  { id: 'needs-key', label: 'needs key' }
 ]
 
 const STATUS_LABEL = {
+  installed: 'installed',
+  registered: 'registered',
+  owned: 'owned',
   ready: 'ready',
   'needs-key': 'needs key',
   'no-build': 'no build',
-  registered: 'registered',
   available: 'not added',
   installing: 'downloading'
 }
@@ -209,7 +220,7 @@ const activeId = ref(null)
 const selected = ref(new Set())
 const excluded = ref(new Set())
 const revealed = ref(new Set())
-const flipped = ref(new Set())
+const flippedQueue = ref([])
 const accent = ref(ACCENTS[0].hex)
 const hubcapKey = ref('')
 const keyDraft = ref('')
@@ -221,7 +232,12 @@ const paired = ref(false)
 const probed = ref(false)
 const probing = ref(false)
 
-// Live data (Epsilon). Empty until one successful /v1/library.
+// Per-game artwork fallback step (kept outside objects so demo & live behave identically)
+const thumbStep = reactive({})
+const bannerStep = reactive({})
+
+// Live data (Epsilon)
+const demo = ref(false)
 const live = ref(false)
 const loading = ref(false)
 const library = ref([])
@@ -233,98 +249,270 @@ const cachedAt = ref(0)
 const hubcap = ref(null)
 const registering = ref(false)
 const settingsOpen = ref(false)
+const bridgeOpen = ref(false)
 const form = ref({
   gateway: 'auto',
   fetchDlcs: true,
   addDelisted: true,
   notifications: 'auto'
 })
-const bridgeOpen = ref(false)
 const toasts = ref([])
 const searchEl = ref(null)
 
 let toastSeq = 0
 let liveTimer = null
+let searchTimer = null
+let searchSeq = 0
+let searchController = null
 const toastTimers = new Set()
+
+/* ----------------------------- artwork ------------------------------- */
+
+function cdnUrl(appId, file) {
+  return `https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/${appId}/${file}`
+}
+
+function legacyCdnUrl(appId, file) {
+  return `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/${file}`
+}
+
+// Pick Steam CDN artwork that matches each tile's aspect ratio so portraits
+// don't get landscape-cropped and wides don't get blurred. Also honours any
+// custom art URL (e.g. from a local SteamGridDB proxy in Epsilon) first.
+function tileArtChain(game) {
+  const out = []
+  if (game.customArt) out.push(game.customArt)
+  const id = game.appId
+  if (!id) return out
+  if (game.tile === 't1x2') {
+    out.push(
+      cdnUrl(id, 'library_600x900_2x.jpg'),
+      legacyCdnUrl(id, 'library_600x900.jpg'),
+      cdnUrl(id, 'capsule_616x353.jpg'),
+      legacyCdnUrl(id, 'header.jpg')
+    )
+  } else if (game.tile === 't2x2') {
+    out.push(
+      cdnUrl(id, 'library_hero.jpg'),
+      cdnUrl(id, 'capsule_616x353.jpg'),
+      legacyCdnUrl(id, 'header.jpg')
+    )
+  } else if (game.tile === 't1x1') {
+    out.push(
+      cdnUrl(id, 'capsule_616x353.jpg'),
+      legacyCdnUrl(id, 'header.jpg'),
+      legacyCdnUrl(id, 'library_600x900.jpg')
+    )
+  } else {
+    out.push(
+      legacyCdnUrl(id, 'header.jpg'),
+      cdnUrl(id, 'capsule_616x353.jpg'),
+      cdnUrl(id, 'library_hero.jpg')
+    )
+  }
+  return out
+}
+
+function bannerArtChain(game) {
+  const out = []
+  if (game.customHero) out.push(game.customHero)
+  if (game.customArt) out.push(game.customArt)
+  const id = game.appId
+  if (!id) return out
+  out.push(
+    cdnUrl(id, 'library_hero.jpg'),
+    legacyCdnUrl(id, 'header.jpg'),
+    cdnUrl(id, 'capsule_616x353.jpg')
+  )
+  return out
+}
+
+function tileThumb(game) {
+  if (!game.live && !demo.value) return ''
+  const chain = tileArtChain(game)
+  const idx = thumbStep[game.id] || 0
+  return chain[idx] || ''
+}
+
+function nextTileThumb(game) {
+  thumbStep[game.id] = (thumbStep[game.id] || 0) + 1
+}
+
+function bannerThumb(game) {
+  const chain = bannerArtChain(game)
+  const idx = bannerStep[game.id] || 0
+  return chain[idx] || ''
+}
+
+function nextBannerThumb(game) {
+  bannerStep[game.id] = (bannerStep[game.id] || 0) + 1
+}
 
 /* ----------------------------- computed ------------------------------ */
 
-const demo = ref(false)
-const searchMode = computed(() => live.value && paired.value && query.value.trim().length >= 2)
+const flipped = computed(() => new Set(flippedQueue.value))
+const searchMode = computed(() => !demo.value && paired.value && query.value.trim().length >= 2)
 
-// One list feeds every computed below, so the templates never care where the
-// rows came from: the demo catalog, the store, or this machine's library.
-const GAMES = computed(() => {
-  if (demo.value) return DEMO_GAMES
-  return searchMode.value ? hits.value : library.value
+const libraryByAppId = computed(() => {
+  const map = new Map()
+  for (const g of library.value) map.set(g.appId, g)
+  return map
 })
 
-const filtered = computed(() => {
-  const list = GAMES.value
-  if (searchMode.value && !query.value.trim()) return list
+const allGames = computed(() => {
+  if (demo.value) return DEMO_GAMES
+  const map = new Map()
+  for (const g of library.value) map.set(g.id, g)
+  for (const g of hits.value) {
+    if (!map.has(g.id)) map.set(g.id, g)
+  }
+  return Array.from(map.values())
+})
+
+function matchesQuery(game, q) {
+  if (!q) return true
+  const hay = [game.title, game.appId, game.developer, game.buildId, ...(game.tags || [])]
+    .join(' ')
+    .toLowerCase()
+  return hay.includes(q)
+}
+
+function matchesPivot(game, p) {
+  if (p === 'catalog') return true
+  if (p === 'installed') return Boolean(game.installed) || game.status === 'installed'
+  if (p === 'registered') {
+    return game.status === 'registered' || game.status === 'installed' || game.status === 'ready'
+  }
+  return game.status === p
+}
+
+// Library matches during live search: direct text match OR any library game
+// whose AppID Steam returned for the query (catches aliases like "gtav").
+const matchedLibrary = computed(() => {
+  if (!searchMode.value) return []
   const q = query.value.trim().toLowerCase()
-  return list.filter((g) => {
-    if (pivot.value !== 'catalog' && g.status !== pivot.value) return false
-    // The store already matched the term; filtering again would drop hits whose
-    // localised title differs from what the user typed.
-    if (!q || searchMode.value) return true
-    const hay = [g.title, g.appId, g.developer, g.buildId, ...g.tags].join(' ').toLowerCase()
-    return hay.includes(q)
-  })
+  const hitAppIds = new Set(hits.value.map((h) => h.appId))
+  return library.value.filter((g) => matchesQuery(g, q) || hitAppIds.has(g.appId))
+})
+
+// Store results excluding anything already in your library (so no duplicates).
+const storeHits = computed(() => {
+  if (!searchMode.value) return []
+  return hits.value.filter((h) => !libraryByAppId.value.has(h.appId))
+})
+
+const baseFiltered = computed(() => {
+  const list = demo.value ? DEMO_GAMES : library.value
+  const q = query.value.trim().toLowerCase()
+  return list.filter((g) => matchesPivot(g, pivot.value) && matchesQuery(g, q))
 })
 
 const isSearching = computed(() => query.value.trim().length > 0 || pivot.value !== 'catalog')
+
 const sections = computed(() => {
-  if (!filtered.value.length) return []
-  if (!demo.value) {
-    return [
-      {
-        id: searchMode.value ? 'results' : 'library',
-        label: searchMode.value
-          ? 'store results'
-          : paired.value
-            ? 'your library'
-            : 'cached library',
-        games: filtered.value
+  if (demo.value) {
+    if (!baseFiltered.value.length) return []
+    if (isSearching.value) {
+      const owned = baseFiltered.value.filter((g) => g.installed || g.status === 'registered')
+      const other = baseFiltered.value.filter((g) => !(g.installed || g.status === 'registered'))
+      const out = []
+      if (query.value.trim() && owned.length) {
+        out.push({ id: 'owned', label: 'in your library', games: owned })
+        if (other.length) out.push({ id: 'results', label: 'catalog matches', games: other })
+        return out
       }
-    ]
+      return [{ id: 'results', label: 'results', games: baseFiltered.value }]
+    }
+    const featured = baseFiltered.value.filter((g) => g.featured)
+    const rest = baseFiltered.value.filter((g) => !g.featured)
+    const out = []
+    if (featured.length) out.push({ id: 'featured', label: 'featured & installed', games: featured })
+    if (rest.length) out.push({ id: 'catalog', label: 'catalog', games: rest })
+    return out
   }
-  if (isSearching.value) return [{ id: 'results', label: 'results', games: filtered.value }]
-  const featured = filtered.value.filter((g) => g.featured)
-  const rest = filtered.value.filter((g) => !g.featured)
-  const out = []
-  if (featured.length) out.push({ id: 'featured', label: 'featured & ready', games: featured })
-  if (rest.length) out.push({ id: 'catalog', label: 'catalog', games: rest })
-  return out
+
+  if (searchMode.value) {
+    const out = []
+    if (matchedLibrary.value.length) {
+      out.push({ id: 'owned', label: 'registered in your library', games: matchedLibrary.value })
+    }
+    if (storeHits.value.length) {
+      out.push({ id: 'results', label: 'steam store', games: storeHits.value })
+    }
+    return out
+  }
+
+  if (!baseFiltered.value.length) return []
+  return [
+    {
+      id: 'library',
+      label: paired.value ? 'your library' : 'cached library',
+      games: baseFiltered.value
+    }
+  ]
 })
-const activeGame = computed(() => GAMES.value.find((g) => g.id === activeId.value) || null)
-const selectedGames = computed(() => GAMES.value.filter((g) => selected.value.has(g.id)))
+
+const visibleGames = computed(() => sections.value.flatMap((s) => s.games))
+const activeGame = computed(() => allGames.value.find((g) => g.id === activeId.value) || null)
+const selectedGames = computed(() => allGames.value.filter((g) => selected.value.has(g.id)))
 const selectedSize = computed(() => selectedGames.value.reduce((n, g) => n + totalSize(g), 0))
-const readyCount = computed(
-  () => GAMES.value.filter((g) => g.status === 'ready' || g.status === 'registered').length
-)
+const installedCount = computed(() => {
+  const source = demo.value ? DEMO_GAMES : library.value
+  return source.filter((g) => g.installed || g.status === 'installed').length
+})
 const activeDepots = computed(() => (activeGame.value ? includedDepots(activeGame.value) : []))
 const hasKey = computed(() => hubcapKey.value.trim().length >= 8 || Boolean(hubcap.value?.ok))
 
-function countFor(status) {
-  return GAMES.value.filter((g) => g.status === status).length
+function countFor(p) {
+  const source = demo.value ? DEMO_GAMES : library.value
+  return source.filter((g) => matchesPivot(g, p)).length
 }
 
 /* ------------------------------ helpers ------------------------------ */
 
+function hashOf(text) {
+  let hash = 0
+  for (const ch of String(text)) hash = (hash * 31 + ch.charCodeAt(0)) % 100003
+  return hash
+}
+
+function accentFor(appId) {
+  return ACCENT_CYCLE[hashOf(appId) % ACCENT_CYCLE.length]
+}
+
+// Metro mosaic sizing based on status/priority + deterministic visual rhythm
+// rather than title length (so short names still get hero/wide tiles cleanly).
+function pickTileSize(entry, index = 0) {
+  if (entry.downloading) return 't2x2'
+  const h = hashOf(entry.app_id ?? entry.appId ?? index)
+  if (entry.installed) {
+    // Installed titles carry the grid, but they still need a mix of shapes or
+    // the whole page becomes one weight of wide tiles.
+    if (h % 11 === 0) return 't2x2'
+    if (h % 4 === 0) return 't1x2'
+    if (h % 3 === 0) return 't1x1'
+    return 't2x1'
+  }
+  const slot = h % 10
+  if (slot === 0) return 't2x2'
+  if (slot <= 3) return 't2x1'
+  if (slot <= 5) return 't1x2'
+  return 't1x1'
+}
+
 function totalSize(game) {
   if (typeof game.sizeGB === 'number' && game.sizeGB > 0) return game.sizeGB
-  return game.depots.reduce((n, d) => n + d.size, 0)
+  return (game.depots || []).reduce((n, d) => n + (d.size || 0), 0)
 }
 
 function sizeLabel(game) {
   const gb = totalSize(game)
-  return gb > 0 ? fmtGB(gb) : game.live ? '—' : fmtGB(0)
+  return gb > 0 ? fmtGB(gb) : '—'
 }
 
 function keyCountOf(game) {
   if (typeof game.keyCount === 'number') return game.keyCount
-  return game.depots.filter((d) => d.key).length
+  return (game.depots || []).filter((d) => d.key || d.hasKey).length
 }
 
 function depotOf(game, depot) {
@@ -336,7 +524,7 @@ function depotOn(game, depot) {
 }
 
 function includedDepots(game) {
-  return game.depots.filter((d) => depotOn(game, d))
+  return (game.depots || []).filter((d) => depotOn(game, d))
 }
 
 function isLight(game) {
@@ -344,7 +532,6 @@ function isLight(game) {
   const channels = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
   const lin = channels.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
   const luminance = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
-  // White on this accent reads below 4.5:1, so the tile switches to ink.
   return 1.05 / (luminance + 0.05) < 4.5
 }
 
@@ -356,14 +543,25 @@ function fmtGB(n) {
   return `${n.toFixed(1)} GB`
 }
 
-function toggleSet(set, value) {
-  const next = new Set(set.value)
+function toggleSet(setRef, value) {
+  const next = new Set(setRef.value)
   next.has(value) ? next.delete(value) : next.add(value)
-  set.value = next
+  setRef.value = next
 }
 
 function toggleDepot(game, depot) {
   toggleSet(excluded, depotOf(game, depot))
+}
+
+function toggleAllDepots(game) {
+  const allOn = game.depots.every((d) => depotOn(game, d))
+  const next = new Set(excluded.value)
+  for (const d of game.depots) {
+    const key = depotOf(game, d)
+    if (allOn) next.add(key)
+    else next.delete(key)
+  }
+  excluded.value = next
 }
 
 function toggleReveal(id) {
@@ -375,7 +573,8 @@ function toggleSelect(id) {
 }
 
 function toggleAllVisible() {
-  const ids = filtered.value.map((g) => g.id)
+  const ids = visibleGames.value.map((g) => g.id)
+  if (!ids.length) return
   const allOn = ids.every((id) => selected.value.has(id))
   const next = new Set(selected.value)
   ids.forEach((id) => (allOn ? next.delete(id) : next.add(id)))
@@ -413,9 +612,26 @@ function closePopovers() {
   settingsOpen.value = false
 }
 
+function toggleBridgePopover() {
+  const next = !bridgeOpen.value
+  closePopovers()
+  bridgeOpen.value = next
+}
+
+function toggleSettingsPopover() {
+  const next = !settingsOpen.value
+  closePopovers()
+  settingsOpen.value = next
+}
+
 function pickAccent(hex) {
   accent.value = hex
   toast('accent updated', hex)
+}
+
+function selectPivot(id) {
+  pivot.value = id
+  if (searchMode.value) query.value = ''
 }
 
 /* ------------------------------ actions ------------------------------ */
@@ -447,19 +663,17 @@ function forgetKey() {
   toast('key removed from this browser')
 }
 
-async function probeBridge(silent = false) {
+async function probeBridge({ silent = false } = {}) {
   if (probing.value) return
   probing.value = true
-  // Auto-probes on load must not throw a panel in the user's face.
-  if (!silent) bridgeOpen.value = true
+  if (!silent) {
+    closePopovers()
+    bridgeOpen.value = true
+  }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 2500)
   try {
-    // /v1/session is the console's own route, so it answers for every origin
-    // the console may talk from (including a local docs preview). 200 = paired,
-    // 401 = running but unpaired, 404 = running but too old to know /v1,
-    // anything else = running but refusing us.
-    const res = await fetch('http://127.0.0.1:1952/v1/session', {
+    const res = await fetch(`${BRIDGE_BASE}/v1/session`, {
       signal: controller.signal,
       mode: 'cors',
       cache: 'no-store',
@@ -487,35 +701,18 @@ async function probeBridge(silent = false) {
     paired.value = false
     probed.value = true
     bridgeVersion.value = ''
-    toast('bridge not reachable', 'Epsilon is not running on 127.0.0.1:1952 — export instead.')
+    if (!silent) {
+      toast('bridge not reachable', 'Epsilon is not running on 127.0.0.1:1952 — export instead.')
+    }
   } finally {
     clearTimeout(timer)
     probing.value = false
   }
 }
 
-function hashOf(text) {
-  let hash = 0
-  for (const ch of String(text)) hash = (hash * 31 + ch.charCodeAt(0)) % 100003
-  return hash
-}
-
-// Metro start screen: the tile is sized by the name it has to hold, so long
-// titles get room and short ones stay small. Deterministic per AppID, so the
-// grid is stable across reloads instead of reshuffling on every visit.
-function sizeFor(game) {
-  if (!game.live) return game.tile
-  const len = game.title.length
-  const hash = hashOf(game.appId)
-  if (len >= 20) return hash % 2 === 0 ? 't2x2' : 't2x1'
-  if (len >= 14) return 't2x1'
-  if (len <= 9 && hash % 5 === 0) return 't1x2'
-  return 't1x1'
-}
-
 function submitSearch() {
   const term = query.value.trim()
-  if (term.length >= 2 && paired.value) runSearch(term)
+  if (term.length >= 2 && paired.value && !demo.value) runSearch(term)
 }
 
 function focusSearch() {
@@ -534,30 +731,7 @@ function saveBridgeToken() {
   if (token) probeBridge()
 }
 
-/* --------------------------- epsilon data ---------------------------- *
- * Everything below talks to the local bridge. Nothing is proxied through
- * the docs host: the page is static, and the data never leaves the machine
- * except into this tab.
- * -------------------------------------------------------------------- */
-
-const BRIDGE_BASE = 'http://127.0.0.1:1952'
-const CACHE_KEY = 'at0m.library'
-const CACHE_VERSION = 1
-const CACHE_MAX = 500
-
-const ACCENT_CYCLE = ['#1BA1E2', '#60A917', '#E3C800', '#FA6800', '#0050EF', '#A20025', '#00ABA9', '#AA00FF']
-
-function accentFor(appId) {
-  let hash = 0
-  for (const ch of String(appId)) hash = (hash * 31 + ch.charCodeAt(0)) % 9973
-  return ACCENT_CYCLE[hash % ACCENT_CYCLE.length]
-}
-
-// Steam's own header art, straight from the CDN. No API, no key, no CORS:
-// browsers cache it and our host never sees the request.
-function thumbFor(appId) {
-  return `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`
-}
+/* --------------------------- epsilon data ---------------------------- */
 
 function relTime(seconds) {
   if (!seconds) return ''
@@ -567,63 +741,90 @@ function relTime(seconds) {
   return `${Math.round(diff / 86400)} d ago`
 }
 
-function toGame(entry) {
+function toGame(entry, index = 0) {
   const keys = Number(entry.key_count || 0)
   const installed = Boolean(entry.installed)
+  const owned = Boolean(entry.owned || entry.source === 'steam')
+  const registered = Boolean(entry.registered ?? !owned)
+
   let status = 'registered'
   if (entry.downloading) status = 'installing'
+  else if (installed) status = 'installed'
+  else if (owned && !registered) status = 'owned'
   else if (!keys) status = 'needs-key'
   else if (entry.dlc_only) status = 'no-build'
-  else if (!installed) status = 'ready'
+  else status = 'ready'
+
+  const tags = []
+  if (installed) tags.push('installed')
+  if (owned) tags.push('steam owned')
+  else if (registered) tags.push('at0-m')
+
   return {
     id: `app${entry.app_id}`,
     appId: String(entry.app_id),
     title: entry.name || `App ${entry.app_id}`,
-    developer: '',
-    year: null,
+    developer: entry.developer || '',
+    year: entry.year || null,
     buildId: entry.buildid || '',
     status,
     featured: false,
-    tile: 't1x1',
+    tile: pickTileSize(entry, index),
     accent: accentFor(entry.app_id),
     glyph: 'cube',
     updated: relTime(entry.updated_at),
-    tags: installed ? ['installed'] : [],
-    thumb: thumbFor(entry.app_id),
+    tags,
+    customArt: entry.art || entry.thumb || '',
+    customHero: entry.hero || '',
     live: true,
+    inLibrary: true,
     installed,
+    owned,
+    registered,
     downloading: Boolean(entry.downloading),
     sizeGB: entry.size_on_disk ? entry.size_on_disk / 1024 ** 3 : 0,
     keyCount: keys,
-    detailLoaded: false,
+    detailState: 'idle',
     depots: (entry.depots || []).map((id) => ({
-      id: String(id), name: `depot ${id}`, size: 0, key: null, gid: null
+      id: String(id),
+      name: `depot ${id}`,
+      size: 0,
+      key: null,
+      gid: null,
+      hasKey: false,
+      enabled: true
     })),
     dlc: (entry.dlc_appids || []).map((id) => ({ appId: String(id), name: `DLC ${id}`, size: 0 }))
   }
 }
 
-function toHit(row) {
+function toHit(row, index = 0) {
+  const owned = Boolean(row.owned)
+  const installed = Boolean(row.installed)
   return {
     id: `app${row.app_id}`,
     appId: String(row.app_id),
-    title: row.title || `App ${row.app_id}`,
-    developer: '',
-    year: null,
+    title: row.title || row.name || `App ${row.app_id}`,
+    developer: row.developer || '',
+    year: row.year || null,
     buildId: '',
-    status: 'available',
+    status: installed ? 'installed' : owned ? 'owned' : 'available',
     featured: false,
-    tile: 't1x1',
+    tile: index === 0 ? 't2x1' : hashOf(row.app_id) % 4 === 0 ? 't1x2' : 't2x1',
     accent: accentFor(row.app_id),
     glyph: 'cube',
     updated: '',
-    tags: [],
-    thumb: thumbFor(row.app_id),
+    tags: owned ? ['steam owned'] : ['store'],
+    customArt: row.art || row.thumb || '',
+    customHero: row.hero || '',
     live: true,
-    installed: false,
+    inLibrary: false,
+    installed,
+    owned,
+    registered: false,
     sizeGB: 0,
     keyCount: 0,
-    detailLoaded: false,
+    detailState: 'idle',
     depots: [],
     dlc: []
   }
@@ -658,12 +859,73 @@ async function bridgeFetch(path, options = {}) {
   return res.json()
 }
 
-// The cache is deliberately tiny and boring: no keys, no paths, no depots.
-// It exists so an unpaired browser still remembers which games you own.
+// Public SteamCMD metadata lookup — zero keys, never touches Hubcap.
+async function fetchSteamCmdInfo(appId) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 5000)
+  try {
+    const res = await fetch(`https://api.steamcmd.net/v1/info/${appId}`, {
+      signal: controller.signal,
+      mode: 'cors'
+    })
+    if (!res.ok) return null
+    const json = await res.json()
+    const info = json?.data?.[String(appId)]
+    if (!info) return null
+
+    const common = info.common || {}
+    const extended = info.extended || {}
+    const rawDepots = info.depots || {}
+
+    const associations = Object.values(common.associations || {})
+    const developer =
+      associations.find((a) => a?.type === 'developer')?.name || extended.developer || ''
+    const relTs = Number(common.steam_release_date || 0)
+    const year = relTs ? new Date(relTs * 1000).getUTCFullYear() : null
+    const buildId = rawDepots.branches?.public?.buildid
+      ? String(rawDepots.branches.public.buildid)
+      : ''
+
+    const depots = []
+    for (const [id, d] of Object.entries(rawDepots)) {
+      if (!/^\d+$/.test(id) || !d || typeof d !== 'object') continue
+      const maxSize = Number(d.maxsize || d.manifests?.public?.size || 0)
+      const oslist = d.config?.oslist ? ` (${d.config.oslist})` : ''
+      const lang = d.config?.language ? ` · ${d.config.language}` : ''
+      depots.push({
+        id,
+        name: `${d.name || `depot ${id}`}${oslist}${lang}`,
+        size: maxSize > 0 ? maxSize / 1024 ** 3 : 0,
+        key: null,
+        gid: d.manifests?.public?.gid ? String(d.manifests.public.gid) : null,
+        hasKey: false,
+        enabled: false
+      })
+    }
+
+    const dlc = String(extended.listofdlc || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => /^\d+$/.test(s))
+      .map((id) => ({ appId: id, name: `DLC ${id}`, size: 0 }))
+
+    return { title: common.name || '', developer, year, buildId, depots, dlc }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function saveCache(games) {
   try {
     const rows = games.slice(0, CACHE_MAX).map((g) => [
-      g.appId, g.title, g.installed ? 1 : 0, g.keyCount || 0, g.buildId || ''
+      g.appId,
+      g.title,
+      g.installed ? 1 : 0,
+      g.keyCount || 0,
+      g.buildId || '',
+      g.owned ? 1 : 0
     ])
     localStorage.setItem(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, at: Date.now(), rows }))
   } catch {
@@ -674,9 +936,20 @@ function saveCache(games) {
 function restoreCache() {
   try {
     const data = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null')
-    if (!data || data.v !== CACHE_VERSION || !Array.isArray(data.rows) || !data.rows.length) return false
-    library.value = data.rows.map(([appId, title, installed, keyCount, buildId]) =>
-      toGame({ app_id: appId, name: title, installed, key_count: keyCount, buildid: buildId })
+    if (!data || !Array.isArray(data.rows) || !data.rows.length) return false
+    if (data.v !== CACHE_VERSION && data.v !== 1) return false
+    library.value = data.rows.map(([appId, title, installed, keyCount, buildId, owned], i) =>
+      toGame(
+        {
+          app_id: appId,
+          name: title,
+          installed,
+          key_count: keyCount,
+          buildid: buildId,
+          owned: Boolean(owned)
+        },
+        i
+      )
     )
     cachedAt.value = Number(data.at) || 0
     live.value = true
@@ -691,7 +964,7 @@ async function loadLibrary() {
   loading.value = true
   try {
     const body = await bridgeFetch('/v1/library')
-    library.value = (body.games || []).map(toGame)
+    library.value = (body.games || []).map((entry, i) => toGame(entry, i))
     live.value = true
     syncedAt.value = Date.now()
     searchError.value = ''
@@ -715,7 +988,7 @@ async function loadSettings() {
       notifications: stored.notification_mode || 'auto'
     }
   } catch {
-    /* a settings failure should not block the library */
+    /* non-fatal */
   }
 }
 
@@ -739,53 +1012,113 @@ async function loadHubcap() {
   }
 }
 
-let searchTimer = null
 async function runSearch(term) {
+  if (searchController) searchController.abort()
+  searchController = new AbortController()
+  const seq = ++searchSeq
   searching.value = true
   try {
-    const body = await bridgeFetch(`/v1/search?q=${encodeURIComponent(term)}`)
-    hits.value = (body.results || []).map(toHit)
+    const body = await bridgeFetch(`/v1/search?q=${encodeURIComponent(term)}`, {
+      signal: searchController.signal
+    })
+    if (seq !== searchSeq) return
+    hits.value = (body.results || []).map((row, i) => toHit(row, i))
     searchError.value = ''
   } catch (error) {
+    if (error.name === 'AbortError' || seq !== searchSeq) return
     hits.value = []
     searchError.value = error.message
   } finally {
-    searching.value = false
+    if (seq === searchSeq) searching.value = false
   }
 }
 
-// Fill in depots and DLC once the flyout opens; the library list is thin on
-// purpose because it describes every game the user owns.
-async function loadDetail(game) {
-  if (!game || !paired.value || game.detailLoaded) return
-  game.detailLoaded = true
-  try {
-    const detail = await bridgeFetch(`/v1/app/${game.appId}?network=1`)
+// Preview details WITHOUT touching Hubcap:
+// - Library games query Epsilon's local state (/v1/app/:id, no ?network=1)
+// - Public metadata (dev, year, build, depot sizes, DLCs) comes from SteamCMD API
+async function loadDetail(game, force = false) {
+  if (!game || !game.live) return
+  if (!force && (game.detailState === 'loading' || game.detailState === 'loaded')) return
+  game.detailState = 'loading'
+
+  const localPromise =
+    paired.value && game.inLibrary
+      ? bridgeFetch(`/v1/app/${game.appId}`).catch(() => null)
+      : Promise.resolve(null)
+  const publicPromise = fetchSteamCmdInfo(game.appId)
+
+  const [detail, pub] = await Promise.all([localPromise, publicPromise])
+
+  if (!detail && !pub) {
+    game.detailState = 'error'
+    return
+  }
+
+  const pubDepotMap = new Map((pub?.depots || []).map((d) => [d.id, d]))
+
+  if (pub) {
+    if (pub.developer && !game.developer) game.developer = pub.developer
+    if (pub.year && !game.year) game.year = pub.year
+    if (pub.buildId && !game.buildId) game.buildId = pub.buildId
+    if (!detail && pub.depots.length) {
+      game.depots = pub.depots
+      if (!game.sizeGB) {
+        game.sizeGB = pub.depots.reduce((n, d) => n + (d.size || 0), 0)
+      }
+    }
+    if (!detail && pub.dlc.length && !game.dlc.length) {
+      game.dlc = pub.dlc
+    }
+  }
+
+  if (detail) {
     game.buildId = detail.buildid || game.buildId
     game.keyCount = Number(detail.key_count ?? game.keyCount)
-    game.depots = (detail.depots_detail || []).map((d) => ({
-      id: String(d.id),
-      name: d.name || `depot ${d.id}`,
-      size: 0,
-      key: null,
-      gid: null,
-      hasKey: Boolean(d.has_key),
-      enabled: Boolean(d.in_config)
-    }))
-    game.dlc = (detail.dlcs_detail || []).map((d) => ({
-      appId: String(d.id),
-      name: d.name || `DLC ${d.id}`,
-      size: 0,
-      enabled: Boolean(d.selected)
-    }))
     if (detail.installed) game.installed = true
-    // Only a game already in the library can be "missing" keys; a store hit is
-    // simply not added yet.
-    if (!game.keyCount && game.status !== 'available') game.status = 'needs-key'
-  } catch {
-    game.detailLoaded = false
+    if (detail.owned) game.owned = true
+    // Union of three sources, because none of them is complete on its own:
+    // SteamCMD knows every depot (and which have no key yet), the local record
+    // knows what is projected into config.yaml, and the file itself is the only
+    // thing that knows which keys actually resolve. Replacing instead of merging
+    // hid the shared depots and the unkeyed game depot.
+    const byId = new Map()
+    const put = (id, patch) => {
+      const key = String(id)
+      const base = byId.get(key) || {
+        id: key, name: `depot ${key}`, size: 0, key: null, gid: null, hasKey: false, enabled: false
+      }
+      const clean = {}
+      for (const [k, v] of Object.entries(patch)) if (v !== undefined && v !== null) clean[k] = v
+      byId.set(key, { ...base, ...clean })
+    }
+    for (const d of pub?.depots || []) put(d.id, { name: d.name, size: d.size, gid: d.gid })
+    for (const id of detail.depots || []) put(id, { enabled: true })
+    for (const d of detail.depots_detail || []) {
+      put(d.id, {
+        hasKey: Boolean(d.has_key),
+        enabled: Boolean(d.in_config),
+        name: d.name && d.name !== `depot ${d.id}` ? d.name : undefined
+      })
+    }
+    for (const depot of byId.values()) if (depot.enabled) depot.hasKey = true
+    if (byId.size) game.depots = [...byId.values()]
+    if (Array.isArray(detail.dlcs_detail) && detail.dlcs_detail.length) {
+      game.dlc = detail.dlcs_detail.map((d) => ({
+        appId: String(d.id),
+        name: d.name || `DLC ${d.id}`,
+        size: 0,
+        enabled: Boolean(d.selected)
+      }))
+    }
+    if (!game.keyCount && game.inLibrary && !game.installed && !game.owned) {
+      game.status = 'needs-key'
+    }
   }
+
+  game.detailState = 'loaded'
 }
+
+/* ----------------------------- exports ------------------------------- */
 
 function luaFor(games) {
   const lines = []
@@ -848,9 +1181,7 @@ function download(name, text, mime = 'text/plain') {
 function exportLua(games) {
   const list = games && games.length ? games : activeGame.value ? [activeGame.value] : []
   if (!list.length) return
-  if (!demo.value && live.value) {
-    // Live rows carry no keys by design, so a .lua from them would be broken
-    // rather than merely incomplete.
+  if (!demo.value) {
     toast('keys stay on this machine', 'Registering is the supported path; nothing is exported.')
     return
   }
@@ -886,12 +1217,17 @@ async function copyText(text, label) {
 }
 
 function copyYaml(games) {
+  if (!demo.value) {
+    toast('keys stay on this machine', 'Use Register so Epsilon writes config.yaml directly.')
+    return
+  }
   const list = games && games.length ? games : activeGame.value ? [activeGame.value] : []
   if (!list.length) return
   copyText(yamlFor(list), 'config.yaml snippet')
 }
 
 function copyLua(games) {
+  if (!demo.value) return
   const list = games && games.length ? games : activeGame.value ? [activeGame.value] : []
   if (!list.length) return
   copyText(luaFor(list), '.lua contents')
@@ -899,10 +1235,9 @@ function copyLua(games) {
 
 async function register(games) {
   const list = games && games.length ? games : activeGame.value ? [activeGame.value] : []
-  if (!list.length) return
+  if (!list.length || registering.value) return
 
-  // The demo catalog is not real, so it can only be exported.
-  if (demo.value || !live.value) {
+  if (demo.value) {
     toast('demo catalog', 'These tiles are sample data — exporting the recipe instead.')
     exportLua(list)
     return
@@ -917,9 +1252,11 @@ async function register(games) {
   let failure = ''
   for (const game of list) {
     try {
-      // Only the AppID: Epsilon re-derives keys and manifests from Hubcap, so a
-      // page can never write arbitrary keys into config.yaml.
-      await bridgeFetch('/v1/register', { method: 'POST', body: JSON.stringify({ appid: game.appId }) })
+      // Hubcap is only touched here, inside Epsilon, when registering.
+      await bridgeFetch('/v1/register', {
+        method: 'POST',
+        body: JSON.stringify({ appid: game.appId })
+      })
       added += 1
     } catch (error) {
       failure = failure || `${game.title}: ${error.message}`
@@ -930,13 +1267,47 @@ async function register(games) {
   if (added) {
     toast(
       `registered ${added} ${added === 1 ? 'title' : 'titles'}`,
-      'Epsilon is writing config.yaml — Steam picks it up on the next scan.'
+      'Epsilon resolved keys and updated config.yaml — Steam picks it up on the next scan.'
     )
     query.value = ''
     clearSelection()
     await loadLibrary()
+
+    // Registration can only project depots it has keys for. Say so instead of
+    // letting a half-populated game look like a successful one.
+    const fresh = library.value.find((g) => g.appId === list[0].appId)
+    if (fresh) {
+      await loadDetail(fresh, true)
+      const missing = fresh.depots.filter((d) => !d.hasKey).length
+      if (missing) {
+        toast(
+          `${missing} depot${missing === 1 ? '' : 's'} without a key`,
+          'Hubcap has no bundle for them yet — press refresh keys later.'
+        )
+      }
+    }
   }
   if (failure) toast('registration failed', failure)
+}
+
+// Registered games do not need /v1/register again — it would answer
+// "already added". This is the only way to pull a newer Hubcap bundle (and any
+// depot keys that arrived since the first registration).
+async function refetch() {
+  const game = activeGame.value
+  if (!game || !paired.value || registering.value) return
+  registering.value = true
+  try {
+    await bridgeFetch('/v1/refetch', { method: 'POST', body: JSON.stringify({ appid: game.appId }) })
+    toast('keys refreshed', `${game.title} was re-projected from a fresh Hubcap bundle.`)
+  } catch (error) {
+    toast('refetch failed', error.message)
+  } finally {
+    registering.value = false
+    game.detailLoaded = false
+    await loadLibrary()
+    await loadDetail(game, true)
+  }
 }
 
 /* ----------------------------- lifecycle ----------------------------- */
@@ -947,7 +1318,13 @@ function onDocumentClick(e) {
 
 function isTyping() {
   const el = document.activeElement
-  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
+  return (
+    !!el &&
+    (el.tagName === 'INPUT' ||
+      el.tagName === 'TEXTAREA' ||
+      el.tagName === 'SELECT' ||
+      el.isContentEditable)
+  )
 }
 
 function onKeydown(e) {
@@ -960,33 +1337,42 @@ function onKeydown(e) {
   }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault()
-    searchEl.value?.focus()
+    focusSearch()
     return
   }
   if (isTyping() || e.metaKey || e.ctrlKey || e.altKey) return
-  if (e.key === '/' || (e.key.length === 1 && /[\w-]/.test(e.key))) {
+  if (e.key === '/') {
+    e.preventDefault()
+    focusSearch()
+    return
+  }
+  if (e.key.length === 1 && /[\w-]/.test(e.key)) {
     searchEl.value?.focus()
   }
 }
 
+// Keep at most MAX_FLIPPED live tiles showing their back face at once so the
+// mosaic always stays artwork-forward instead of drifting half-flipped.
 function cycleLiveTiles() {
-  if (document.hidden) return
-  const tiles = GAMES.value.filter((g) => filtered.value.includes(g))
-  if (tiles.length < 2) return
-  const next = new Set(flipped.value)
-  for (let i = 0; i < 2; i += 1) {
-    const pick = tiles[Math.floor(Math.random() * tiles.length)]
-    if (!pick) continue
-    next.has(pick.id) ? next.delete(pick.id) : next.add(pick.id)
+  if (document.hidden || activeId.value) return
+  const tiles = visibleGames.value
+  if (tiles.length < 3) return
+  const visibleIds = new Set(tiles.map((g) => g.id))
+  const queue = flippedQueue.value.filter((id) => visibleIds.has(id))
+
+  if (queue.length >= MAX_FLIPPED) queue.shift()
+
+  const candidates = tiles.filter((g) => !queue.includes(g.id))
+  if (candidates.length) {
+    const pick = candidates[Math.floor(Math.random() * candidates.length)]
+    queue.push(pick.id)
   }
-  flipped.value = next
+  flippedQueue.value = queue
 }
 
 onMounted(() => {
   if (new URLSearchParams(window.location.search).get('demo') === '1') demo.value = true
-  else if (!restoreCache()) {
-    /* nothing cached yet: show the connect state until a probe lands */
-  }
+  else restoreCache()
 
   try {
     const savedAccent = localStorage.getItem('at0m.accent')
@@ -999,8 +1385,6 @@ onMounted(() => {
     /* storage unavailable */
   }
 
-  // ASSella hands the console token over in the fragment, which the web host
-  // never sees. Store it, then strip it from the address bar and history.
   const match = window.location.hash.match(/(?:^#|&)k=([^&]+)/)
   if (match) {
     const token = decodeURIComponent(match[1])
@@ -1014,20 +1398,21 @@ onMounted(() => {
     toast('pairing token stored', 'Checking the local bridge…')
     probeBridge()
   } else if (bridgeToken.value) {
-    // Already paired on this browser: refresh quietly, no popover.
-    probeBridge(true)
+    probeBridge({ silent: true })
   }
 
   document.addEventListener('click', onDocumentClick)
   window.addEventListener('keydown', onKeydown)
   const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-  if (!reduce) liveTimer = setInterval(cycleLiveTiles, 5200)
+  if (!reduce) liveTimer = setInterval(cycleLiveTiles, 5400)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocumentClick)
   window.removeEventListener('keydown', onKeydown)
   if (liveTimer) clearInterval(liveTimer)
+  if (searchTimer) clearTimeout(searchTimer)
+  if (searchController) searchController.abort()
   toastTimers.forEach((t) => clearTimeout(t))
   toastTimers.clear()
 })
@@ -1042,20 +1427,21 @@ watch(accent, (value) => {
 
 watch(activeId, (id) => {
   closePopovers()
-  if (id) loadDetail(GAMES.value.find((g) => g.id === id))
+  if (id) loadDetail(allGames.value.find((g) => g.id === id))
 })
 
 watch(query, (value) => {
   if (searchTimer) clearTimeout(searchTimer)
-  if (demo.value || !live.value) return
+  if (demo.value || !paired.value) return
   const term = value.trim()
   if (term.length < 2) {
+    if (searchController) searchController.abort()
     hits.value = []
     searchError.value = ''
+    searching.value = false
     return
   }
-  if (!paired.value) return
-  searchTimer = setTimeout(() => runSearch(term), 320)
+  searchTimer = setTimeout(() => runSearch(term), 300)
 })
 </script>
 
@@ -1067,7 +1453,7 @@ watch(query, (value) => {
         <div class="super">
           <span class="sq" />
           <span>at0-m // web console</span>
-          <span class="chip">{{ demo ? 'demo' : live ? (paired ? 'live' : 'cached') : 'offline' }}</span>
+          <span class="chip">{{ demo ? 'demo' : paired ? 'live' : live ? 'cached' : 'offline' }}</span>
         </div>
         <h1>at0m</h1>
         <nav class="pivots" aria-label="catalog pivots">
@@ -1076,9 +1462,9 @@ watch(query, (value) => {
             :key="p.id"
             type="button"
             class="pivot"
-            :class="{ active: pivot === p.id }"
-            :aria-pressed="pivot === p.id"
-            @click="pivot = p.id"
+            :class="{ active: pivot === p.id && !searchMode }"
+            :aria-pressed="pivot === p.id && !searchMode"
+            @click="selectPivot(p.id)"
           >
             {{ p.label }}
             <span v-if="p.id !== 'catalog'" class="pivot-count">
@@ -1091,12 +1477,12 @@ watch(query, (value) => {
       <div class="hd-right">
         <div class="stats" role="status">
           <div class="stat">
-            <span class="stat-k">results</span>
-            <span class="stat-v">{{ filtered.length }}</span>
+            <span class="stat-k">showing</span>
+            <span class="stat-v">{{ visibleGames.length }}</span>
           </div>
           <div class="stat">
-            <span class="stat-k">ready</span>
-            <span class="stat-v">{{ readyCount }}</span>
+            <span class="stat-k">installed</span>
+            <span class="stat-v">{{ installedCount }}</span>
           </div>
           <div class="stat">
             <span class="stat-k">selected</span>
@@ -1110,10 +1496,10 @@ watch(query, (value) => {
             v-model="query"
             type="search"
             class="search-input"
-            placeholder="search title, appid, tag…"
+            placeholder="search library & steam…"
             autocomplete="off"
             spellcheck="false"
-            aria-label="Search the catalog"
+            aria-label="Search library and Steam"
           />
           <button
             v-if="query"
@@ -1134,16 +1520,61 @@ watch(query, (value) => {
         </form>
 
         <div class="tools">
-          <button
-            type="button"
-            class="tool bridge popover-anchor"
-            :class="{ live: bridge }"
-            :aria-expanded="bridgeOpen"
-            @click.stop="bridgeOpen = !bridgeOpen"
-          >
-            <span class="dot" />
-            <span>bridge · {{ paired ? 'paired' : !probed ? 'check' : bridge ? 'online' : 'offline' }}</span>
-          </button>
+          <div class="popover-anchor">
+            <button
+              type="button"
+              class="tool bridge"
+              :class="{ live: paired, online: bridge && !paired }"
+              :aria-expanded="bridgeOpen"
+              @click.stop="toggleBridgePopover"
+            >
+              <span class="dot" />
+              <span>bridge · {{ paired ? 'paired' : !probed ? 'check' : bridge ? 'online' : 'offline' }}</span>
+            </button>
+
+            <div v-if="bridgeOpen" class="popover bridge-pop" @click.stop>
+              <div class="pop-k">epsilon bridge</div>
+              <p class="pop-p">
+                The page previews metadata publicly and only hands AppIDs to Epsilon when you
+                register into <code>config.yaml</code>.
+              </p>
+              <dl class="bridge-dl">
+                <dt>endpoint</dt>
+                <dd>127.0.0.1:1952</dd>
+                <dt>state</dt>
+                <dd>
+                  {{
+                    probing
+                      ? 'checking…'
+                      : !probed
+                        ? 'not checked'
+                        : paired
+                          ? `paired · ${bridgeVersion}`
+                          : bridge
+                            ? `running, not paired${bridgeVersion ? ` · ${bridgeVersion}` : ''}`
+                            : 'not running'
+                  }}
+                </dd>
+              </dl>
+              <div v-if="bridge" class="bridge-token">
+                <label for="bridge-token">console token</label>
+                <input
+                  id="bridge-token"
+                  v-model="bridgeToken"
+                  type="password"
+                  placeholder="paste from ASSella → Companions → Epsilon"
+                  @keydown.enter.prevent="saveBridgeToken"
+                />
+                <button type="button" class="btn" @click="saveBridgeToken">pair</button>
+              </div>
+              <div class="pop-actions">
+                <button type="button" class="btn" :disabled="probing" @click="probeBridge()">
+                  {{ probing ? 'checking…' : probed ? 'check again' : 'check for epsilon' }}
+                </button>
+                <button type="button" class="btn ghost" @click="bridgeOpen = false">close</button>
+              </div>
+            </div>
+          </div>
 
           <button
             type="button"
@@ -1163,7 +1594,7 @@ watch(query, (value) => {
               class="tool"
               :class="{ live: paired }"
               :aria-expanded="settingsOpen"
-              @click.stop="settingsOpen = !settingsOpen"
+              @click.stop="toggleSettingsPopover"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <circle cx="12" cy="12" r="3.2" />
@@ -1171,6 +1602,7 @@ watch(query, (value) => {
               </svg>
               <span>settings</span>
             </button>
+
             <div v-if="settingsOpen" class="popover set-pop" @click.stop>
               <div class="pop-k">settings</div>
               <div class="set-row">
@@ -1238,14 +1670,14 @@ watch(query, (value) => {
                   </select>
                 </div>
                 <p class="pop-note">
-                  Written to Epsilon's own settings.json on this machine. No secret is read here.
+                  Written to Epsilon's settings.json on this machine. Keys are never read by this page.
                 </p>
               </template>
               <p v-else class="pop-note">
                 Pair the bridge first — these live in Epsilon, not in this page.
               </p>
               <div class="pop-actions">
-                <button type="button" class="btn tiny" :disabled="probing" @click="probeBridge">
+                <button type="button" class="btn tiny" :disabled="probing" @click="probeBridge()">
                   refresh
                 </button>
                 <button type="button" class="btn tiny ghost" @click="settingsOpen = false">close</button>
@@ -1256,61 +1688,18 @@ watch(query, (value) => {
       </div>
     </header>
 
-    <!-- ==================== bridge popover ==================== -->
-    <div v-if="bridgeOpen" class="bridge-pop" @click.stop>
-      <div class="pop-k">epsilon bridge</div>
-      <p class="pop-p">
-        The page can read the catalog and hand you a recipe, but only a local service can write
-        <code>~/.config/SLSsteam/config.yaml</code>.
-      </p>
-      <dl class="bridge-dl">
-        <dt>endpoint</dt>
-        <dd>127.0.0.1:1952</dd>
-        <dt>state</dt>
-        <dd>
-          {{
-            probing
-              ? 'checking…'
-              : !probed
-                ? 'not checked'
-                : paired
-                  ? `paired · ${bridgeVersion}`
-                  : bridge
-                    ? `running, not paired${bridgeVersion ? ` · ${bridgeVersion}` : ''}`
-                    : 'not running'
-          }}
-        </dd>
-      </dl>
-      <div v-if="bridge" class="bridge-token">
-        <label for="bridge-token">console token</label>
-        <input
-          id="bridge-token"
-          v-model="bridgeToken"
-          type="password"
-          placeholder="paste from ASSella → Companions → Epsilon"
-          @keydown.enter.prevent="saveBridgeToken"
-        />
-        <button type="button" class="btn" @click="saveBridgeToken">pair</button>
-      </div>
-      <div class="pop-actions">
-        <button type="button" class="btn" :disabled="probing" @click="probeBridge">
-          {{ probing ? 'checking…' : probed ? 'check again' : 'check for epsilon' }}
-        </button>
-        <button type="button" class="btn ghost" @click="bridgeOpen = false">close</button>
-      </div>
-    </div>
-
     <!-- ==================== catalog ==================== -->
     <main class="main">
-      <div v-if="isSearching" class="filter-bar">
+      <div v-if="isSearching || searchMode" class="filter-bar">
         <div>
-          showing <strong>{{ filtered.length }}</strong> matching titles
-          <span v-if="query" class="filter-q">“{{ query }}”</span>
+          showing <strong>{{ visibleGames.length }}</strong> matching title{{ visibleGames.length === 1 ? '' : 's' }}
+          <span v-if="query" class="filter-q">“{{ query.trim() }}”</span>
+          <span v-if="searchMode && searching" class="filter-q">· searching steam…</span>
         </div>
         <button type="button" class="btn tiny" @click="query = ''; pivot = 'catalog'">reset view</button>
       </div>
 
-      <div v-if="!filtered.length" class="empty">
+      <div v-if="!visibleGames.length" class="empty">
         <template v-if="searchMode && searching">
           <div class="empty-title">searching the store…</div>
           <p>Valve's catalogue can take a second.</p>
@@ -1318,11 +1707,11 @@ watch(query, (value) => {
         <template v-else-if="searchError">
           <div class="empty-title">the bridge said no</div>
           <p>{{ searchError }}</p>
-          <button type="button" class="btn" @click="probeBridge">check the bridge</button>
+          <button type="button" class="btn" @click="probeBridge()">check the bridge</button>
         </template>
         <template v-else-if="searchMode">
-          <div class="empty-title">no store match</div>
-          <p>Nothing on Steam matched “{{ query.trim() }}”. Try a shorter term or the AppID.</p>
+          <div class="empty-title">no matches</div>
+          <p>Nothing in your library or on Steam matched “{{ query.trim() }}”. Try a shorter term or the AppID.</p>
           <button type="button" class="btn" @click="query = ''">back to your library</button>
         </template>
         <template v-else-if="demo">
@@ -1330,7 +1719,7 @@ watch(query, (value) => {
           <p>Try another title, an AppID, or a tag like <em>roguelike</em> or <em>co-op</em>.</p>
           <button type="button" class="btn primary" @click="query = ''; pivot = 'catalog'">show everything</button>
         </template>
-        <template v-else-if="!paired">
+        <template v-else-if="!paired && !library.length">
           <div class="empty-title">no bridge, no catalogue</div>
           <p>
             The console reads your library and the store through Epsilon on
@@ -1338,7 +1727,7 @@ watch(query, (value) => {
             bridge off, there is nothing to show.
           </p>
           <div class="empty-actions">
-            <button type="button" class="btn primary" @click="bridgeOpen = true; probeBridge()">
+            <button type="button" class="btn primary" @click="probeBridge()">
               connect epsilon
             </button>
             <button type="button" class="btn" @click="demo = true">look at the demo</button>
@@ -1346,7 +1735,12 @@ watch(query, (value) => {
         </template>
         <template v-else-if="loading">
           <div class="empty-title">reading your library…</div>
-          <p>Epsilon is scanning config.yaml.</p>
+          <p>Epsilon is scanning config.yaml and local Steam manifests.</p>
+        </template>
+        <template v-else-if="pivot !== 'catalog'">
+          <div class="empty-title">nothing in “{{ PIVOTS.find((p) => p.id === pivot)?.label }}”</div>
+          <p>Switch back to all titles or search Steam to add more.</p>
+          <button type="button" class="btn primary" @click="pivot = 'catalog'">show all</button>
         </template>
         <template v-else>
           <div class="empty-title">nothing registered yet</div>
@@ -1359,15 +1753,33 @@ watch(query, (value) => {
         <section v-for="section in sections" :key="section.id" class="group">
           <div class="group-hd">
             <h2>{{ section.label }} <span class="badge">{{ section.games.length }}</span></h2>
-            <span class="hint">{{ section.id === 'featured' ? 'click to inspect · right-click to select' : 'live tiles cycle the recipe every few seconds' }}</span>
+            <span class="hint">
+              {{
+                section.id === 'owned'
+                  ? 'already on your machine or in config.yaml'
+                  : section.id === 'results'
+                    ? 'click to preview via steamcmd · register grabs keys'
+                    : 'click to inspect · right-click to select'
+              }}
+            </span>
           </div>
+
           <div class="grid">
             <article
               v-for="(g, i) in section.games"
               :key="g.id"
               class="tile"
-              :class="[sizeFor(g), { light: isLight(g), sel: selected.has(g.id), act: activeId === g.id, flipped: flipped.has(g.id) }]"
-              :style="{ background: g.accent, animationDelay: Math.min(i * 22, 240) + 'ms' }"
+              :class="[
+                g.tile,
+                {
+                  light: isLight(g),
+                  'has-art': Boolean(tileThumb(g)),
+                  sel: selected.has(g.id),
+                  act: activeId === g.id,
+                  flipped: flipped.has(g.id)
+                }
+              ]"
+              :style="{ backgroundColor: g.accent, animationDelay: Math.min(i * 18, 220) + 'ms' }"
               role="button"
               tabindex="0"
               :aria-label="`${g.title}, AppID ${g.appId}, ${STATUS_LABEL[g.status]}`"
@@ -1383,33 +1795,40 @@ watch(query, (value) => {
               </span>
 
               <div class="track">
-                <div class="face">
+                <div class="face face-1">
                   <img
-                    v-if="g.thumb"
+                    v-if="tileThumb(g)"
                     class="thumb"
-                    :src="g.thumb"
+                    :src="tileThumb(g)"
                     alt=""
                     loading="lazy"
                     decoding="async"
                     referrerpolicy="no-referrer"
-                    @error="g.thumb = ''"
+                    @error="nextTileThumb(g)"
                   />
-                  <span v-if="g.thumb" class="scrim" aria-hidden="true" />
+                  <span v-if="tileThumb(g)" class="tile-scrim" aria-hidden="true" />
+
                   <div class="face-top">
-                    <span class="status"><i class="dot" />{{ STATUS_LABEL[g.status] }}</span>
+                    <span class="status" :class="`st-${g.status}`">
+                      <i class="dot" />{{ STATUS_LABEL[g.status] }}
+                    </span>
                     <span class="appid">#{{ g.appId }}</span>
                   </div>
-                  <div v-if="!g.thumb" class="emblem">
+
+                  <div v-if="!tileThumb(g)" class="emblem">
                     <svg viewBox="0 0 64 64" v-html="GLYPHS[g.glyph]" />
                   </div>
+
                   <div class="face-bottom">
                     <div class="title-wrap">
                       <div class="title">{{ g.title }}</div>
-                      <div v-if="g.tile !== 't1x1'" class="sub">{{ g.tags.slice(0, 2).join(' · ') }}</div>
+                      <div v-if="g.tile !== 't1x1' && g.tags.length" class="sub">
+                        {{ g.tags.slice(0, 2).join(' · ') }}
+                      </div>
                     </div>
-                    <div class="meta">
-                      <div>{{ sizeLabel(g) }}</div>
-                      <div v-if="g.tile !== 't1x1'" class="dim">
+                    <div v-if="totalSize(g) > 0 || g.depots.length" class="meta">
+                      <div v-if="totalSize(g) > 0">{{ sizeLabel(g) }}</div>
+                      <div v-if="g.tile !== 't1x1' && g.depots.length" class="dim">
                         {{ g.depots.length }} depot{{ g.depots.length > 1 ? 's' : '' }}
                       </div>
                     </div>
@@ -1418,14 +1837,15 @@ watch(query, (value) => {
 
                 <div class="face face-2">
                   <div class="face-top">
-                    <span class="face-k">recipe</span>
-                    <span class="appid">{{ g.updated }}</span>
+                    <span class="face-k">{{ g.inLibrary ? 'library' : 'preview' }}</span>
+                    <span class="appid">{{ g.updated || `#${g.appId}` }}</span>
                   </div>
                   <dl class="facts">
-                    <div><dt>build</dt><dd>{{ g.buildId }}</dd></div>
-                    <div><dt>depots</dt><dd>{{ includedDepots(g).length }} / {{ g.depots.length }}</dd></div>
-                    <div><dt>keys</dt><dd>{{ keyCountOf(g) }}<template v-if="g.depots.length"> / {{ g.depots.length }}</template></dd></div>
-                    <div v-if="g.tile === 't2x2'"><dt>dlc</dt><dd>{{ g.dlc.length }}</dd></div>
+                    <div v-if="g.buildId"><dt>build</dt><dd>{{ g.buildId }}</dd></div>
+                    <div><dt>state</dt><dd>{{ g.installed ? 'on disk' : g.owned ? 'steam owned' : STATUS_LABEL[g.status] }}</dd></div>
+                    <div v-if="g.depots.length"><dt>depots</dt><dd>{{ includedDepots(g).length }} / {{ g.depots.length }}</dd></div>
+                    <div v-if="g.inLibrary"><dt>keys</dt><dd>{{ keyCountOf(g) }}<template v-if="g.depots.length"> / {{ g.depots.length }}</template></dd></div>
+                    <div v-if="g.tile === 't2x2' && g.dlc.length"><dt>dlc</dt><dd>{{ g.dlc.length }}</dd></div>
                   </dl>
                   <div class="face-bottom">
                     <div class="title">{{ g.title }}</div>
@@ -1440,32 +1860,54 @@ watch(query, (value) => {
     </main>
 
     <!-- ==================== inspector ==================== -->
-    <div v-if="activeGame" class="scrim" @click="closeFlyout" />
+    <div v-if="activeGame" class="flyout-scrim" @click="closeFlyout" />
 
     <aside class="flyout" :class="{ open: !!activeGame }" aria-label="title inspector">
       <template v-if="activeGame">
         <div class="fo-hd">
           <div class="super"><span class="sq" />title inspector</div>
-          <button type="button" class="icon-btn" title="Close (Esc)" @click="closeFlyout">✕</button>
+          <button type="button" class="icon-btn" title="Close (Esc)" aria-label="Close inspector" @click="closeFlyout">✕</button>
         </div>
 
-        <div class="fo-banner" :style="{ background: activeGame.accent, color: isLight(activeGame) ? '#111' : '#fff' }">
+        <div
+          class="fo-banner"
+          :class="{ 'has-art': Boolean(bannerThumb(activeGame)) }"
+          :style="{
+            backgroundColor: activeGame.accent,
+            color: bannerThumb(activeGame) ? '#fff' : isLight(activeGame) ? '#111' : '#fff'
+          }"
+        >
+          <img
+            v-if="bannerThumb(activeGame)"
+            class="fo-hero"
+            :src="bannerThumb(activeGame)"
+            alt=""
+            decoding="async"
+            referrerpolicy="no-referrer"
+            @error="nextBannerThumb(activeGame)"
+          />
+          <span v-if="bannerThumb(activeGame)" class="fo-hero-scrim" aria-hidden="true" />
+
           <div class="fo-banner-top">
-            <span class="status solid">{{ STATUS_LABEL[activeGame.status] }}</span>
-            <span class="fo-year">{{ activeGame.year }}</span>
+            <span class="status solid" :class="`st-${activeGame.status}`">
+              <i class="dot" />{{ STATUS_LABEL[activeGame.status] }}
+            </span>
+            <span class="fo-year">{{ activeGame.year || `#${activeGame.appId}` }}</span>
           </div>
           <h3>{{ activeGame.title }}</h3>
           <p>
             {{
               activeGame.developer ||
-              (activeGame.live
-                ? activeGame.installed
-                  ? 'installed on this machine'
-                  : 'in your at0-m library'
-                : '')
+              (activeGame.installed
+                ? 'installed on this machine'
+                : activeGame.owned
+                  ? 'owned on steam'
+                  : activeGame.inLibrary
+                    ? 'registered in at0-m'
+                    : 'steam store preview')
             }}
           </p>
-          <div class="fo-emblem">
+          <div v-if="!bannerThumb(activeGame)" class="fo-emblem">
             <svg viewBox="0 0 64 64" v-html="GLYPHS[activeGame.glyph]" />
           </div>
         </div>
@@ -1473,21 +1915,39 @@ watch(query, (value) => {
         <div class="fo-body">
           <dl class="fo-meta">
             <div><dt>appid</dt><dd>{{ activeGame.appId }}</dd></div>
-            <div><dt>build</dt><dd>{{ activeGame.buildId }}</dd></div>
-            <div><dt>depots</dt><dd>{{ activeDepots.length }} / {{ activeGame.depots.length }}</dd></div>
+            <div><dt>build</dt><dd>{{ activeGame.buildId || '—' }}</dd></div>
+            <div><dt>depots</dt><dd>{{ activeGame.depots.length ? `${activeDepots.length} / ${activeGame.depots.length}` : '—' }}</dd></div>
             <div><dt>size</dt><dd>{{ sizeLabel(activeGame) }}</dd></div>
           </dl>
 
-          <section class="fo-sec">
+          <section v-if="activeGame.depots.length || activeGame.detailState === 'loading'" class="fo-sec">
             <div class="fo-sec-hd">
               <h4>depots</h4>
-              <button type="button" class="link" @click="activeGame.depots.forEach((d) => toggleDepot(activeGame, d))">
-                toggle all
+              <button
+                v-if="demo && activeGame.depots.length"
+                type="button"
+                class="link"
+                @click="toggleAllDepots(activeGame)"
+              >
+                {{ activeGame.depots.every((d) => depotOn(activeGame, d)) ? 'deselect all' : 'select all' }}
               </button>
+              <span v-else class="fo-note">
+                {{ activeGame.inLibrary ? 'from local config + steamcmd' : 'public steamcmd info' }}
+              </span>
             </div>
-            <ul class="depots">
-              <li v-for="d in activeGame.depots" :key="d.id" class="depot" :class="{ off: !depotOn(activeGame, d) }">
-                <label class="depot-check">
+
+            <div v-if="!activeGame.depots.length && activeGame.detailState === 'loading'" class="fo-loading">
+              fetching public depot list…
+            </div>
+
+            <ul v-else class="depots">
+              <li
+                v-for="d in activeGame.depots"
+                :key="d.id"
+                class="depot"
+                :class="{ off: demo && !depotOn(activeGame, d) }"
+              >
+                <label v-if="demo" class="depot-check">
                   <input
                     type="checkbox"
                     :checked="depotOn(activeGame, d)"
@@ -1496,17 +1956,29 @@ watch(query, (value) => {
                   />
                   <span />
                 </label>
+
                 <div class="depot-main">
                   <div class="depot-line">
                     <span class="depot-id">{{ d.id }}</span>
                     <span class="depot-name">{{ d.name }}</span>
-                    <span class="depot-size">{{ fmtGB(d.size) }}</span>
+                    <span v-if="d.size > 0" class="depot-size">{{ fmtGB(d.size) }}</span>
                   </div>
                   <div class="depot-line sub">
                     <template v-if="activeGame.live">
                       <span v-if="d.hasKey" class="key on-device">key on this machine</span>
-                      <span v-else class="key missing">no key yet</span>
-                      <span class="gid">{{ d.enabled ? 'in config.yaml' : 'not in config' }}</span>
+                      <span v-else-if="activeGame.inLibrary" class="key missing">no local key</span>
+                      <span v-else class="key neutral">fetched on register</span>
+                      <span class="gid">
+                        {{
+                          activeGame.inLibrary
+                            ? d.enabled
+                              ? 'in config.yaml'
+                              : 'not in config'
+                            : d.gid
+                              ? `gid ${d.gid}`
+                              : 'public manifest'
+                        }}
+                      </span>
                     </template>
                     <template v-else>
                       <button
@@ -1528,7 +2000,10 @@ watch(query, (value) => {
           </section>
 
           <section v-if="activeGame.dlc.length" class="fo-sec">
-            <div class="fo-sec-hd"><h4>dlc</h4></div>
+            <div class="fo-sec-hd">
+              <h4>dlc</h4>
+              <span class="fo-note">{{ activeGame.dlc.length }} listed</span>
+            </div>
             <div class="chips">
               <span v-for="dlc in activeGame.dlc" :key="dlc.appId" class="chip-dlc">
                 {{ dlc.name }} <em>{{ dlc.appId }}</em>
@@ -1540,7 +2015,7 @@ watch(query, (value) => {
             <div class="fo-sec-hd">
               <h4>hubcap</h4>
               <span class="fo-note">
-                {{ !paired ? 'pair to read' : hubcap?.ok ? 'ready' : 'no key on this machine' }}
+                {{ !paired ? 'pair to read' : hubcap?.ok ? 'ready on register' : 'no key on this machine' }}
               </span>
             </div>
             <div v-if="paired && hubcap?.ok" class="key-saved">
@@ -1548,14 +2023,15 @@ watch(query, (value) => {
               <span class="gid">{{ hubcap.is_override ? 'override' : 'from settings' }}</span>
             </div>
             <p v-else-if="paired" class="fo-fine">
-              Epsilon has no Hubcap key, so it cannot resolve depots or manifests. Add one in
+              Epsilon has no Hubcap key, so registering cannot resolve missing keys yet. Add one in
               ASSella → Settings → Companions.
             </p>
             <p v-else class="fo-fine">
-              This is the last library Epsilon handed over. Pair the bridge to read live state.
+              This is cached library state. Pair the bridge to register titles or refresh local status.
             </p>
             <p class="fo-fine">
-              The key never reaches this page — only masked, and only through the bridge.
+              Preview metadata comes from public SteamCMD info. Hubcap is only queried by Epsilon when
+              you click register.
             </p>
           </section>
 
@@ -1581,8 +2057,7 @@ watch(query, (value) => {
               <button type="submit" class="btn">save</button>
             </form>
             <p class="fo-fine">
-              Stored in <code>localStorage</code> on this origin. Never sent to us — only to Hubcap,
-              from your browser.
+              Stored in <code>localStorage</code> on this origin.
             </p>
           </section>
 
@@ -1594,9 +2069,15 @@ watch(query, (value) => {
                 type="button"
                 class="btn primary wide"
                 :disabled="registering || !paired"
-                @click="register()"
+                @click="activeGame.inLibrary ? refetch() : register()"
               >
-                {{ registering ? 'registering…' : 'register to at0-m' }}
+                {{
+                  registering
+                    ? 'registering…'
+                    : activeGame.inLibrary
+                      ? 're-register / refresh keys'
+                      : 'register to at0-m'
+                }}
               </button>
               <p class="fo-fine">
                 <template v-if="!paired">
@@ -1604,49 +2085,45 @@ watch(query, (value) => {
                   <span class="mono">config.yaml</span> on its own.
                 </template>
                 <template v-else>
-                  Epsilon resolves the keys and manifests itself, writes
-                  <span class="mono">config.yaml</span>, and Steam starts the download. Nothing about
-                  this game is sent back to us, and the keys never reach this page.
+                  Epsilon fetches keys via Hubcap on demand, writes
+                  <span class="mono">config.yaml</span>, and Steam starts the download.
                 </template>
               </p>
             </template>
 
             <template v-else>
               <button type="button" class="btn primary wide" @click="exportLua()">
-                export .lua
+                download .lua
               </button>
               <div class="btn-row">
-                <button type="button" class="btn" @click="exportLua()">download .lua</button>
                 <button type="button" class="btn" @click="copyYaml()">copy yaml</button>
                 <button type="button" class="btn" @click="copyLua()">copy lua</button>
               </div>
               <p class="fo-fine">
-                <template v-if="!hasKey">Add a Hubcap key to unlock the register path.</template>
-                <template v-else-if="!bridge">
-                  Bridge offline — export the recipe and import it in ASSella
-                  (<span class="mono">Library → Scan for LUA</span>), or install Epsilon.
-                </template>
-                <template v-else>
-                  Epsilon will write <span class="mono">config.yaml</span> and Steam will start the
-                  download.
-                </template>
+                Demo catalog — export the recipe and import it in ASSella
+                (<span class="mono">Library → Scan for LUA</span>).
               </p>
             </template>
+
             <a
-              v-if="activeGame.registered || activeGame.installed || activeGame.status === 'registered' || activeGame.status === 'ready'"
+              v-if="activeGame.inLibrary || activeGame.installed || activeGame.owned"
               class="steam-link"
-              :href="`steam://install/${activeGame.appId}`"
+              :href="activeGame.installed ? `steam://rungameid/${activeGame.appId}` : `steam://install/${activeGame.appId}`"
             >
-              open steam://install/{{ activeGame.appId }}
+              {{ activeGame.installed ? `launch steam://rungameid/${activeGame.appId}` : `open steam://install/${activeGame.appId}` }}
             </a>
           </section>
         </div>
 
         <div class="fo-ft">
-          <span v-if="demo">demo catalog · sample data, keys are fake</span>
-          <span v-else-if="activeGame.live && !activeGame.detailLoaded">loading depots…</span>
-          <span v-else-if="!paired">cached from {{ cachedAt ? new Date(cachedAt).toLocaleDateString() : 'an earlier session' }} · pair to refresh</span>
-          <span v-else>{{ activeGame.installed ? 'installed' : 'not installed' }} · keys stay on this machine</span>
+          <span v-if="demo">demo catalog · sample data</span>
+          <span v-else-if="activeGame.detailState === 'loading'">loading metadata…</span>
+          <span v-else-if="activeGame.detailState === 'error'">
+            metadata unavailable ·
+            <button type="button" class="link" @click="loadDetail(activeGame, true)">retry</button>
+          </span>
+          <span v-else-if="!paired">cached {{ cachedAt ? new Date(cachedAt).toLocaleDateString() : '' }} · pair to refresh</span>
+          <span v-else>{{ activeGame.installed ? 'installed' : activeGame.inLibrary ? 'in library' : 'store preview' }} · keys stay local</span>
           <button type="button" class="link" @click="toggleSelect(activeGame.id)">
             {{ selected.has(activeGame.id) ? 'deselect' : 'select' }}
           </button>
@@ -1661,22 +2138,34 @@ watch(query, (value) => {
           <span class="count-box">{{ selected.size }}</span>
           <div>
             <div class="count-label">{{ selected.size }} item{{ selected.size === 1 ? '' : 's' }} selected</div>
-            <div class="count-sub">{{ fmtGB(selectedSize) }} · {{ selectedGames.length }} recipe{{ selectedGames.length === 1 ? '' : 's' }}</div>
+            <div class="count-sub">
+              <template v-if="selectedSize > 0">{{ fmtGB(selectedSize) }} · </template>
+              {{ selectedGames.length }} title{{ selectedGames.length === 1 ? '' : 's' }}
+            </div>
           </div>
         </div>
         <div class="appbar-actions">
-          <button type="button" class="ab-item" @click="register(selectedGames)">
-            <span class="ab-ring"><svg viewBox="0 0 24 24"><path d="M12 3v13M7 11l5 5 5-5M5 21h14" /></svg></span>
-            <span>register</span>
+          <button
+            type="button"
+            class="ab-item"
+            :disabled="registering"
+            @click="register(selectedGames)"
+          >
+            <span class="ab-ring">
+              <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
+            </span>
+            <span>{{ registering ? 'working…' : 'register' }}</span>
           </button>
-          <button type="button" class="ab-item" @click="exportLua(selectedGames)">
-            <span class="ab-ring"><svg viewBox="0 0 24 24"><path d="M12 3v13M7 11l5 5 5-5M5 21h14" /></svg></span>
-            <span>export .lua</span>
-          </button>
-          <button type="button" class="ab-item" @click="copyYaml(selectedGames)">
-            <span class="ab-ring"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" /><path d="M16 8V4H4v12h4" /></svg></span>
-            <span>copy yaml</span>
-          </button>
+          <template v-if="demo">
+            <button type="button" class="ab-item" @click="exportLua(selectedGames)">
+              <span class="ab-ring"><svg viewBox="0 0 24 24"><path d="M12 3v13M7 11l5 5 5-5M5 21h14" /></svg></span>
+              <span>export .lua</span>
+            </button>
+            <button type="button" class="ab-item" @click="copyYaml(selectedGames)">
+              <span class="ab-ring"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" /><path d="M16 8V4H4v12h4" /></svg></span>
+              <span>copy yaml</span>
+            </button>
+          </template>
           <button type="button" class="ab-item" @click="toggleAllVisible">
             <span class="ab-ring"><svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" /></svg></span>
             <span>select all</span>
@@ -1719,7 +2208,7 @@ watch(query, (value) => {
   font-family: var(--font);
   font-size: 14px;
   line-height: 1.45;
-  padding-bottom: 7rem;
+  padding-bottom: calc(6.5rem + env(safe-area-inset-bottom, 0px));
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -1785,14 +2274,15 @@ code {
   flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 1.25rem 2rem;
-  padding: 1.5rem clamp(1rem, 3vw, 2.5rem) 1rem;
-  background: var(--bg);
+  gap: 1rem 2rem;
+  padding: 1.35rem clamp(1rem, 3vw, 2.5rem) 0.9rem;
+  background: rgba(11, 11, 11, 0.96);
   border-bottom: 1px solid var(--line);
 }
 
 .hd-left {
   min-width: 0;
+  flex: 1 1 320px;
 }
 
 .super {
@@ -1822,8 +2312,8 @@ code {
 }
 
 .at0m h1 {
-  margin: 0.35rem 0 0.7rem;
-  font-size: clamp(2.6rem, 6vw, 4.25rem);
+  margin: 0.3rem 0 0.6rem;
+  font-size: clamp(2.4rem, 5.5vw, 4.1rem);
   font-weight: 200;
   letter-spacing: -0.035em;
   line-height: 0.92;
@@ -1832,18 +2322,27 @@ code {
 
 .pivots {
   display: flex;
-  flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.4rem 1.6rem;
+  gap: 1.45rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 2px;
+}
+.pivots::-webkit-scrollbar {
+  display: none;
 }
 
 .pivot {
   position: relative;
-  font-size: clamp(1.1rem, 2.2vw, 1.45rem);
+  flex: none;
+  scroll-snap-align: start;
+  font-size: clamp(1.1rem, 2vw, 1.42rem);
   font-weight: 300;
-  color: #6f6f6f;
-  padding: 0 0 0.3rem;
-  transition: color 0.14s ease;
+  color: #6b6b6b;
+  padding: 0 0 0.32rem;
+  transition: color 0.14s ease, transform 0.14s ease;
   white-space: nowrap;
 }
 
@@ -1870,7 +2369,7 @@ code {
   font-size: 10px;
   font-family: var(--mono);
   color: var(--muted);
-  margin-left: 0.35rem;
+  margin-left: 0.32rem;
   vertical-align: super;
 }
 
@@ -1878,13 +2377,12 @@ code {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 0.6rem;
-  min-width: min(100%, 320px);
+  gap: 0.55rem;
+  width: min(100%, 340px);
 }
 
 .stats {
   display: flex;
-  gap: 0;
   border: 1px solid var(--line);
   background: var(--panel);
 }
@@ -1894,8 +2392,8 @@ code {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.35rem 0.7rem;
+  gap: 0.45rem;
+  padding: 0.32rem 0.65rem;
 }
 .stat + .stat {
   border-left: 1px solid var(--line);
@@ -1915,13 +2413,11 @@ code {
   color: var(--accent);
 }
 
-/* Metro search: one field, the clear glyph inside it, and a solid square
-   that is part of the same plane — no floating buttons, no gaps. */
 .search {
   display: flex;
   align-items: stretch;
   height: 38px;
-  background: #191c21;
+  background: #17191d;
   border: 2px solid var(--line-2);
   transition: border-color 0.14s ease;
 }
@@ -1952,14 +2448,10 @@ code {
   flex: none;
   display: grid;
   place-items: center;
-  border: 0;
-  padding: 0;
-  cursor: pointer;
   line-height: 1;
 }
 .search-clear {
   width: 28px;
-  background: transparent;
   color: #9aa0a8;
   font-size: 13px;
 }
@@ -2025,6 +2517,9 @@ code {
   background: #d0453a;
   flex: none;
 }
+.tool.bridge.online .dot {
+  background: #f0a30a;
+}
 .tool.bridge.live .dot {
   background: #3ecf6a;
 }
@@ -2032,6 +2527,7 @@ code {
   color: #fff;
   border-color: #3ecf6a;
 }
+
 .popover-anchor {
   position: relative;
 }
@@ -2041,11 +2537,32 @@ code {
   top: calc(100% + 8px);
   right: 0;
   z-index: 60;
-  width: 250px;
-  padding: 0.85rem;
-  background: #181818;
+  width: 280px;
+  padding: 0.9rem;
+  background: #171717;
   border: 1px solid #fff;
+  animation: pop-in 0.14s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+.bridge-pop {
+  left: 0;
+  right: auto;
+  width: min(330px, 88vw);
+}
+
+.set-pop {
+  right: 0;
+  left: auto;
+  width: min(300px, 88vw);
+}
+
 .pop-k {
   font-size: 9.5px;
   letter-spacing: 0.18em;
@@ -2062,18 +2579,11 @@ code {
   width: 20px;
   height: 20px;
   border: 2px solid transparent;
-  cursor: pointer;
-  padding: 0;
 }
 .swatch-btn.on {
   border-color: #fff;
   outline: 1px solid #000;
   outline-offset: -4px;
-}
-.set-pop {
-  right: 0;
-  left: auto;
-  width: 300px;
 }
 
 .set-row {
@@ -2093,7 +2603,7 @@ code {
 }
 
 .set-v {
-  font-family: var(--at0m-mono, monospace);
+  font-family: var(--mono);
   font-size: 11px;
   color: #e6e9ee;
 }
@@ -2104,7 +2614,6 @@ code {
   border: 1px solid rgba(255, 255, 255, 0.16);
   padding: 3px 6px;
   font-size: 11px;
-  border-radius: 0;
 }
 
 .set-pop input[type='checkbox'] {
@@ -2122,18 +2631,6 @@ code {
   color: var(--muted);
 }
 
-/* --------------------------- bridge popover --------------------------- */
-
-.bridge-pop {
-  position: fixed;
-  top: 8.5rem;
-  right: clamp(1rem, 3vw, 2.5rem);
-  z-index: 70;
-  width: min(340px, calc(100% - 2rem));
-  padding: 1rem;
-  background: #171717;
-  border: 1px solid #fff;
-}
 .pop-p {
   margin: 0 0 0.75rem;
   font-size: 12px;
@@ -2169,7 +2666,7 @@ code {
 .bridge-token {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.35rem;
   margin-bottom: 0.8rem;
 }
 .bridge-token label {
@@ -2193,6 +2690,7 @@ code {
 .pop-actions {
   display: flex;
   gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 .pop-actions .btn {
   flex: 1;
@@ -2228,18 +2726,18 @@ code {
 }
 
 .empty {
-  padding: 4rem 1rem;
+  padding: 4rem 1.25rem;
   text-align: center;
   border: 1px solid var(--line);
   background: #101010;
 }
 .empty-actions {
   display: flex;
+  justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 4px;
 }
-
 .empty-title {
   font-size: clamp(1.5rem, 4vw, 2.25rem);
   font-weight: 200;
@@ -2247,7 +2745,8 @@ code {
   margin-bottom: 0.5rem;
 }
 .empty p {
-  margin: 0 0 1.5rem;
+  margin: 0 auto 1.5rem;
+  max-width: 46ch;
   color: var(--muted);
   font-size: 13px;
 }
@@ -2258,18 +2757,19 @@ code {
 }
 
 .group {
-  margin-bottom: 2rem;
+  margin-bottom: 2.15rem;
 }
 .group-hd {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 0.55rem;
+  gap: 0.35rem 1rem;
+  margin-bottom: 0.6rem;
 }
 .group-hd h2 {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1.08rem;
   font-weight: 300;
   letter-spacing: 0.01em;
   color: #fff;
@@ -2287,15 +2787,14 @@ code {
 .hint {
   font-size: 10.5px;
   color: #7a7a7a;
-  letter-spacing: 0.02em;
 }
 
 /* -------------------------------- grid -------------------------------- */
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  grid-auto-rows: 148px;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(138px, 14vw, 168px), 1fr));
+  grid-auto-rows: clamp(138px, 14vw, 164px);
   grid-auto-flow: dense;
   gap: 8px;
 }
@@ -2312,18 +2811,26 @@ code {
   background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.055) 25%, transparent 25%),
     linear-gradient(225deg, rgba(255, 255, 255, 0.055) 25%, transparent 25%);
   background-size: 26px 26px;
+  user-select: none;
 }
-.tile.light {
+
+/* Only switch Face 1 to dark ink when there is NO artwork behind it */
+.tile.light:not(.has-art) .face-1,
+.tile.light .face-2 {
   color: #101010;
 }
-.tile:hover {
-  outline-color: rgba(255, 255, 255, 0.5);
+.tile.has-art .face-1 {
+  color: #fff;
 }
-.tile.light:hover {
+
+.tile:hover {
+  outline-color: rgba(255, 255, 255, 0.55);
+}
+.tile.light:not(.has-art):hover {
   outline-color: rgba(0, 0, 0, 0.45);
 }
 .tile:active {
-  transform: scale(0.985);
+  transform: perspective(700px) scale(0.975);
 }
 .tile.sel {
   outline: 3px solid #fff;
@@ -2351,17 +2858,6 @@ code {
   grid-row: span 2;
 }
 
-@media (max-width: 430px) {
-  .grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-auto-rows: 140px;
-  }
-  .t2x2 {
-    grid-column: span 2;
-    grid-row: span 2;
-  }
-}
-
 @keyframes tile-in {
   from {
     opacity: 0;
@@ -2380,7 +2876,7 @@ code {
   right: 0;
   width: 38px;
   height: 38px;
-  z-index: 5;
+  z-index: 6;
   opacity: 0;
   transition: opacity 0.13s ease;
 }
@@ -2397,7 +2893,7 @@ code {
   height: 0;
   border-style: solid;
   border-width: 0 34px 34px 0;
-  border-color: transparent rgba(0, 0, 0, 0.4) transparent transparent;
+  border-color: transparent rgba(0, 0, 0, 0.5) transparent transparent;
 }
 .tile.sel .corner-tri {
   border-color: transparent #fff transparent transparent;
@@ -2421,7 +2917,7 @@ code {
   height: 200%;
   display: flex;
   flex-direction: column;
-  transition: transform 0.6s cubic-bezier(0.19, 1, 0.22, 1);
+  transition: transform 0.58s cubic-bezier(0.19, 1, 0.22, 1);
 }
 .tile.flipped .track,
 .tile:hover .track,
@@ -2440,10 +2936,10 @@ code {
   min-height: 0;
 }
 .face-2 {
-  background: rgba(0, 0, 0, 0.26);
+  background: rgba(0, 0, 0, 0.28);
 }
 .tile.light .face-2 {
-  background: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.08);
 }
 
 .thumb {
@@ -2452,20 +2948,27 @@ code {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center;
   pointer-events: none;
 }
 
-/* Enough shadow for white text on any art, not enough to grey the tile out. */
-.scrim {
+.tile-scrim {
   position: absolute;
   inset: 0;
   pointer-events: none;
   background: linear-gradient(
     to bottom,
-    rgba(0, 0, 0, 0.55) 0%,
-    rgba(0, 0, 0, 0.12) 42%,
-    rgba(0, 0, 0, 0.62) 100%
+    rgba(0, 0, 0, 0.52) 0%,
+    rgba(0, 0, 0, 0.08) 40%,
+    rgba(0, 0, 0, 0.72) 100%
   );
+}
+
+.face-top,
+.face-bottom,
+.emblem {
+  position: relative;
+  z-index: 2;
 }
 
 .face-top {
@@ -2475,6 +2978,7 @@ code {
   gap: 0.5rem;
   padding-right: 1.5rem;
 }
+
 .status {
   display: inline-flex;
   align-items: center;
@@ -2483,10 +2987,10 @@ code {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   font-weight: 600;
-  padding: 0.12rem 0.32rem;
-  background: rgba(0, 0, 0, 0.28);
+  padding: 0.14rem 0.36rem;
+  background: rgba(0, 0, 0, 0.42);
 }
-.tile.light .status {
+.tile.light:not(.has-art) .status {
   background: rgba(0, 0, 0, 0.14);
 }
 .status .dot {
@@ -2495,13 +2999,23 @@ code {
   background: currentColor;
   flex: none;
 }
-.status.solid {
-  background: rgba(0, 0, 0, 0.35);
+.status.st-installed .dot {
+  background: #4be384;
 }
+.status.st-installing .dot {
+  background: #52c7ff;
+}
+.status.st-needs-key .dot {
+  background: #f5b942;
+}
+.status.solid {
+  background: rgba(0, 0, 0, 0.55);
+}
+
 .appid {
   font-family: var(--mono);
   font-size: 9.5px;
-  opacity: 0.75;
+  opacity: 0.8;
   flex: none;
 }
 .face-k {
@@ -2534,30 +3048,29 @@ code {
   stroke-width: 2.2;
 }
 .t2x1 .emblem svg {
-  width: 58px;
-  height: 58px;
+  width: 56px;
+  height: 56px;
 }
-.t2x1 .face {
+
+/* Only use side-by-side layout on wide tiles when showing a vector glyph */
+.t2x1:not(.has-art) .face-1 {
   flex-direction: row;
   align-items: center;
   gap: 0.9rem;
+  padding-top: 2rem;
 }
-.t2x1 .face-top {
+.t2x1:not(.has-art) .face-1 .face-top {
   position: absolute;
   top: 0.7rem;
   left: 0.8rem;
   right: 0.8rem;
-  width: auto;
 }
-.t2x1 .emblem {
+.t2x1:not(.has-art) .face-1 .emblem {
   flex: none;
 }
-.t2x1 .face-bottom {
+.t2x1:not(.has-art) .face-1 .face-bottom {
   flex: 1;
   min-width: 0;
-}
-.t2x1 .face {
-  padding-top: 2rem;
 }
 
 .face-bottom {
@@ -2569,56 +3082,51 @@ code {
 .title-wrap {
   min-width: 0;
 }
-.thumb ~ .face-top .status,
-.thumb ~ .face-bottom .title {
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+
+.tile.has-art .face-1 .title,
+.tile.has-art .face-1 .sub,
+.tile.has-art .face-1 .meta,
+.tile.has-art .face-1 .appid {
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
 }
 
 .title {
-  font-size: 0.82rem;
+  font-size: 0.84rem;
   font-weight: 500;
-  line-height: 1.15;
+  line-height: 1.18;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Long names get two lines in the big tiles instead of a hard cut. */
 .t2x1 .title,
+.t1x2 .title {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: 0.96rem;
+}
 .t2x2 .title {
   white-space: normal;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-  font-size: 0.9rem;
-}
-.t2x2 .title {
-  font-size: 1.05rem;
-  -webkit-line-clamp: 3;
-}
-.t2x2 .thumb ~ .face-top .status,
-.thumb ~ .face-bottom .title {
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
-}
-
-.title {
-  font-size: 1.5rem;
+  font-size: 1.38rem;
   font-weight: 300;
   letter-spacing: -0.02em;
-  white-space: normal;
 }
-.t2x1 .thumb ~ .face-top .status,
-.thumb ~ .face-bottom .title {
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+.face-2 .title {
+  font-size: 0.86rem;
+  font-weight: 500;
+  white-space: nowrap;
+  -webkit-line-clamp: unset;
+  display: block;
 }
 
-.title {
-  font-size: 0.95rem;
-  font-weight: 500;
-}
 .sub {
   font-size: 10px;
-  opacity: 0.78;
-  margin-top: 0.12rem;
+  opacity: 0.82;
+  margin-top: 0.14rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2627,18 +3135,18 @@ code {
   text-align: right;
   font-family: var(--mono);
   font-size: 9.5px;
-  opacity: 0.85;
+  opacity: 0.88;
   flex: none;
 }
 .meta .dim {
-  opacity: 0.7;
+  opacity: 0.72;
 }
 
 .facts {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.18rem;
+  gap: 0.2rem;
   font-size: 10.5px;
   flex: 1;
   justify-content: center;
@@ -2647,8 +3155,7 @@ code {
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
-  border-bottom: 1px solid currentColor;
-  border-color: color-mix(in srgb, currentColor 18%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent);
   padding-bottom: 0.14rem;
 }
 .facts dt {
@@ -2666,12 +3173,11 @@ code {
 
 /* ------------------------------- flyout ------------------------------- */
 
-.scrim {
+.flyout-scrim {
   position: fixed;
   inset: 0;
   z-index: 40;
-  display: none;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.52);
   animation: fade 0.18s ease;
 }
 
@@ -2687,7 +3193,9 @@ code {
   right: 0;
   bottom: 0;
   z-index: 45;
-  width: min(430px, 100%);
+  width: min(450px, 100%);
+  display: flex;
+  flex-direction: column;
   background: #131313;
   border-left: 2px solid var(--accent);
   transform: translateX(101%);
@@ -2702,11 +3210,11 @@ code {
 .fo-hd {
   position: sticky;
   top: 0;
-  z-index: 3;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.85rem 1rem;
+  padding: 0.8rem 1rem;
   background: #101010;
   border-bottom: 1px solid var(--line);
 }
@@ -2727,40 +3235,71 @@ code {
 
 .fo-banner {
   position: relative;
-  padding: 1.2rem 1.15rem 1.35rem;
+  min-height: 185px;
+  padding: 1.15rem 1.15rem 1.3rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
   overflow: hidden;
+  border-bottom: 2px solid var(--accent);
   background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.07) 25%, transparent 25%),
     linear-gradient(225deg, rgba(255, 255, 255, 0.07) 25%, transparent 25%);
   background-size: 30px 30px;
 }
+.fo-hero {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  pointer-events: none;
+}
+.fo-hero-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.45) 0%,
+    rgba(0, 0, 0, 0.2) 38%,
+    rgba(0, 0, 0, 0.86) 100%
+  );
+}
 .fo-banner-top {
+  position: relative;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 0.75rem;
+  margin-bottom: auto;
+  padding-bottom: 2.2rem;
 }
 .fo-year {
   font-family: var(--mono);
   font-size: 10px;
-  opacity: 0.85;
+  opacity: 0.9;
+  padding: 0.12rem 0.36rem;
+  background: rgba(0, 0, 0, 0.45);
 }
 .fo-banner h3 {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   margin: 0;
-  font-size: clamp(1.6rem, 5vw, 2.1rem);
+  font-size: clamp(1.55rem, 5vw, 2.05rem);
   font-weight: 300;
   letter-spacing: -0.025em;
-  line-height: 1.05;
-  max-width: 78%;
+  line-height: 1.06;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.75);
 }
 .fo-banner p {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   margin: 0.35rem 0 0;
   font-size: 11.5px;
-  opacity: 0.85;
+  opacity: 0.9;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }
 .fo-emblem {
   position: absolute;
@@ -2778,6 +3317,7 @@ code {
 }
 
 .fo-body {
+  flex: 1;
   padding: 1rem;
 }
 
@@ -2831,6 +3371,13 @@ code {
   font-size: 9.5px;
   color: #8a8a8a;
 }
+.fo-loading {
+  padding: 0.75rem;
+  background: #181818;
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--muted);
+}
 
 .depots {
   list-style: none;
@@ -2876,7 +3423,7 @@ code {
   content: '';
   position: absolute;
   left: 3px;
-  top: 0px;
+  top: 0;
   width: 4px;
   height: 8px;
   border: solid #111;
@@ -2933,12 +3480,18 @@ code {
 }
 .key.on-device {
   color: #7ee2a8;
+  border: 0;
   cursor: default;
 }
-
+.key.neutral {
+  color: #9aa3ad;
+  border: 0;
+  cursor: default;
+}
 .key.missing {
   color: #e0a13a;
   border: 0;
+  cursor: default;
 }
 .gid {
   margin-left: auto;
@@ -3032,7 +3585,7 @@ code {
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   text-align: center;
 }
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: #2a2a2a;
   border-color: #fff;
 }
@@ -3040,10 +3593,10 @@ code {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
-  padding: 0.7rem 1rem;
+  padding: 0.72rem 1rem;
   font-size: 11px;
 }
-.btn.primary:hover {
+.btn.primary:hover:not(:disabled) {
   filter: brightness(1.12);
 }
 .btn.wide {
@@ -3057,19 +3610,19 @@ code {
   font-size: 9.5px;
 }
 .btn:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: default;
 }
 .btn-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 0.35rem;
   margin-top: 0.4rem;
 }
 .btn-row .btn {
   font-size: 9.5px;
   letter-spacing: 0.08em;
-  padding: 0.45rem 0.3rem;
+  padding: 0.48rem 0.35rem;
 }
 
 .fo-fine {
@@ -3079,8 +3632,8 @@ code {
   color: #8f8f8f;
 }
 .steam-link {
-  display: block;
-  margin-top: 0.6rem;
+  display: inline-block;
+  margin-top: 0.7rem;
   font-family: var(--mono);
   font-size: 10.5px;
   color: #7fb6ff;
@@ -3095,11 +3648,12 @@ code {
 .fo-ft {
   position: sticky;
   bottom: 0;
+  z-index: 4;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.6rem 1rem;
+  padding: 0.65rem 1rem calc(0.65rem + env(safe-area-inset-bottom, 0px));
   background: #0f0f0f;
   border-top: 1px solid var(--line);
   font-size: 9.5px;
@@ -3117,6 +3671,7 @@ code {
   z-index: 35;
   background: #080808;
   border-top: 2px solid var(--accent);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
   transform: translateY(101%);
   transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -3173,6 +3728,10 @@ code {
   text-transform: lowercase;
   color: var(--muted-2);
 }
+.ab-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .ab-ring {
   width: 38px;
   height: 38px;
@@ -3190,11 +3749,11 @@ code {
   stroke-width: 1.9;
   stroke-linecap: square;
 }
-.ab-item:hover .ab-ring {
+.ab-item:hover:not(:disabled) .ab-ring {
   background: #fff;
   color: #111;
 }
-.ab-item:active .ab-ring {
+.ab-item:active:not(:disabled) .ab-ring {
   transform: scale(0.93);
 }
 
@@ -3239,34 +3798,70 @@ code {
 
 /* ------------------------------ responsive ---------------------------- */
 
-@media (max-width: 720px) {
+@media (max-width: 760px) {
   .hd {
     position: static;
     padding-top: 1rem;
+    gap: 0.85rem;
+  }
+  .hd-right {
+    width: 100%;
   }
   .stats {
     display: none;
   }
-  .bridge-pop {
+  .pivots {
+    gap: 1.15rem;
+    margin-right: -1rem;
+    padding-right: 1rem;
+  }
+  .tools {
+    justify-content: space-between;
+  }
+  .bridge-pop,
+  .set-pop {
+    position: fixed;
     top: 1rem;
     left: 1rem;
     right: 1rem;
     width: auto;
   }
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: 136px;
+    gap: 6px;
+  }
   .t2x1 {
     grid-column: span 2;
+    grid-row: span 1;
+  }
+  .t1x2 {
+    grid-column: span 1;
+    grid-row: span 2;
+  }
+  .t2x2 {
+    grid-column: span 2;
+    grid-row: span 2;
   }
   .flyout {
     width: 100%;
-  }
-  .scrim {
-    display: block;
+    border-left: 0;
   }
   .appbar-in {
     justify-content: center;
   }
   .appbar-actions {
     gap: 0.9rem;
+  }
+}
+
+/* Touch devices: tap opens inspector cleanly without getting stuck on hover flip */
+@media (hover: none) {
+  .tile:hover .track {
+    transform: none;
+  }
+  .tile.flipped .track {
+    transform: translateY(-50%);
   }
 }
 
