@@ -1,6 +1,6 @@
 # Plugins
 
-The plugins are small Lua scripts that run inside Steam through SLSsteam. They're what make [AT0-M](/at0m) downloads work. You install and update them in **Settings → at0-m → Manage plugins**.
+The plugins are small Lua scripts that run inside Steam through SLSsteam. They're what make [AT0-M](/at0m-guide) downloads work. You install and update them in **Settings → at0-m → Manage plugins**.
 
 | Plugin | In one line | Needed? |
 | :--- | :--- | :--- |
