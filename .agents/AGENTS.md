@@ -81,6 +81,8 @@ python3 scripts/check_silent_exceptions.py
 
 For a full behavioural pass, run the suites in `.github/workflows/ci.yml` (they are listed in the "Behavioural Test Suites" step). Use a unique temporary `HOME`/cache directory when testing config or database code; tests must never touch the developer's real `~/.config/SLSsteam` or `~/.local/share/ACCELA`.
 
+CI suites must not call live Hubcap/GitHub endpoints, require a Steam install, or depend on optional `src/deps` binaries, cached Lua files or an existing SLSsteam config. Seed a temporary config/fixture and fake the network instead; keep live-data checks behind an explicit opt-in environment variable. A clean runner has no SLSsteam config, so any test that writes through the config layer must enable `utils.yaml.core._config_management_enabled` itself (or patch the live core function).
+
 Before committing:
 
 - Run `git -c core.whitespace=cr-at-eol diff --check`. `src/utils/steam_manifest.py` is intentionally CRLF; plain `git diff --check` reports its CR characters as trailing whitespace. Never rewrite that whole file to LF just to silence the check.

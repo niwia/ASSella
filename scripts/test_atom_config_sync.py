@@ -117,17 +117,20 @@ def obtain_4959210_lua() -> Tuple[str, str]:
                 if name.endswith("4959210.lua") or name.endswith(".lua"):
                     return "Cubing Forge", zf.read(name).decode("utf-8", errors="ignore")
 
-    # Download from API if not locally present
-    try:
-        from core import morrenus_api
-        zpath, err = morrenus_api.download_manifest("4959210", force_update=True)
-        if zpath and os.path.exists(zpath):
-            with zipfile.ZipFile(zpath, "r") as zf:
-                for name in zf.namelist():
-                    if name.endswith(".lua"):
-                        return "Cubing Forge", zf.read(name).decode("utf-8", errors="ignore")
-    except Exception as e:
-        log_info(f"Could not download manifest from API: {e}")
+    # CI and ordinary local runs must not depend on a live Hubcap endpoint. A
+    # developer who explicitly wants the real bundle can opt in; the synthetic
+    # fallback below exercises the same parser and config paths deterministically.
+    if os.environ.get("ASSELLA_TEST_LIVE_HUBCAP") == "1":
+        try:
+            from core import morrenus_api
+            zpath, err = morrenus_api.download_manifest("4959210", force_update=True)
+            if zpath and os.path.exists(zpath):
+                with zipfile.ZipFile(zpath, "r") as zf:
+                    for name in zf.namelist():
+                        if name.endswith(".lua"):
+                            return "Cubing Forge", zf.read(name).decode("utf-8", errors="ignore")
+        except Exception as e:
+            log_info(f"Could not download manifest from API: {e}")
 
     # Fallback minimal real Lua representation for 4959210
     fallback_lua = (
