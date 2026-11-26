@@ -383,6 +383,24 @@ class MainWindow(
         else:
             QTimer.singleShot(1500, self._check_legacy_plugins_startup)
 
+        QTimer.singleShot(3000, self._start_cef_store_injector)
+
+    def _start_cef_store_injector(self) -> None:
+        """Start the standalone CEF Store button injector if enabled and not managed by Uran."""
+        try:
+            from utils import store_patch
+            from utils.cef_store_injector import get_cef_injector
+            from utils.settings import get_settings
+
+            if (
+                get_settings().value("at0m_enabled", False, type=bool)
+                and store_patch.is_enabled()
+                and not store_patch.is_uran_managing_store()
+            ):
+                get_cef_injector().start()
+        except Exception as e:
+            logger.debug(f"[MainWindow] CEF store injector start skipped: {e}")
+
     def _on_plugin_check_ready(self, actions: list) -> None:
         """Ask the user what to do about the plugin check findings."""
         try:

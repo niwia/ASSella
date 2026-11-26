@@ -373,6 +373,41 @@ def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
             "create one.", f"color: {WARN}; font-size: 8.5pt; border: none; background: transparent;"
         ))
 
+    # Shared with Uran: the switch lives in settings.json, Uran draws the
+    # button inside Steam, and Epsilon reports whether the CEF port is open.
+    store_lbl = _label("Store button: checking…", MUTED)
+    cl.addWidget(store_lbl)
+
+    def _fill_store(state) -> None:
+        if sip.isdeleted(store_lbl):
+            return
+        if not state:
+            _colored(store_lbl, "Store button: bridge did not answer", WARN, bold=False)
+            return
+        cef = state.get("cef") or {}
+        enabled = state.get("enabled", True)
+        if not enabled:
+            _colored(store_lbl, "Store button: off · Uran will not draw it", MUTED, bold=False)
+        elif cef.get("store_tab"):
+            _colored(store_lbl, f"Store button: on · CEF {cef.get('port')} store page detected", "#7ee2a8", bold=False)
+        elif cef.get("available"):
+            _colored(
+                store_lbl,
+                f"Store button: on · CEF {cef.get('port')} found, open a Store page to see it",
+                MUTED,
+                bold=False,
+            )
+        else:
+            _colored(
+                store_lbl,
+                "Store button: on · no CEF port — enable CEF debugging in Settings → at0-m and restart Steam",
+                WARN,
+                bold=False,
+            )
+
+    if token:
+        _start(dialog, lambda: comp.epsilon_console_get("/v1/store"), _fill_store)
+
     row = QHBoxLayout()
     open_btn = _button("Open web console", primary=True)
     copy_btn = _button("Copy token")
@@ -486,9 +521,9 @@ def _epsilon_installed_page(dialog, page_lay, info, rebuild) -> None:
     cl3.addWidget(_row("Hubcap route", _combo(comp.GATEWAY_OPTIONS, s.get("hubcap_gateway", "auto"),
                                               save("hubcap_gateway")), "How Epsilon reaches the Hubcap API."))
     _key_row(dialog, cl3, s.get("manifest_api_key", ""),
-             lambda k, ts: comp.update_json(comp.epsilon_settings_path(),
-                                            {"manifest_api_key": k, "manifest_api_key_timestamp": ts}))
-    cl3.addWidget(_label("Saved to Epsilon's own settings file; used the next time the bridge wakes."))
+             lambda k, ts: comp.update_companion_settings(
+                 {"manifest_api_key": k, "manifest_api_key_timestamp": ts}))
+    cl3.addWidget(_label("Saved to the settings file Uran and Epsilon share; used the next time the bridge wakes."))
     page_lay.addWidget(card3)
     _epsilon_console_card(dialog, page_lay, info, rebuild)
     page_lay.addStretch(1)

@@ -1,14 +1,20 @@
 """Uran (Decky plugin) and Epsilon (browser bridge): find them, read and write their settings.
 
-Both companions work on their own and keep their own ``settings.json``;
-ASSella only manages them from Settings -> Companions:
+Both companions work on their own, but they are the same engine started two
+ways and they share one settings file per machine:
 
-* Uran: ``~/homebrew/plugins/Uran`` (Decky), settings in
+* Uran: ``~/homebrew/plugins/Uran`` (Decky); settings in
   ``~/homebrew/settings/Uran/settings.json``.
 * Epsilon: installed from a checkout (``~/epsilon`` by default) as the
   systemd --user units ``epsilon.socket`` / ``epsilon.service`` (+ the
-  ``epsilon-updater.timer``). Without Decky it keeps its settings in
-  ``~/.config/assella-decky/settings.json``. It answers on 127.0.0.1:1952.
+  ``epsilon-updater.timer``). It answers on 127.0.0.1:1952.
+
+When Decky has Uran installed, that file is the shared one and Epsilon uses it
+too. Otherwise Epsilon keeps its own under ``~/.config/assella-decky``. Older
+builds may still have a copy in the other location; reads merge the copies (the
+file saved most recently wins) and writes keep an existing copy in sync, so
+both companions and this dialog agree during an upgrade. The ``assella-decky``
+name is legacy but kept: it is also where Epsilon caches manifests and metadata.
 
 Writes keep every key ASSella does not know and replace the file
 atomically. Anything slow (systemctl, the HTTP status) is meant to be called
@@ -263,7 +269,56 @@ def _systemd_user_dir() -> Path:
 
 
 def epsilon_settings_path() -> Path:
+    """Epsilon's settings file: the one Uran shares when Decky has it installed."""
+    return companion_settings_path()
+
+
+def _legacy_epsilon_settings_path() -> Path:
+    """Epsilon's own legacy file, still read so an upgrade keeps its values."""
     return _config_home() / "assella-decky" / "settings.json"
+
+
+def companion_settings_path() -> Path:
+    """The one settings file Uran and Epsilon share on this machine.
+
+    Uran and Epsilon resolve this identically (``paths.companion_settings_paths``
+    in the Uran repo), so a toggle written here is the toggle the Decky panel
+    and the bridge both read.
+    """
+    if _uran_dir(decky_home()) is not None:
+        return uran_settings_path()
+    return _legacy_epsilon_settings_path()
+
+
+def companion_settings_layers() -> list:
+    """The shared settings file, then any older copy still on disk."""
+    shared = companion_settings_path()
+    legacy = _legacy_epsilon_settings_path()
+    return [shared] if shared == legacy else [shared, legacy]
+
+
+def _companion_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def read_companion_settings() -> Dict[str, Any]:
+    """Merge the settings copies; the file saved most recently wins."""
+    merged: Dict[str, Any] = {}
+    for path in sorted(companion_settings_layers(), key=_companion_mtime):
+        merged.update(read_json(path))
+    return merged
+
+
+def update_companion_settings(changes: Dict[str, Any]) -> bool:
+    """Write to the shared file and to any older copy still on disk."""
+    ok = update_json(epsilon_settings_path(), changes)
+    for path in companion_settings_layers()[1:]:
+        if path.exists():
+            ok = update_json(path, changes) or ok
+    return ok
 
 
 def epsilon_root() -> Optional[Path]:
@@ -301,21 +356,54 @@ def epsilon_version(root: Optional[Path]) -> str:
 
 
 def epsilon_console_token() -> str:
-    """The token Epsilon generated for the web console ("" until it runs)."""
-    return str(read_json(epsilon_settings_path()).get(CONSOLE_TOKEN_KEY) or "")
+    """The token Epsilon will accept ("" until it runs).
+
+    Newest copy wins, which is how the bridge resolves it too: ASSella may
+    rotate the token into either file and the running service must follow
+    without a restart.
+    """
+    best, best_mtime = "", -1.0
+    for path in companion_settings_layers():
+        token = str(read_json(path).get(CONSOLE_TOKEN_KEY) or "").strip()
+        if not token:
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        if mtime > best_mtime:
+            best, best_mtime = token, mtime
+    return best
+
+
+def epsilon_console_get(path: str, timeout: float = 3.0) -> Dict[str, Any]:
+    """Token-gated ``/v1`` read from Epsilon (the console token is the key)."""
+    token = str(read_json(epsilon_settings_path()).get(CONSOLE_TOKEN_KEY) or "")
+    if not token:
+        return {}
+    req = urllib.request.Request(
+        f"{EPSILON_URL}{path}", headers={"Authorization": f"Bearer {token}"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        return data if isinstance(data, dict) else {}
+    except Exception as e:  # noqa: BLE001 - a missing bridge is a normal state
+        logger.debug("[companions] %s failed: %s", path, e)
+        return {}
 
 
 def rotate_console_token() -> str:
     """Mint a new console token. Epsilon picks it up on the next request."""
     token = "at0m_" + os.urandom(32).hex()
-    update_json(epsilon_settings_path(), {CONSOLE_TOKEN_KEY: token})
+    update_companion_settings({CONSOLE_TOKEN_KEY: token})
     return token
 
 
 def epsilon_info() -> Dict[str, Any]:
     """Local facts only (fast)."""
     root = epsilon_root()
-    stored = read_json(epsilon_settings_path())
+    stored = read_companion_settings()
     settings = dict(SHARED_DEFAULTS)
     settings.update(stored)
     return {
@@ -325,12 +413,12 @@ def epsilon_info() -> Dict[str, Any]:
         "version": epsilon_version(root),
         "settings_path": str(epsilon_settings_path()),
         "settings": settings,
-        "console_token": str(stored.get(CONSOLE_TOKEN_KEY) or ""),
+        "console_token": epsilon_console_token(),
     }
 
 
 def set_epsilon_setting(key: str, value: Any) -> bool:
-    return update_json(epsilon_settings_path(), {key: value})
+    return update_companion_settings({key: value})
 
 
 def _systemctl(*args: str, timeout: float = 8.0) -> subprocess.CompletedProcess:

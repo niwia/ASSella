@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 from pathlib import Path
 
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt6.QtSvg import QSvgRenderer
@@ -199,6 +200,194 @@ def is_plugin_detected(filename: str) -> bool:
     return get_plugin_state(filename) != "missing"
 
 
+class _StoreProbe(QThread):
+    """Ask Steam for its CEF port off the GUI thread (3 ports × 450 ms)."""
+
+    done = pyqtSignal(object)
+
+    def run(self):
+        try:
+            from utils import store_patch
+
+            self.done.emit({
+                "cef": store_patch.cef_status(),
+                "uran_active": store_patch.is_uran_managing_store(),
+                "sentinel": store_patch.is_cef_sentinel_present(),
+            })
+        except Exception as e:  # noqa: BLE001 - never leave the card spinning
+            self.done.emit({"error": str(e)})
+
+
+def _build_store_card(dialog, layout, cfg_path) -> None:
+    """Steam Store button: shared switch, .cef-enable-remote-debugging, and Uran gate."""
+    from utils import store_patch
+
+    card, cl = dialog._create_card_frame("Steam store button")
+    blurb = QLabel(
+        'Adds an "Add to at0-m" button to Steam Store pages. Uses Steam\'s '
+        ".cef-enable-remote-debugging file and steps back automatically when "
+        "Uran (Decky) is actively managing it."
+    )
+    blurb.setWordWrap(True)
+    blurb.setStyleSheet("color: #B8BEC9; font-size: 8.5pt; border: none; background: transparent;")
+    cl.addWidget(blurb)
+
+    toggle = create_checkbox_setting(
+        "Show the button inside Steam",
+        store_patch.SETTING_KEY,
+        True,
+        None,
+        tooltip="Shared with Uran and Epsilon. Managed by ASSella when Decky/Uran is not active.",
+        show_description=False,
+    )
+    toggle.setChecked(store_patch.is_enabled())
+    dialog.at0m_store_toggle = toggle
+    cl.addWidget(toggle)
+
+    state = QLabel("Checking Steam…")
+    state.setWordWrap(True)
+    state.setStyleSheet("color: #B8BEC9; font-size: 8.5pt; border: none; background: transparent;")
+    cl.addWidget(state)
+
+    row = QHBoxLayout()
+    row.setContentsMargins(2, 2, 2, 2)
+    row.setSpacing(8)
+    check_btn = QPushButton("Check again")
+    cef_btn = QPushButton(
+        "Disable CEF debugging" if store_patch.is_cef_sentinel_present() else "Enable CEF debugging"
+    )
+    for btn in (check_btn, cef_btn):
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        row.addWidget(btn)
+    row.addStretch(1)
+    cl.addLayout(row)
+
+    busy = {"guard": False}
+    last_probe = {"cef": None, "uran_active": False, "sentinel": store_patch.is_cef_sentinel_present()}
+
+    def master_on() -> bool:
+        cb = getattr(dialog, "enable_at0m_checkbox", None)
+        try:
+            return bool(cb.isChecked()) if cb is not None else True
+        except Exception as e:
+            logger.debug("[at0m_tab] master_on check failed: %s", e)
+            return True
+
+    def refresh_cef_btn(uran_active: bool, sentinel_present: bool) -> None:
+        if sip.isdeleted(cef_btn):
+            return
+        cef_btn.setText("Disable CEF debugging" if sentinel_present else "Enable CEF debugging")
+        if not master_on():
+            cef_btn.setEnabled(False)
+            cef_btn.setToolTip("Enable the at0-m engine first")
+        elif uran_active:
+            cef_btn.setEnabled(False)
+            cef_btn.setToolTip("Managed by Uran (Decky is running)")
+        else:
+            cef_btn.setEnabled(True)
+            cef_btn.setToolTip("Toggle Steam's .cef-enable-remote-debugging file (restart Steam to apply)")
+
+    def paint(data=None) -> None:
+        if sip.isdeleted(state):
+            return
+        if isinstance(data, dict) and "error" not in data:
+            last_probe["cef"] = data.get("cef")
+            last_probe["uran_active"] = bool(data.get("uran_active"))
+            last_probe["sentinel"] = bool(data.get("sentinel"))
+
+        uran_active = bool(last_probe["uran_active"])
+        sentinel = bool(last_probe["sentinel"])
+        text, severity = store_patch.describe(
+            master_on(),
+            cef=last_probe["cef"],
+            uran_active=uran_active,
+            sentinel_present=sentinel,
+        )
+        colors = {"ok": "#7ee2a8", "warn": "#FFB74D", "muted": "#B8BEC9"}
+        state.setText(text)
+        state.setStyleSheet(
+            f"color: {colors.get(severity, '#B8BEC9')}; font-size: 8.5pt;"
+            " border: none; background: transparent;"
+        )
+        apply_guard(uran_active=uran_active)
+        refresh_cef_btn(uran_active=uran_active, sentinel_present=sentinel)
+
+    def apply_guard(uran_active: Optional[bool] = None) -> None:
+        """AT0-M off or Uran active gates ASSella's own controls."""
+        if uran_active is None:
+            uran_active = bool(last_probe["uran_active"])
+        if not master_on():
+            if store_patch.is_enabled():
+                store_patch.set_enabled(False)
+            busy["guard"] = True
+            try:
+                toggle.setChecked(False)
+                toggle.setEnabled(False)
+                toggle.setToolTip("Enable the at0-m engine first")
+            finally:
+                busy["guard"] = False
+            return
+        if uran_active:
+            toggle.setEnabled(False)
+            toggle.setToolTip("Managed by Uran (Decky is running)")
+            return
+        toggle.setEnabled(True)
+        toggle.setToolTip("Shared with Uran and Epsilon. Managed by ASSella when Decky/Uran is not active.")
+
+    def start_probe() -> None:
+        if sip.isdeleted(state):
+            return
+        state.setText("Checking Steam…")
+        probe = _StoreProbe(dialog)
+        probe.done.connect(paint)
+        probe.finished.connect(probe.deleteLater)
+        dialog._at0m_store_probes = [
+            j for j in getattr(dialog, "_at0m_store_probes", []) if not sip.isdeleted(j)
+        ] + [probe]
+        probe.start()
+
+    def on_toggled(value: bool) -> None:
+        if busy["guard"]:
+            return
+        if value:
+            reasons = store_patch.blockers(master_on(), cfg_path)
+            if reasons:
+                busy["guard"] = True
+                try:
+                    toggle.setChecked(False)
+                finally:
+                    busy["guard"] = False
+                store_patch.set_enabled(False)
+                ThemedMessageBox.information(dialog, "Steam store button", reasons[0])
+                paint()
+                return
+        store_patch.set_enabled(value)
+        if value and not last_probe["uran_active"]:
+            from utils.cef_store_injector import get_cef_injector
+
+            get_cef_injector().start()
+        paint()
+
+    def on_cef_toggle() -> None:
+        want = not store_patch.is_cef_sentinel_present()
+        ok, msg = store_patch.set_cef_sentinel_enabled(want)
+        last_probe["sentinel"] = store_patch.is_cef_sentinel_present()
+        if ok:
+            ThemedMessageBox.information(dialog, "CEF debugging", msg)
+        else:
+            ThemedMessageBox.warning(dialog, "CEF debugging", msg)
+        start_probe()
+
+    toggle.toggled.connect(on_toggled)
+    check_btn.clicked.connect(start_probe)
+    cef_btn.clicked.connect(on_cef_toggle)
+
+    apply_guard()
+    refresh_cef_btn(uran_active=False, sentinel_present=last_probe["sentinel"])
+    start_probe()
+    layout.addWidget(card)
+
+
 def create_at0m_tab(dialog) -> QWidget:
     """
     Create the dedicated at0-m settings tab with General and Advanced (Plugins) sub-tabs.
@@ -390,6 +579,9 @@ def create_at0m_tab(dialog) -> QWidget:
 
 
     layout.addWidget(cfg_card)
+
+    # -- 1b. Steam store button --
+    _build_store_card(dialog, layout, cfg_path)
 
     # -- 2. Katamari Plugins Status & Updaters Card --
     deploy_card, deploy_layout = dialog._create_card_frame("Manage plugins")
