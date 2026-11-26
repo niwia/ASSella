@@ -42,7 +42,24 @@ from utils.yaml.validation import _validate_yaml_content
 # The suite writes to a temporary config, but on a clean CI runner SLSsteam
 # config management is disabled. Enable the core gate so the explicit temp
 # path is exercised exactly as it is in a configured install.
+#
+# On aarch64 runners fakeappid/tokens/maintenance also call
+# is_slssteam_config_management_enabled() / is_slssteam_mode_enabled()
+# directly from utils.yaml.modes (not via the _yaml_core wrapper), and those
+# return False when sls_installed() fails on a machine with no SLSsteam.
+# Patch all three entry points so the yaml-layer writers behave identically
+# on x86_64 and aarch64 CI runners.
 _yaml_core._config_management_enabled = lambda: True
+import utils.yaml.modes as _yaml_modes  # noqa: E402
+import utils.yaml.fakeappid as _yaml_fakeappid  # noqa: E402
+import utils.yaml.maintenance as _yaml_maintenance  # noqa: E402
+_yaml_modes.is_slssteam_config_management_enabled = lambda: True
+_yaml_modes.is_slssteam_mode_enabled = lambda: True
+_yaml_fakeappid.is_slssteam_config_management_enabled = lambda: True
+_yaml_fakeappid.is_slssteam_mode_enabled = lambda: True
+# maintenance calls _core.is_slssteam_config_management_enabled; patch via core alias
+import utils.yaml.core as _yaml_core_alias  # already imported as _yaml_core above
+_yaml_core_alias.is_slssteam_config_management_enabled = lambda: True
 
 
 def test_concurrent_protondb_flush():
