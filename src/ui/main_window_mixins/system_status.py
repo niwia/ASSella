@@ -262,7 +262,7 @@ class MainWindowSystemStatusMixin:
                 self.health_status_value.setText("Checking...")
                 self.health_status_value.setStyleSheet(self._get_status_style("neutral"))
 
-        # SteamDB Visor Sync
+        # SteamDB Visor Sync (never probe Byparr HTTP/PID synchronously on GUI thread)
         if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
             try:
                 from core.steamdb_scraper import ByparrManager
@@ -271,20 +271,34 @@ class MainWindowSystemStatusMixin:
                     self.steamdb_container.setVisible(False)
                 else:
                     self.steamdb_container.setVisible(True)
-                    if ByparrManager.is_running():
-                        self.steamdb_status_value.setText("Ready")
-                        self.steamdb_status_value.setStyleSheet(self._get_status_style("success"))
-                        self.steamdb_status_value.setToolTip(
-                            "SteamDB: Cloudflare Turnstile bypass active via Byparr\n"
-                            "Version history, patch notes & depot enrichment enabled."
-                        )
-                    else:
-                        self.steamdb_status_value.setText("Offline")
-                        self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
-                        self.steamdb_status_value.setToolTip(
-                            "SteamDB: Solver is currently offline.\n"
-                            "It will start automatically when version history or builds are accessed."
-                        )
+                    is_running = bool(getattr(self, "_byparr_running_cached", False))
+                    self._apply_steamdb_visor_running(is_running)
+
+                    import time as _time
+                    now = _time.monotonic()
+                    last_probe = getattr(self, "_byparr_last_probe", 0.0)
+                    if not getattr(self, "_byparr_probe_running", False) and (now - last_probe) >= 15.0:
+                        self._byparr_probe_running = True
+                        self._byparr_last_probe = now
+
+                        def _probe_byparr():
+                            running = False
+                            try:
+                                running = bool(ByparrManager.is_running())
+                            except Exception as e:
+                                logger.debug(f"[SteamDB] Async Byparr probe failed: {e}")
+                            finally:
+                                def _apply():
+                                    self._byparr_probe_running = False
+                                    self._byparr_running_cached = running
+                                    if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
+                                        self._apply_steamdb_visor_running(running)
+
+                                from utils.main_thread import post_to_main_thread
+                                post_to_main_thread(_apply)
+
+                        import threading as _threading
+                        _threading.Thread(target=_probe_byparr, daemon=True, name="byparr_visor_probe").start()
             except Exception as e:
                 logger.debug(f"[SteamDB] Error syncing SteamDB visor status: {e}")
 
@@ -373,15 +387,33 @@ class MainWindowSystemStatusMixin:
         tooltip = f'“{self._quote_text}” — {self._quote_source}'
         self.quote_label.setToolTip(tooltip)
 
+    def _apply_steamdb_visor_running(self, is_running: bool) -> None:
+        if is_running:
+            self.steamdb_status_value.setText("Ready")
+            self.steamdb_status_value.setStyleSheet(self._get_status_style("success"))
+            self.steamdb_status_value.setToolTip(
+                "SteamDB: Cloudflare Turnstile bypass active via Byparr\n"
+                "Version history, patch notes & depot enrichment enabled."
+            )
+        else:
+            self.steamdb_status_value.setText("Offline")
+            self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
+            self.steamdb_status_value.setToolTip(
+                "SteamDB: Solver is currently offline.\n"
+                "It will start automatically when version history or builds are accessed."
+            )
+
     def check_steamdb_status(self) -> None:
         """Asynchronously verify that SteamDB is accessible via fast-path or Byparr."""
         if getattr(self, "_steamdb_check_running", False):
             return
 
         try:
-            from core.steamdb_scraper import ByparrManager, cffi_requests
-            has_solver = ByparrManager.is_available() or bool(cffi_requests)
-            if not has_solver:
+            import importlib.util
+            from core.steamdb_scraper import ByparrManager
+
+            has_solver_fast = ByparrManager.is_available() or (importlib.util.find_spec("curl_cffi") is not None)
+            if not has_solver_fast:
                 if hasattr(self, "steamdb_container"):
                     self.steamdb_container.setVisible(False)
                 return
@@ -397,29 +429,24 @@ class MainWindowSystemStatusMixin:
 
         def _worker():
             try:
-                from core.steamdb_scraper import verify_steamdb_status
+                from core.steamdb_scraper import ByparrManager, cffi_requests, verify_steamdb_status
+
+                has_solver = ByparrManager.is_available() or bool(cffi_requests)
                 ok, provider = verify_steamdb_status(timeout_seconds=5)
                 logger.info(f"[SteamDB Visor] verify_steamdb_status result: {ok} ({provider})")
-                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(ok, provider))
+                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(ok, provider, has_solver))
             except Exception as e:
                 logger.debug(f"[SteamDB] Error during SteamDB status verification: {e}")
-                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(False, "Offline"))
+                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(False, "Offline", True))
             finally:
                 self._steamdb_check_running = False
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_steamdb_status_result(self, is_working: bool, provider: str = "") -> None:
+    def _on_steamdb_status_result(self, is_working: bool, provider: str = "", has_solver: bool = True) -> None:
         """Display SteamDB visor item if SteamDB is working/ready."""
         self._steamdb_verified = is_working
         if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
-            try:
-                from core.steamdb_scraper import ByparrManager, cffi_requests
-                has_solver = ByparrManager.is_available() or bool(cffi_requests)
-            except Exception as e:
-                logger.debug(f"[SteamDB] Could not check solver availability: {e}")
-                has_solver = False
-
             if not has_solver:
                 self.steamdb_container.setVisible(False)
                 return

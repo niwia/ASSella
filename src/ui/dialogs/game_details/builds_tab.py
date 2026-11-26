@@ -635,9 +635,14 @@ def on_builds_loaded(dialog, builds: list) -> None:
                 except Exception as e:
                     logger.debug(f"[BuildsTab] Byparr background deep fetch error: {e}")
                 finally:
-                    if not sip.isdeleted(dialog):
-                        dialog._fetching_byparr_deep = False
-                        _restore_refresh_btn(dialog)
+                    from utils.main_thread import post_to_main_thread
+
+                    def _finish_byparr_ui():
+                        if not sip.isdeleted(dialog):
+                            dialog._fetching_byparr_deep = False
+                            _restore_refresh_btn(dialog)
+
+                    post_to_main_thread(_finish_byparr_ui)
 
             threading.Thread(target=_byparr_worker, daemon=True).start()
             return

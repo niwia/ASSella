@@ -119,6 +119,10 @@ def have_systemd_user() -> bool:
 DECKY_URL = "https://decky.xyz"
 
 
+_DECKY_HOMES_CACHE: Optional[tuple] = None
+_DECKY_HOMES_TTL = 30.0
+
+
 def _decky_homes() -> list:
     """Decky's homebrew folders, most likely first.
 
@@ -127,12 +131,29 @@ def _decky_homes() -> list:
     (SteamOS, Bazzite, ChimeraOS, Arch/Fedora/Ubuntu installs). Steam itself
     may be native or Flatpak: Decky's folder is the same either way.
     """
+    global _DECKY_HOMES_CACHE
+    import time
+
+    now = time.monotonic()
+    home_str = str(_home())
+    env = os.environ.get("DECKY_HOME") or ""
+    cached = _DECKY_HOMES_CACHE
+    if (
+        cached is not None
+        and (now - cached[0]) < _DECKY_HOMES_TTL
+        and cached[1] == home_str
+        and cached[2] == env
+    ):
+        return list(cached[3])
+
     found = []
     for unit in (
         Path("/etc/systemd/system/plugin_loader.service"),
         Path("/usr/lib/systemd/system/plugin_loader.service"),
         Path("/lib/systemd/system/plugin_loader.service"),
     ):
+        if not unit.is_file():
+            continue
         try:
             text = unit.read_text(encoding="utf-8", errors="ignore")
         except OSError as _silent_err:
@@ -140,7 +161,6 @@ def _decky_homes() -> list:
             continue
         for m in re.finditer(r"(/[^\s\"'=]*?/homebrew)(?:/|\b)", text):
             found.append(Path(m.group(1)))
-    env = os.environ.get("DECKY_HOME")
     if env:
         found.append(Path(env))
     found.append(_home() / "homebrew")
@@ -149,6 +169,7 @@ def _decky_homes() -> list:
         if str(p) not in seen:
             seen.add(str(p))
             out.append(p)
+    _DECKY_HOMES_CACHE = (now, home_str, env, list(out))
     return out
 
 

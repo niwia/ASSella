@@ -160,11 +160,11 @@ class LibraryImageLoaderMixin:
             try:
                 url = future_result.result()
                 if url and not self._closing:
-                    QTimer.singleShot(
-                        0, lambda: self._apply_header_refresh(app_id, url)
-                    )
-            except RuntimeError:
-                pass
+                    from utils.main_thread import post_to_main_thread
+
+                    post_to_main_thread(lambda: self._apply_header_refresh(app_id, url))
+            except RuntimeError as e:
+                logger.debug(f"[ImageLoader] Header refresh skipped/failed for {app_id}: {e}")
 
         future = self.executor.submit(fetch_and_update)
         future.add_done_callback(on_complete)

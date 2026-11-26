@@ -449,6 +449,9 @@ def get_user_stats(force: bool = False) -> Dict:
 
     now = time.time()
     cache_day_expired = is_stats_cache_from_previous_utc_day(cached)
+    if not force and now < _last_user_stats_fetch:
+        logger.debug("[Hubcap] User stats in failure backoff")
+        return cached if isinstance(cached, dict) and cached else {"error": "Hubcap rate-limited / offline (backoff)"}
     if not force and not cache_day_expired and cached and (now - _last_user_stats_fetch < _STATS_CACHE_TTL):
         logger.debug("[Hubcap] Using recently cached user stats (throttled)")
         return cached
@@ -484,6 +487,9 @@ def get_generate_usage(force: bool = False) -> Dict:
     cached = settings.value("last_cached_generate_usage", None)
 
     now = time.time()
+    if not force and now < _last_generate_usage_fetch:
+        logger.debug("[Hubcap] Generate usage in failure backoff")
+        return cached if isinstance(cached, dict) and cached else {"error": "Hubcap rate-limited / offline (backoff)"}
     if not force and cached and (now - _last_generate_usage_fetch < _STATS_CACHE_TTL):
         logger.debug("[Hubcap] Using recently cached generation usage stats (throttled)")
         return cached
@@ -561,6 +567,7 @@ def generate_single_manifest(
 _last_health_check_time: float = 0.0
 _cached_health_check: Optional[Dict] = None
 _HEALTH_CACHE_TTL: float = 300.0  # 5-minute (300s) cache for confirmed healthy status
+_HEALTH_ERROR_TTL: float = 60.0   # 60s negative cache so 30s health polling doesn't hammer offline tiers
 
 
 def check_health(force: bool = False) -> Dict:
@@ -568,14 +575,15 @@ def check_health(force: bool = False) -> Dict:
     Checks if the Hubcap API is healthy using the ISP bypass pipeline,
     so users with ISP bypass enabled still get accurate health status.
     Does not require an API key. Caches successful check for 5 minutes (300s)
-    to avoid burning requests against the rate limit ceiling.
-    Failed/unreachable checks are not cached to allow immediate retry.
+    and failures for 60s to avoid burning requests against the rate limit ceiling.
     """
     global _last_health_check_time, _cached_health_check
     now = time.time()
-    if not force and _cached_health_check and (now - _last_health_check_time < _HEALTH_CACHE_TTL):
-        logger.debug("[Hubcap] Using recently cached health check")
-        return _cached_health_check
+    if not force and _cached_health_check:
+        ttl = _HEALTH_ERROR_TTL if _cached_health_check.get("status") == "unhealthy" else _HEALTH_CACHE_TTL
+        if now - _last_health_check_time < ttl:
+            logger.debug("[Hubcap] Using recently cached health check")
+            return _cached_health_check
 
     url = f"{BASE_URL}/health"
     try:
@@ -598,9 +606,11 @@ def check_health(force: bool = False) -> Dict:
             _last_health_check_time = now
             _cached_health_check = rate_limited_health
             return rate_limited_health
-        _cached_health_check = None  # Do not cache failure: allow immediate retry
         error_msg = _handle_request_exception(e, "Health check")
-        return {"status": "unhealthy", "error": error_msg}
+        err_payload = {"status": "unhealthy", "error": error_msg}
+        _last_health_check_time = now
+        _cached_health_check = err_payload
+        return err_payload
 
 
 def get_selected_branch(app_id) -> str:
@@ -850,15 +860,17 @@ def get_manifest_contents(app_id: Union[str, int], branch: str = "public") -> Di
     logger.info(f"Fetching manifest contents for app {app_id} (public bundle; requested branch={branch})")
     data = _make_json_request("GET", f"/manifest/{app_id}/contents")
 
-    if isinstance(data, dict) and "error" not in data:
-        manifests = data.get("manifests") or []
-        data["depot_ids"] = {str(m.get("depot_id", "")) for m in manifests if isinstance(m, dict) and m.get("depot_id")}
-        data["manifest_map"] = {
-            str(m["depot_id"]): str(m.get("manifest_id", ""))
-            for m in manifests
-            if isinstance(m, dict) and m.get("depot_id")
-        }
-        _contents_cache[cache_key] = (now, data)
+    if isinstance(data, dict):
+        if "error" not in data:
+            manifests = data.get("manifests") or []
+            data["depot_ids"] = {str(m.get("depot_id", "")) for m in manifests if isinstance(m, dict) and m.get("depot_id")}
+            data["manifest_map"] = {
+                str(m["depot_id"]): str(m.get("manifest_id", ""))
+                for m in manifests
+                if isinstance(m, dict) and m.get("depot_id")
+            }
+        # Negative-cache errors/404s for the same 60s TTL to avoid hammering offline/rate-limited endpoints.
+        _contents_cache[cache_key] = (now, dict(data))
 
     return data
 

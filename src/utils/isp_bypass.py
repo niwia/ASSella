@@ -66,12 +66,11 @@ class TorManager:
     def is_proxy_active(cls, port: int = TOR_HTTP_PORT) -> bool:
         """Checks if a proxy is listening on local port."""
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1.0)
-            res = s.connect_ex(("127.0.0.1", port))
-            s.close()
-            return res == 0
-        except Exception:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1.0)
+                return s.connect_ex(("127.0.0.1", port)) == 0
+        except Exception as e:
+            logger.debug(f"[ISPBypass] is_proxy_active({port}) error: {e}")
             return False
 
     @classmethod
@@ -368,10 +367,11 @@ def get_custom_proxy() -> Optional[str]:
 
 
 def rewrite_url_for_wirecutter(url: str, worker_base: Optional[str] = None) -> str:
-    """Rewrites https://hubcapmanifest.com/api/v1/... to {worker_base}/..."""
+    """Rewrites https://hubcapmanifest.com/api/v1/... to {worker_base}/hubcap/..."""
     base = (worker_base or get_wirecutter_endpoint()).rstrip("/")
     if "hubcapmanifest.com/api/v1" in url:
-        return url.replace("https://hubcapmanifest.com/api/v1", base).replace("http://hubcapmanifest.com/api/v1", base)
+        hubcap_base = base if base.endswith("/hubcap") else f"{base}/hubcap"
+        return url.replace("https://hubcapmanifest.com/api/v1", hubcap_base).replace("http://hubcapmanifest.com/api/v1", hubcap_base)
     if "hubcapmanifest.com" in url:
         return url.replace("https://hubcapmanifest.com", base).replace("http://hubcapmanifest.com", base)
     return url
@@ -533,13 +533,16 @@ def test_gateway_wirecutter(custom_url: Optional[str] = None) -> Tuple[bool, str
         if not worker_base.startswith("http://") and not worker_base.startswith("https://"):
             worker_base = "https://" + worker_base
 
-        health_url = f"{worker_base}/health"
+        hubcap_base = worker_base if worker_base.endswith("/hubcap") else f"{worker_base}/hubcap"
+        health_url = f"{hubcap_base}/health"
 
         try:
             resp = requests.get(health_url, headers=wc_test_headers, timeout=8)
             resp.raise_for_status()
+            if is_html_or_blocked_payload(resp):
+                raise requests.exceptions.ConnectionError("Wirecutter /hubcap/health returned HTML payload")
         except requests.exceptions.HTTPError:
-            # Fallback to root endpoint if /health isn't mapped
+            # Fallback to worker root if /hubcap/health isn't mapped
             resp = requests.get(worker_base, headers=wc_test_headers, timeout=8)
             resp.raise_for_status()
         except requests.exceptions.RequestException:
@@ -738,7 +741,12 @@ def execute_hubcap_request(
         except HubcapRateLimitError:
             # 429 rate limit applies to API key / IP — do not burn remaining fallback tiers
             raise
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.SSLError) as e:
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.SSLError,
+            requests.exceptions.HTTPError,
+        ) as e:
             _direct_connection_failed = True
             _last_direct_check_time = now
             logger.warning(f"[ISPBypass] Direct request to {url} failed: {e}. Initiating automatic DoH fallback...")
@@ -784,6 +792,8 @@ def execute_hubcap_request(
         )
         connection_status = "Wire"
         _check_and_raise_for_status(resp)
+        if not stream and is_html_or_blocked_payload(resp):
+            raise requests.exceptions.ConnectionError("Wirecutter request returned empty or HTML payload.")
         logger.info(f"[ISPBypass] Wirecutter request to {worker_url} SUCCESSFUL!")
         return resp
     except HubcapRateLimitError:
@@ -802,6 +812,8 @@ def execute_hubcap_request(
             )
             connection_status = "Tor"
             _check_and_raise_for_status(resp)
+            if not stream and is_html_or_blocked_payload(resp):
+                raise requests.exceptions.ConnectionError("Tor request returned empty or HTML payload.")
             logger.info(f"[ISPBypass] Tor request to {url} SUCCESSFUL!")
             return resp
         except HubcapRateLimitError:

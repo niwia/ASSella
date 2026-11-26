@@ -111,9 +111,20 @@ class MainWindowWebBridgeMixin:
             )
             return
 
-        # 2. Check if the systemd background user service is active (Linux only)
-        is_bg_active = False
-        if sys.platform == "linux":
+        # 2. Check if the systemd background user service is active (Linux only) off GUI thread
+        if sys.platform != "linux":
+            self._apply_web_ui_bg_status(False, port)
+            return
+
+        if getattr(self, "_web_ui_svc_check_running", False):
+            return
+        self._web_ui_svc_check_running = True
+
+        import threading
+        from utils.main_thread import post_to_main_thread
+
+        def _check_svc():
+            is_bg_active = False
             try:
                 res = subprocess.run(
                     ["systemctl", "--user", "is-active", "assella-testing.service"],
@@ -125,7 +136,20 @@ class MainWindowWebBridgeMixin:
                     is_bg_active = True
             except Exception as e:
                 logger.debug(f"[WebBridge] Could not check assella-testing.service status: {e}")
+            finally:
+                def _finish():
+                    self._web_ui_svc_check_running = False
+                    self._apply_web_ui_bg_status(is_bg_active, port)
 
+                post_to_main_thread(_finish)
+
+        threading.Thread(target=_check_svc, daemon=True, name="web_ui_svc_check").start()
+
+    def _apply_web_ui_bg_status(self, is_bg_active: bool, port: int) -> None:
+        if not hasattr(self, "web_ui_status_value") or not self.web_ui_status_value:
+            return
+        if self.web_server_manager and self.web_server_manager.is_running():
+            return
         if is_bg_active:
             self.web_ui_status_value.setText(f"http://{get_local_ip()}:{port} (Service)")
             self.web_ui_status_value.setStyleSheet(
