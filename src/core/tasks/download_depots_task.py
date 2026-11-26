@@ -164,7 +164,7 @@ class DownloadDepotsTask(QObject):
                         self._is_running = False
                         self.progress.emit("Download cancelled due to stealth connection failure.")
                         logger.info(f"[DownloadDepotsTask] User cancelled download on stealth failure: {e}")
-                        self._emit_completed()
+                        self._emit_error((InterruptedError, "Download cancelled due to stealth connection failure.", None))
                         return
 
             if not self._is_running:

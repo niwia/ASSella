@@ -1928,6 +1928,11 @@ class TaskManager(
         self._job_failed = True
 
         _, error_value, _ = error_info
+        if isinstance(error_value, InterruptedError):
+            self.is_cancelling = True
+            self._job_failed = True
+            self.job_finished()
+            return
         ThemedMessageBox.critical(
             self.main_window, "Error", f"An error occurred: {error_value}"
         )

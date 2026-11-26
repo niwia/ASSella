@@ -115,7 +115,7 @@ def test_connection(proxy_url: str, timeout: float = 6.0) -> Tuple[bool, str]:
     return False, "Failed to verify connection through proxy across all verification endpoints."
 
 
-def probe_alive(proxy_url: str, timeout: float = 5.0) -> bool:
+def probe_alive(proxy_url: str, timeout: float = 8.0) -> bool:
     """
     Fast probe to verify remote tunnel transport is genuinely passing traffic.
     Because WireGuard is stateless UDP, local SOCKS5 binding alone does not prove

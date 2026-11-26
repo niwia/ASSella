@@ -42,7 +42,7 @@ class TestDownloadDepotsTaskProxy(unittest.TestCase):
         }.get(key, default)
 
         proxy_url = self.task._setup_stealth_proxy(mock_settings)
-        self.assertEqual(proxy_url, "socks5://127.0.0.1:40000")
+        self.assertEqual(proxy_url, "socks5h://127.0.0.1:40000")
         self.assertIsNone(self.task._wireproxy_manager)
 
     def test_03_wireguard_mode_fails_closed_on_missing_file(self):

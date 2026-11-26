@@ -79,6 +79,41 @@ def is_network_or_proxy_error(error_text: str) -> bool:
     return any(sig in lower for sig in NETWORK_ERROR_SIGNATURES)
 
 
+def _normalize_proxy_url(url: str) -> str:
+    """Force remote DNS resolution (socks5h / socks4a) to prevent local DNS leaks."""
+    u = str(url or "").strip()
+    if not u:
+        return u
+    if "://" not in u:
+        return f"socks5h://{u}"
+    low = u.lower()
+    if low.startswith("socks5://"):
+        return "socks5h://" + u[len("socks5://"):]
+    if low.startswith("socks4://"):
+        return "socks4a://" + u[len("socks4://"):]
+    return u
+
+
+class _SharedKurokoHandle:
+    """Proxy handle around the shared Kuroko tunnel; per-task stop() is a no-op."""
+
+    def __init__(self, inner: Kuroko):
+        self._inner = inner
+        self.endpoint_id = getattr(inner, "endpoint_id", None)
+
+    @property
+    def proxy_url(self) -> str:
+        return self._inner.proxy_url
+
+    @property
+    def is_running(self) -> bool:
+        return self._inner.is_running
+
+    def stop(self) -> None:
+        # Shared tunnel stays alive across queued downloads; cleaned up on app exit.
+        return
+
+
 class StealthPoolManager:
     """Manages multi-endpoint rotation, sequential benchmarking, and smart failover."""
 
@@ -269,13 +304,35 @@ class StealthPoolManager:
 
         if previous_failed_id:
             mark_cd_fn(previous_failed_id)
+            if kuroko_cls is _default_Kuroko:
+                from .tunnel import get_kuroko
+                get_kuroko().stop()
 
         rotation_on = settings.value("stealth_rotation_enabled", False, type=bool)
 
         if not rotation_on:
+            from .tunnel import get_kuroko
+
             mode = settings.value("stealth_proxy_mode", "warp")
-            manager = kuroko_cls()
+            use_shared = kuroko_cls is _default_Kuroko and not previous_failed_id
             if mode == "warp":
+                if use_shared:
+                    shared = get_kuroko()
+                    if (
+                        shared.is_running
+                        and getattr(shared, "endpoint_id", None) == "warp"
+                        and shared.probe_alive(shared.proxy_url)
+                    ):
+                        return shared.proxy_url, _SharedKurokoHandle(shared), "warp"
+                    cfg = warp_cfg_fn()
+                    if not shared.start(cfg, port=0):
+                        raise RuntimeError("Failed to start wireproxy for Cloudflare WARP.")
+                    if not shared.probe_alive(shared.proxy_url):
+                        shared.stop()
+                        raise RuntimeError("Cloudflare WARP endpoint failed live peer connectivity probe.")
+                    shared.endpoint_id = "warp"
+                    return shared.proxy_url, _SharedKurokoHandle(shared), "warp"
+                manager = kuroko_cls()
                 cfg = warp_cfg_fn()
                 if not manager.start(cfg, port=0):
                     raise RuntimeError("Failed to start wireproxy for Cloudflare WARP.")
@@ -298,6 +355,25 @@ class StealthPoolManager:
                         f"WireGuard config file not found: '{conf_path}'. "
                         "Please select or import a valid .conf file in Settings -> Stealth."
                     )
+                wg_id = f"wg:{Path(conf_path).name}"
+                if use_shared:
+                    shared = get_kuroko()
+                    if (
+                        shared.is_running
+                        and getattr(shared, "endpoint_id", None) == wg_id
+                        and shared.probe_alive(shared.proxy_url)
+                    ):
+                        return shared.proxy_url, _SharedKurokoHandle(shared), wg_id
+                    if not shared.start(conf_path, port=0):
+                        raise RuntimeError("Failed to start wireproxy with WireGuard config.")
+                    if not shared.probe_alive(shared.proxy_url):
+                        shared.stop()
+                        raise RuntimeError(
+                            f"WireGuard profile '{Path(conf_path).stem}' failed live peer connectivity probe."
+                        )
+                    shared.endpoint_id = wg_id
+                    return shared.proxy_url, _SharedKurokoHandle(shared), wg_id
+                manager = kuroko_cls()
                 if not manager.start(conf_path, port=0):
                     raise RuntimeError("Failed to start wireproxy with WireGuard config.")
                 if not manager.probe_alive(manager.proxy_url):
@@ -305,16 +381,14 @@ class StealthPoolManager:
                     raise RuntimeError(
                         f"WireGuard profile '{Path(conf_path).stem}' failed live peer connectivity probe."
                     )
-                return manager.proxy_url, manager, f"wg:{Path(conf_path).name}"
+                return manager.proxy_url, manager, wg_id
 
             elif mode == "custom":
-                custom_url = settings.value(
-                    "stealth_proxy_custom_url", "socks5://127.0.0.1:1080"
-                ).strip()
+                custom_url = _normalize_proxy_url(
+                    settings.value("stealth_proxy_custom_url", "socks5h://127.0.0.1:1080")
+                )
                 if not custom_url:
                     raise RuntimeError("Custom proxy mode is enabled, but no proxy URL was specified.")
-                if "://" not in custom_url:
-                    custom_url = f"socks5://{custom_url}"
                 if not kuroko_cls.probe_alive(custom_url):
                     raise RuntimeError(
                         f"Custom proxy at '{custom_url}' failed live connectivity probe."
@@ -379,7 +453,7 @@ class StealthPoolManager:
                     return manager.proxy_url, manager, c_id
 
                 elif c_type == "custom":
-                    c_url = cand.get("url", "")
+                    c_url = _normalize_proxy_url(cand.get("url", ""))
                     if not c_url or not kuroko_cls.probe_alive(c_url):
                         mark_cd_fn(c_id)
                         last_error = "Custom proxy unreachable"
@@ -493,9 +567,9 @@ def prompt_stealth_fallback(error_message: str) -> StealthChoice:
                 f"Unable to connect through stealth proxy / VPN:\n\n{clean_err}\n\n"
                 "Would you like to retry the connection, proceed with a direct (non-stealth) download, or cancel the download?",
                 buttons=[
-                    ("Retry Connection", "retry"),
-                    ("Download Without Stealth", "direct"),
-                    ("Cancel Download", "cancel"),
+                    ("Retry", "retry"),
+                    ("Normal Download", "direct"),
+                    ("Cancel", "cancel"),
                 ],
                 default="retry",
                 severity="warning",

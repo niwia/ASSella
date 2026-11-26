@@ -169,15 +169,45 @@ def get_storage_tag(dest_path: str = "") -> str:
     return "internal"
 
 
-def get_connection_id(settings, dest_path: str = "") -> str:
-    """Tuning scope id: lan/wan flag + network fingerprint + storage tag.
+def _stealth_tag(settings) -> str:
+    """Return a short scope tag for the active Stealth proxy, or '' when Stealth is off."""
+    if settings is None or not read_bool(settings, "enable_stealth_proxy", False):
+        return ""
+    if read_bool(settings, "stealth_rotation_enabled", False):
+        return "_stealth-pool"
+    try:
+        mode = str(settings.value("stealth_proxy_mode", "warp") or "warp").strip().lower()
+    except Exception:
+        mode = "warp"
+    if mode == "wireguard":
+        try:
+            prof = str(settings.value("stealth_active_wg_profile", "") or "").strip()
+            if not prof:
+                wg_path = str(settings.value("stealth_proxy_wg_path", "") or "").strip()
+                prof = os.path.basename(wg_path) if wg_path else "default"
+        except Exception:
+            prof = "default"
+        return f"_stealth-wg-{prof[:24]}"
+    if mode == "custom":
+        try:
+            raw = str(settings.value("stealth_proxy_custom_url", "") or "").strip()
+            host = raw.split("://")[-1].split("/")[0].replace(":", "_")[:24] or "custom"
+        except Exception:
+            host = "custom"
+        return f"_stealth-custom-{host}"
+    return f"_stealth-{mode}"
 
-    Each physical connection and storage medium learns its own best concurrency,
-    so a slow microSD card does not poison the baseline of an internal NVMe SSD.
+
+def get_connection_id(settings, dest_path: str = "") -> str:
+    """Tuning scope id: lan/wan flag + network fingerprint + storage tag + stealth proxy.
+
+    Each physical connection, storage medium, and Stealth proxy learns its own
+    best concurrency, so a slow proxy or microSD card does not poison direct NVMe.
     """
     lan = read_bool(settings, "use_lancache", True) if settings is not None else False
     storage_tag = get_storage_tag(dest_path)
-    return f"{'lan' if lan else 'wan'}-{_network_fingerprint()}_{storage_tag}"
+    stealth = _stealth_tag(settings)
+    return f"{'lan' if lan else 'wan'}-{_network_fingerprint()}_{storage_tag}{stealth}"
 
 
 def _purge_legacy_keys(settings) -> None:
@@ -301,27 +331,38 @@ def decide_next(table: dict, used_n: int, speed_bps: float, cap: int, errors: in
         return used_n
     e = stats.setdefault(used_n, {"mbps": 0.0, "count": 0, "errors": 0})
     mbps = float(speed_bps) / 1_048_576
-    e["mbps"] = mbps if e["count"] == 0 else EWMA_ALPHA * mbps + (1 - EWMA_ALPHA) * e["mbps"]
     e["count"] += 1
+    alpha = max(EWMA_ALPHA, 1.0 / e["count"])
+    e["mbps"] = mbps if e["count"] == 1 else alpha * mbps + (1 - alpha) * e["mbps"]
     if errors > 0:
         e["errors"] = e.get("errors", 0) + 1
     table["samples"] += 1
 
-    if errors > 0 and errors >= 3:
+    if errors >= 4:
         return max(floor, used_n // 2)
+    if errors >= 2:
+        return max(floor, used_n - STEP)
 
     best = min(cap, _best_n(stats, used_n))
     best_score = _score(stats.get(best, {}))
     # Never explore below 4 on our own: too few connections stall on one slow chunk.
     up, down = min(cap, best + STEP), max(min(cap, max(floor, 4)), best - STEP)
 
-    def _untested_or_stale(n):
+    reprobe_cycle = table["samples"] // REPROBE_EVERY
+    is_reprobe = table["samples"] % REPROBE_EVERY == 0
+
+    def _untested_or_stale(n, prefer_on_even: bool):
         en = stats.get(n)
-        return en is None or (table["samples"] % REPROBE_EVERY == 0)
+        if en is None:
+            return True
+        return is_reprobe and ((reprobe_cycle % 2 == 0) == prefer_on_even)
 
     # Did the step we just took win clearly? Keep climbing in that direction.
-    if used_n == best and used_n != up and _untested_or_stale(up):
-        return up
+    if used_n == best:
+        if used_n != up and _untested_or_stale(up, True):
+            return up
+        if used_n != down and _untested_or_stale(down, False):
+            return down
     if used_n > best and _score(e) < best_score * CLEARLY_BETTER:
         # Going up did not help; try below the best once.
         return down if down != best and down not in stats else best

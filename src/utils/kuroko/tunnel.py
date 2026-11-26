@@ -126,13 +126,17 @@ class Kuroko:
             self._temp_conf_path = Path(tmp_name)
 
             try:
-                # Use silent mode (-s) and DEVNULL to prevent pipe buffer deadlocks on verbose debug logs
+                # Capture stderr so wireproxy errors/warnings appear in ASSella logs at appropriate levels.
+                self._stderr_tail: list[str] = []
                 self._process = subprocess.Popen(
                     [str(bin_path), "-s", "-c", str(self._temp_conf_path)],
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    errors="replace",
                     start_new_session=True,
                 )
+                self._start_stderr_reader(self._process)
             except Exception as e:
                 logger.error(f"[Kuroko] Failed to spawn wireproxy: {e}")
                 self.stop()
@@ -146,12 +150,7 @@ class Kuroko:
                 return False
             poll_code = proc.poll()
             if poll_code is not None:
-                stderr_out = ""
-                if proc.stderr:
-                    try:
-                        stderr_out = proc.stderr.read().strip()
-                    except Exception as e:
-                        logger.debug(f"[Kuroko] Failed to read stderr: {e}")
+                stderr_out = " | ".join(getattr(self, "_stderr_tail", [])[-5:])
                 logger.error(f"[Kuroko] wireproxy exited prematurely with code {poll_code}: {stderr_out}")
                 self.stop()
                 return False
@@ -188,6 +187,11 @@ class Kuroko:
                         proc.wait(timeout=1.0)
                     except Exception as e:
                         logger.debug(f"[Kuroko] Failed to kill wireproxy: {e}")
+            if proc.stderr is not None:
+                try:
+                    proc.stderr.close()
+                except Exception as e:
+                    logger.debug(f"[Kuroko] Failed to close wireproxy stderr: {e}")
 
         if self._temp_conf_path is not None:
             conf_path = self._temp_conf_path
@@ -202,6 +206,34 @@ class Kuroko:
 
     # Alias for backward compatibility
     stop_wireproxy = stop
+
+    @staticmethod
+    def _log_stderr_line(line: str) -> None:
+        low = line.lower()
+        if any(tok in low for tok in ("fatal", "error", "panic", "failed")):
+            logger.warning(f"[wireproxy] {line}")
+        else:
+            logger.debug(f"[wireproxy] {line}")
+
+    def _start_stderr_reader(self, proc: subprocess.Popen) -> None:
+        pipe = proc.stderr
+        if pipe is None:
+            return
+
+        def _drain():
+            try:
+                for raw in pipe:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    self._stderr_tail.append(line)
+                    if len(self._stderr_tail) > 20:
+                        del self._stderr_tail[:-20]
+                    self._log_stderr_line(line)
+            except Exception as e:
+                logger.debug(f"[Kuroko] stderr reader stopped: {e}")
+
+        threading.Thread(target=_drain, name="KurokoStderr", daemon=True).start()
 
     @staticmethod
     def _check_socks5_ready(host: str, port: int) -> bool:
@@ -223,7 +255,7 @@ class Kuroko:
         return _test_connection(proxy_url, timeout=timeout)
 
     @staticmethod
-    def probe_alive(proxy_url: str, timeout: float = 5.0) -> bool:
+    def probe_alive(proxy_url: str, timeout: float = 8.0) -> bool:
         """Delegate fast live-peer transport check to probe.probe_alive."""
         from .probe import probe_alive as _probe_alive
 
@@ -243,10 +275,13 @@ WireproxyManager = Kuroko
 
 def get_kuroko() -> Kuroko:
     """Return the global thread-safe Kuroko instance."""
+    import atexit
+
     global _global_kuroko_instance
     with _kuroko_lock:
         if _global_kuroko_instance is None:
             _global_kuroko_instance = Kuroko()
+            atexit.register(_global_kuroko_instance.stop)
         return _global_kuroko_instance
 
 
