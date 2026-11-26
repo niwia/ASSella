@@ -300,14 +300,16 @@ class CefStoreInjector:
         """Download Hubcap bundle and hand off to AT0-M on a worker thread."""
         try:
             from core.morrenus_api import download_manifest
-            from core.native_steam.native_steam_handoff import handoff_to_native_steam
+            from core.native_steam.native_steam_handoff import perform_steam_handoff
 
-            res = download_manifest(appid)
-            if not res or not res.get("success"):
-                logger.warning("[CefStoreInjector] Manifest download failed for %s: %s", appid, res)
+            zip_path, err = download_manifest(appid)
+            if not zip_path:
+                logger.warning("[CefStoreInjector] Manifest download failed for %s: %s", appid, err)
                 return False
-            handoff = handoff_to_native_steam(appid, auto_install=False)
-            return bool(handoff and handoff.get("success"))
+            ok, msg = perform_steam_handoff({"appid": str(appid)}, auto_install=False)
+            if not ok:
+                logger.warning("[CefStoreInjector] Steam handoff failed for %s: %s", appid, msg)
+            return bool(ok)
         except Exception as e:
             logger.error("[CefStoreInjector] Failed to add %s: %s", appid, e, exc_info=True)
             return False
