@@ -247,6 +247,7 @@ const searchError = ref('')
 const syncedAt = ref(0)
 const cachedAt = ref(0)
 const hubcap = ref(null)
+const store = ref(null)
 const registering = ref(false)
 const settingsOpen = ref(false)
 const bridgeOpen = ref(false)
@@ -254,7 +255,8 @@ const form = ref({
   gateway: 'auto',
   fetchDlcs: true,
   addDelisted: true,
-  notifications: 'auto'
+  notifications: 'auto',
+  storePatch: true
 })
 const toasts = ref([])
 const searchEl = ref(null)
@@ -688,7 +690,7 @@ async function probeBridge({ silent = false } = {}) {
     if (paired.value) {
       const count = body.library_count ?? 0
       toast('console paired', `epsilon ${bridgeVersion.value} · ${count} ${count === 1 ? 'game' : 'games'}`)
-      await Promise.all([loadLibrary(), loadHubcap(), loadSettings()])
+      await Promise.all([loadLibrary(), loadHubcap(), loadSettings(), loadStore()])
     } else if (res.status === 401) {
       toast('bridge found', 'Paste the console token from ASSella → Companions → Epsilon.')
     } else if (res.status === 404) {
@@ -976,6 +978,27 @@ async function loadLibrary() {
   }
 }
 
+// The Store button patch is Uran's job; Epsilon owns the switch and can tell
+// us whether Steam is even exposing the debugging port it needs.
+async function loadStore() {
+  if (!paired.value) return
+  try {
+    const body = await bridgeFetch('/v1/store')
+    store.value = body
+    form.value.storePatch = body.enabled !== false
+  } catch {
+    store.value = null
+  }
+}
+
+function storeCefLabel() {
+  const cef = store.value?.cef
+  if (!cef) return 'unknown'
+  if (!cef.available) return 'no debug port'
+  if (!cef.store_tab) return `port ${cef.port} · open the store page`
+  return `port ${cef.port} · store page detected`
+}
+
 async function loadSettings() {
   if (!paired.value) return
   try {
@@ -985,7 +1008,8 @@ async function loadSettings() {
       gateway: stored.hubcap_gateway || 'auto',
       fetchDlcs: stored.fetch_dlcs_on_inject !== false,
       addDelisted: stored.add_delisted_dlcs !== false,
-      notifications: stored.notification_mode || 'auto'
+      notifications: stored.notification_mode || 'auto',
+      storePatch: stored.steam_store_enabled !== false
     }
   } catch {
     /* non-fatal */
@@ -1669,8 +1693,22 @@ watch(query, (value) => {
                     <option value="none">none</option>
                   </select>
                 </div>
+                <div class="set-row">
+                  <label class="set-k" for="set-store">steam store button</label>
+                  <input
+                    id="set-store"
+                    v-model="form.storePatch"
+                    type="checkbox"
+                    @change="saveSetting('steam_store_enabled', form.storePatch).then(loadStore)"
+                  />
+                </div>
+                <div class="set-row">
+                  <span class="set-k">cef debugging</span>
+                  <span class="set-v" :class="{ off: !store?.cef?.available }">{{ storeCefLabel() }}</span>
+                </div>
                 <p class="pop-note">
-                  Written to Epsilon's settings.json on this machine. Keys are never read by this page.
+                  The switch is shared with Uran and ASSella; Uran draws the button inside Steam.
+                  Launch Steam with <code>--cef-enable-debugging</code> for it to appear.
                 </p>
               </template>
               <p v-else class="pop-note">
@@ -2600,6 +2638,10 @@ code {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #a9b0bb;
+}
+
+.set-v.off {
+  color: #d08a7a;
 }
 
 .set-v {
