@@ -85,6 +85,27 @@ def is_arm64() -> bool:
     )
 
 
+def is_nixos() -> bool:
+    """Check if the current host is running NixOS.
+
+    Can be simulated via ASSELLA_FORCE_NIXOS=1.
+    """
+    if os.environ.get("ASSELLA_FORCE_NIXOS") in ("1", "true", "True"):
+        return True
+    if sys.platform != "linux":
+        return False
+    if os.path.exists("/etc/NIXOS"):
+        return True
+    try:
+        with open("/etc/os-release", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.strip().lower() in ("id=nixos", 'id="nixos"'):
+                    return True
+    except OSError as e:
+        logger.debug(f"Failed to read /etc/os-release for NixOS check: {e}")
+    return False
+
+
 def is_armada_os() -> bool:
     """Check if the current host is running Armada OS.
 

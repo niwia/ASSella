@@ -327,24 +327,7 @@ def create_health_tab(dialog) -> QWidget:
             color: #FFFFFF;
         }
     """
-    dialog.health_h3adcrab_btn = QPushButton("h3adcrab")
-    dialog.health_h3adcrab_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.health_h3adcrab_btn.setStyleSheet(crab_btn_style)
-    dialog.health_h3adcrab_btn.setToolTip("Install or update SLSsteam via Headcrab installer")
-    dialog.health_h3adcrab_btn.clicked.connect(lambda: on_h3adcrab_clicked(dialog))
-    crab_row.addWidget(dialog.health_h3adcrab_btn, 1)
-
-    dialog.health_r3set_crab_btn = QPushButton("r3set-crab")
-    dialog.health_r3set_crab_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.health_r3set_crab_btn.setStyleSheet(crab_danger_btn_style)
-    dialog.health_r3set_crab_btn.setToolTip("Uninstall SLSsteam/Headcrab and reset Steam to vanilla")
-    dialog.health_r3set_crab_btn.clicked.connect(lambda: on_r3set_crab_clicked(dialog))
-    crab_row.addWidget(dialog.health_r3set_crab_btn, 1)
-
-    dialog.health_smallcrab_btn = QPushButton("smallcrab")
-    dialog.health_smallcrab_btn.setEnabled(False)
-    dialog.health_smallcrab_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
-    dialog.health_smallcrab_btn.setStyleSheet("""
+    disabled_crab_style = """
         QPushButton {
             background-color: rgba(255, 255, 255, 0.05);
             color: rgba(255, 255, 255, 0.35);
@@ -354,7 +337,45 @@ def create_health_tab(dialog) -> QWidget:
             font-size: 9pt;
             font-weight: 500;
         }
-    """)
+    """
+
+    from utils.helpers import is_arm64, is_nixos
+    _crab_unsupported_reason = ""
+    if is_nixos():
+        _crab_unsupported_reason = "Headcrab is not supported on NixOS"
+    elif is_arm64():
+        _crab_unsupported_reason = "Headcrab is not supported on ARM64"
+
+    dialog.health_h3adcrab_btn = QPushButton("h3adcrab")
+    if _crab_unsupported_reason:
+        dialog.health_h3adcrab_btn.setEnabled(False)
+        dialog.health_h3adcrab_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
+        dialog.health_h3adcrab_btn.setStyleSheet(disabled_crab_style)
+        dialog.health_h3adcrab_btn.setToolTip(_crab_unsupported_reason)
+    else:
+        dialog.health_h3adcrab_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        dialog.health_h3adcrab_btn.setStyleSheet(crab_btn_style)
+        dialog.health_h3adcrab_btn.setToolTip("Install or update SLSsteam via Headcrab installer")
+        dialog.health_h3adcrab_btn.clicked.connect(lambda: on_h3adcrab_clicked(dialog))
+    crab_row.addWidget(dialog.health_h3adcrab_btn, 1)
+
+    dialog.health_r3set_crab_btn = QPushButton("r3set-crab")
+    if _crab_unsupported_reason:
+        dialog.health_r3set_crab_btn.setEnabled(False)
+        dialog.health_r3set_crab_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
+        dialog.health_r3set_crab_btn.setStyleSheet(disabled_crab_style)
+        dialog.health_r3set_crab_btn.setToolTip(_crab_unsupported_reason)
+    else:
+        dialog.health_r3set_crab_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        dialog.health_r3set_crab_btn.setStyleSheet(crab_danger_btn_style)
+        dialog.health_r3set_crab_btn.setToolTip("Uninstall SLSsteam/Headcrab and reset Steam to vanilla")
+        dialog.health_r3set_crab_btn.clicked.connect(lambda: on_r3set_crab_clicked(dialog))
+    crab_row.addWidget(dialog.health_r3set_crab_btn, 1)
+
+    dialog.health_smallcrab_btn = QPushButton("smallcrab")
+    dialog.health_smallcrab_btn.setEnabled(False)
+    dialog.health_smallcrab_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
+    dialog.health_smallcrab_btn.setStyleSheet(disabled_crab_style)
     dialog.health_smallcrab_btn.setToolTip("smallcrab installer is temporarily disabled")
     crab_row.addWidget(dialog.health_smallcrab_btn, 1)
 
@@ -654,31 +675,33 @@ def handle_sls_version_check_done(dialog, result: dict) -> None:
 
 def on_sls_bin_tile_clicked(dialog) -> None:
     from ui.dialogs.settings_sls import get_sls_paths
+    from utils.helpers import is_arm64, is_nixos
     installed = get_sls_paths().get("detected", False)
-    if not installed and hasattr(dialog, "tab_widget") and dialog.tab_widget:
-        for i in range(dialog.tab_widget.count()):
-            if dialog.tab_widget.tabText(i) == "SLS":
-                dialog.tab_widget.setCurrentIndex(i)
-                return
+    if not installed:
+        if is_nixos() or is_arm64():
+            return
+        on_h3adcrab_clicked(dialog)
+        return
     refresh_health_tab_status(dialog)
 
 
 def on_sls_version_tile_clicked(dialog) -> None:
+    from utils.helpers import is_arm64, is_nixos
     current_status = getattr(dialog.health_sls_ver_btn, "status_lbl", None)
     status_text = current_status.text() if current_status else ""
-    if "Update!" in status_text and hasattr(dialog, "tab_widget") and dialog.tab_widget:
+    if "Update!" in status_text:
+        if is_nixos() or is_arm64():
+            return
         reply = ThemedMessageBox.question(
             dialog,
             "SLSsteam Update Available",
-            "A newer SLSsteam build is available. Switch to the SLS tab to install or update?",
+            "A newer SLSsteam build is available. Run Headcrab to install or update?",
             ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
             ThemedMessageBox.StandardButton.Yes
         )
         if reply == ThemedMessageBox.StandardButton.Yes:
-            for i in range(dialog.tab_widget.count()):
-                if dialog.tab_widget.tabText(i) == "SLS":
-                    dialog.tab_widget.setCurrentIndex(i)
-                    return
+            on_h3adcrab_clicked(dialog)
+            return
 
     if hasattr(dialog.health_sls_ver_btn, "title_lbl"):
         dialog.health_sls_ver_btn.title_lbl.setText("Version")

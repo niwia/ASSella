@@ -118,7 +118,7 @@ def add_fake_app_id(
         logger.error(f"Refusing to write invalid FakeAppIds entry: {app_id!r} -> {fake_appid!r}")
         return False
 
-    if not _core._config_management_enabled():
+    if not is_slssteam_config_management_enabled():
         return False
 
     suffix = "Spacewar" if fake_appid == "480" else "SLSonline"

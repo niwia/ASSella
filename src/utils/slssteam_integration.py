@@ -173,6 +173,31 @@ _proc_cache = {
 _PROC_CACHE_TTL = 2.0  # seconds
 
 
+def _check_sls_log_for_pids(steam_pids: List[str]) -> bool:
+    """Fallback for sibling user-namespace sandboxes (e.g. NixOS bwrap) where
+    /proc/<pid>/maps returns EACCES. Checks ~/.SLSsteam.log for a matching
+    running Steam PID and a successful load marker.
+    """
+    if not steam_pids:
+        return False
+    try:
+        log_path = _get_sls_log_path()
+        if not log_path.is_file():
+            return False
+        size = log_path.stat().st_size
+        if size == 0:
+            return False
+        with open(log_path, "rb") as f:
+            if size > 65536:
+                f.seek(size - 65536)
+            data = f.read().decode("utf-8", errors="ignore")
+        if "Loaded successfully" not in data:
+            return False
+        return any(f"({pid})" in data for pid in steam_pids)
+    except OSError:
+        return False
+
+
 def _update_proc_cache_if_needed():
     """Scan /proc at most once every _PROC_CACHE_TTL seconds.
     Supports standard distros, NixOS wrapped binaries (.steam-wrapped), and containerized Steam.
@@ -230,6 +255,7 @@ def _update_proc_cache_if_needed():
         if steam_pids:
             _proc_cache["steam_running"] = True
             if not _proc_cache["slssteam_active"]:
+                maps_eacces = False
                 for pid in steam_pids:
                     maps_path = os.path.join("/proc", pid, "maps")
                     try:
@@ -239,8 +265,15 @@ def _update_proc_cache_if_needed():
                                     if "SLSsteam.so" in line:
                                         _proc_cache["slssteam_active"] = True
                                         return
+                    except PermissionError:
+                        maps_eacces = True
+                        continue
                     except OSError:
                         continue
+                if maps_eacces and os.path.exists(SLSSTEAM_API_PIPE):
+                    if _check_sls_log_for_pids(steam_pids):
+                        _proc_cache["slssteam_active"] = True
+                        return
     except OSError as e:
         logger.debug(f"[sls] FIFO check skipped: {e}")
 
@@ -421,6 +454,19 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False, cached_only: bo
         result["local_mtime"] = local_mtime
     except Exception as exc:
         result["error"] = f"Failed to inspect local binary mtime: {exc}"
+        return result
+
+    # NixOS store files always have mtime=1 (1970-01-01) and live under /nix/store/.
+    # They are managed by Nix, not Headcrab/ASSella, so skip the mtime check.
+    try:
+        resolved_so = os.path.realpath(local_so)
+    except OSError:
+        resolved_so = local_so
+    if resolved_so.startswith("/nix/store/") or local_mtime <= 1.0:
+        result["status"] = "up_to_date"
+        result["release_tag"] = "Nix-managed"
+        with _binary_version_cache_lock:
+            _binary_version_cache = {"timestamp": time.time(), "data": dict(result)}
         return result
 
     # ── 2. Fetch latest GitHub release metadata ────────────────────────────

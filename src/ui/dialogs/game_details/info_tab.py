@@ -1430,15 +1430,24 @@ def update_eos_btn_state(dialog) -> None:
                 dialog.eos_tile.setToolTip("Apply Epic Online Services proxy DLL.")
 
     # Always update Netsock and Bypass states
-    from utils.yaml_config_manager import get_user_config_path, get_launch_option, extract_bypass_exe
+    from utils.yaml_config_manager import (
+        get_user_config_path, get_launch_option, extract_bypass_exe,
+        is_slssteam_config_management_enabled,
+    )
     cfg_path = get_user_config_path()
+    cfg_ready = is_slssteam_config_management_enabled() and cfg_path.exists()
     cur_opt = get_launch_option(cfg_path, str(dialog.appid)) if cfg_path.exists() else None
     is_netsock_configured = bool(cur_opt and "netsock.so" in cur_opt)
     bypass_exe = extract_bypass_exe(cur_opt)
     is_bypass_configured = bool(cur_opt and bypass_exe)
 
     if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
-        if not is_sls_active:
+        if not cfg_ready:
+            dialog.netsock_tile.setEnabled(False)
+            dialog.netsock_tile.setChecked(False)
+            dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Unavailable")
+            dialog.netsock_tile.setToolTip("Requires SLSsteam config management and an existing config.yaml.")
+        elif not is_sls_active:
             dialog.netsock_tile.setEnabled(False)
             dialog.netsock_tile.setChecked(False)
             dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Enable SLSonline")
@@ -1463,7 +1472,12 @@ def update_eos_btn_state(dialog) -> None:
                 dialog.netsock_tile.setToolTip("Enable Netsock LD_AUDIT patch for Steam Networking Sockets.")
 
     if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
-        if is_netsock_configured:
+        if not cfg_ready:
+            dialog.bypass_tile.setEnabled(False)
+            dialog.bypass_tile.setChecked(False)
+            dialog.bypass_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Unavailable")
+            dialog.bypass_tile.setToolTip("Requires SLSsteam config management and an existing config.yaml.")
+        elif is_netsock_configured:
             dialog.bypass_tile.setEnabled(False)
             dialog.bypass_tile.setChecked(False)
             dialog.bypass_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
@@ -1491,10 +1505,17 @@ def on_netsock_btn_clicked(dialog) -> None:
     from utils.yaml_config_manager import (
         get_user_config_path, get_launch_option, add_launch_option,
         remove_launch_option, ensure_netsock_binary, get_netsock_so_launch_path,
-        extract_bypass_exe
+        extract_bypass_exe, is_slssteam_config_management_enabled,
     )
+    from ui.dialogs.themed_message_box import ThemedMessageBox
+    if not is_slssteam_config_management_enabled() or dialog.appid in ("0", "N/A", "unknown", "480"):
+        ThemedMessageBox.warning(dialog, "Unavailable", "SLSsteam config management is not enabled for this game.")
+        update_eos_btn_state(dialog)
+        return
     config = get_user_config_path()
     if not config.exists():
+        ThemedMessageBox.warning(dialog, "Error", f"SLSsteam config.yaml not found at {config}")
+        update_eos_btn_state(dialog)
         return
 
     cur_opt = get_launch_option(config, str(dialog.appid))
