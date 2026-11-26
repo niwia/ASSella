@@ -296,7 +296,8 @@ def perform_steam_handoff(
         excluded = [str(d) for d in selected if str(d) not in valid]
         return [str(d) for d in selected if str(d) in valid], excluded
 
-    selected_depots, unkeyed_depots = _partition_keyed(selected_depots)
+    original_selected = list(selected_depots)
+    selected_depots, unkeyed_depots = _partition_keyed(original_selected)
 
     if unkeyed_depots:
         # The cache may simply be older than the selected depot. Refresh it
@@ -307,7 +308,7 @@ def perform_steam_handoff(
         if fresh_keys:
             depot_keys.update(fresh_keys)
             manifest_gids.update(fresh_gids)
-            selected_depots, unkeyed_depots = _partition_keyed(selected_depots)
+            selected_depots, unkeyed_depots = _partition_keyed(original_selected)
 
     unkeyed_warning = ""
     if unkeyed_depots:
@@ -325,7 +326,7 @@ def perform_steam_handoff(
         if warnings_out is not None:
             warnings_out.append(unkeyed_warning)
 
-    if not selected_depots and not is_dlc:
+    if not selected_depots and (not is_dlc or bool(original_selected)):
         reason = (
             f"No valid keyed content depots could be resolved for {game_name} "
             f"({appid}). Steam cannot download without valid depots."

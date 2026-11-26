@@ -1918,9 +1918,11 @@ class TaskManager(
         )
 
     def _handle_task_error(self, error_info):
-        if self.is_cancelling:
-            return
         if not self.is_processing:
+            return
+        if self.is_cancelling:
+            self._job_failed = True
+            self.job_finished()
             return
         if getattr(self, "_error_reported_for_job", False):
             return
@@ -2225,7 +2227,9 @@ class TaskManager(
                 self.workshop_task.stop()
             return
 
-        if not self.download_task or not self.current_job:
+        if not self.is_processing or (
+            not self.download_task and not self.zip_task and not self.current_job
+        ):
             return
 
         display_name = ""
@@ -2268,6 +2272,11 @@ class TaskManager(
 
         if self.download_task:
             self.download_task.stop()
+        if getattr(self, "zip_task", None) and hasattr(self.zip_task, "stop"):
+            try:
+                self.zip_task.stop()
+            except Exception as e:
+                logger.debug(f"Error stopping zip_task on cancel: {e}")
         self._kill_download_process()
 
         if self.achievement_task:

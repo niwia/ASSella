@@ -209,11 +209,11 @@ class PostInstallMixin:
                 f"Critical error in post-processing thread: {e}", exc_info=True
             )
         finally:
-            # Only invoke the main-thread slot if we weren't cancelled mid-way
-            if not self._finalize_cancel_event.is_set():
-                QMetaObject.invokeMethod(
-                    self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
-                )
+            # Always invoke _finalize_job_logic so cancel during finalize still
+            # calls job_finished() and clears is_processing instead of deadlocking.
+            QMetaObject.invokeMethod(
+                self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
+            )
 
     def _finalize_standalone_record(self, size_on_disk: int):
         """Register a standalone custom-folder installation in DatabaseManager."""
@@ -532,6 +532,8 @@ class PostInstallMixin:
                 "Post-processing did not complete; refusing to mark the install "
                 f"up-to-date: {finalize_error}"
             )
+        elif self.is_cancelling:
+            logger.info("Finalization interrupted by cancellation; finishing job.")
         else:
             logger.info("All post-processing steps complete. Finishing job.")
             self.main_window.job_queue.jobs_completed_count += 1
@@ -817,6 +819,14 @@ class PostInstallMixin:
                     f.write(entry_line + "\n")
         except OSError as e:
             logger.error(f"Failed to save depot info: {e}")
+    def _is_native_steam_download(self) -> bool:
+        try:
+            from core.tasks.native_steam_download_task import NativeSteamDownloadTask
+            return isinstance(self.download_task, NativeSteamDownloadTask)
+        except Exception as e:
+            logger.debug(f"_is_native_steam_download check error: {e}")
+            return False
+
     def _create_acf_file(self, size_on_disk):
         if not self.game_data or not self.current_dest_path:
             return True
@@ -826,16 +836,12 @@ class PostInstallMixin:
         # If NativeSteamDownloadTask was used, Steam already natively generated the ACF
         # and manages the installation. Skip writing custom ACF and ACCELA metadata markers
         # to prevent subsequent library scans from misidentifying native games as ACCELA.
-        try:
-            from core.tasks.native_steam_download_task import NativeSteamDownloadTask
-            if isinstance(self.download_task, NativeSteamDownloadTask):
-                logger.info(
-                    f"Native Steam download backend was used for {appid} - "
-                    "Steam natively generated the manifest. Skipping custom ACF and ACCELA metadata writing."
-                )
-                return True
-        except Exception:
-            pass
+        if self._is_native_steam_download():
+            logger.info(
+                f"Native Steam download backend was used for {appid} - "
+                "Steam natively generated the manifest. Skipping custom ACF and ACCELA metadata writing."
+            )
+            return True
 
         # 1. Always write/update our local metadata.json fallback for non-native downloads
         try:
@@ -868,6 +874,11 @@ class PostInstallMixin:
                 is_sls_filewatcher_dead,
             )
             if _experimental_mode_enabled():
+                if appid:
+                    from utils.dlc_helpers import is_dlc_only_mode
+                    if is_dlc_only_mode(str(appid)):
+                        logger.info("DLC Only mode active (ACF-Independent). Skipping base game install_via_sls.")
+                        return True
                 is_pinned = bool(
                     self.game_data.get("pin_build")
                     or self.game_data.get("_pin_build")
@@ -1089,14 +1100,15 @@ class PostInstallMixin:
             except OSError as e:
                 logger.warning(f"Failed to seed delta cache for {manifest_filename}: {e}")
 
-        # Ensure .assella marker is written for ASSella managed games
-        try:
-            marker_file = os.path.join(game_install_dir, ".assella")
-            if not os.path.exists(marker_file):
-                with open(marker_file, "w", encoding="utf-8") as f:
-                    f.write(f"appid={self.game_data.get('appid')}\n")
-        except Exception:
-            pass
+        # Ensure .assella marker is written for ASSella managed games (never for AT0-M native Steam)
+        if not self._is_native_steam_download():
+            try:
+                marker_file = os.path.join(game_install_dir, ".assella")
+                if not os.path.exists(marker_file):
+                    with open(marker_file, "w", encoding="utf-8") as f:
+                        f.write(f"appid={self.game_data.get('appid')}\n")
+            except Exception as e:
+                logger.debug(f"Failed writing .assella marker: {e}")
 
         if seeded:
             logger.info(
@@ -1112,7 +1124,7 @@ class PostInstallMixin:
         if os.path.exists(game_directory):
             self._run_chmod_recursive(game_directory)
     def _add_appids_to_slssteam_config(self):
-        if not self.game_data:
+        if not self.game_data or self._is_native_steam_download():
             return
 
         try:

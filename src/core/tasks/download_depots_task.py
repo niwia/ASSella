@@ -342,6 +342,7 @@ class DownloadDepotsTask(QObject):
                                 self.progress.emit("Download cancelled due to stealth connection failure.")
                                 logger.info(f"[DownloadDepotsTask] Download cancelled by user after stealth drop: {net_err}")
                                 self._cleanup_temp_files()
+                                self._emit_error((InterruptedError, "Download cancelled due to stealth connection failure.", None))
                                 return
 
                 # 3. Attempt smart recovery via wudrm / Steam CDN with fallbacks

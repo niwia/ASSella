@@ -857,6 +857,17 @@ def install_via_sls(
     if not appid or appid in ("0", "N/A", "unknown"):
         return False
 
+    try:
+        from utils.dlc_helpers import is_dlc_only_context
+        if is_dlc_only_context(str(appid), game_data):
+            logger.info(
+                f"install_via_sls: DLC-only mode active for {appid} — "
+                "skipping base AppID injection/install"
+            )
+            return True
+    except Exception as e:
+        logger.debug(f"install_via_sls: DLC-only guard check error: {e}")
+
     if _shutdown_flag.is_set():
         logger.debug(f"install_via_sls: shutdown in progress — skipping for {appid}")
         return False
