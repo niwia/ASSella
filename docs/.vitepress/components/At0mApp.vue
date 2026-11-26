@@ -1085,7 +1085,9 @@ async function loadSettings() {
       fetchDlcs: stored.fetch_dlcs_on_inject !== false,
       addDelisted: stored.add_delisted_dlcs !== false,
       notifications: stored.notification_mode || 'auto',
-      storePatch: stored.steam_store_enabled !== false
+      storePatch: stored.steam_store_enabled !== false,
+      lanAccess: Boolean(stored.epsilon_console_lan),
+      lanUrl: stored.lan_url || ''
     }
   } catch {
     /* non-fatal */
@@ -1095,7 +1097,10 @@ async function loadSettings() {
 async function saveSetting(key, value) {
   if (!paired.value) return
   try {
-    await bridgeFetch('/v1/settings', { method: 'POST', body: JSON.stringify({ [key]: value }) })
+    const res = await bridgeFetch('/v1/settings', { method: 'POST', body: JSON.stringify({ [key]: value }) })
+    if (res && res.settings && res.settings.lan_url) {
+      form.value.lanUrl = res.settings.lan_url
+    }
     toast('setting saved', `${key.replace(/_/g, ' ')} → ${value}`)
   } catch (error) {
     toast('setting rejected', error.message)
@@ -1883,6 +1888,18 @@ watch(query, (value) => {
                     @change="saveSetting('steam_store_enabled', form.storePatch).then(loadStore)"
                   />
                 </div>
+                <div class="set-row">
+                  <label class="set-k" for="set-lan">phone / lan access</label>
+                  <input
+                    id="set-lan"
+                    v-model="form.lanAccess"
+                    type="checkbox"
+                    @change="saveSetting('epsilon_console_lan', form.lanAccess)"
+                  />
+                </div>
+                <p v-if="form.lanAccess && form.lanUrl" class="pop-note">
+                  Phone URL (same Wi-Fi): <code>{{ form.lanUrl }}</code> — works even when ASSella is closed.
+                </p>
                 <div class="set-row">
                   <span class="set-k">cef debugging</span>
                   <span class="set-v" :class="{ off: !store?.cef?.available }">{{ storeCefLabel() }}</span>

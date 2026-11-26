@@ -441,7 +441,6 @@ def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
             ThemedMessageBox.StandardButton.No,
         ) != ThemedMessageBox.StandardButton.Yes:
             return
-        comp.stop_phone_tunnel()
         comp.rotate_console_token()
         rebuild()
 
@@ -454,82 +453,65 @@ def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
     row.addWidget(rotate_btn)
     cl.addLayout(row)
 
-    # Phone pairing via on-demand Cloudflare Quick Tunnel (zero idle resources)
-    t_status = comp.phone_tunnel_status()
+    # Phone / LAN Access (zero idle resources via epsilon.socket; works when ASSella is closed)
+    lan_on = comp.is_epsilon_lan_enabled()
+    lan_url = comp.epsilon_lan_url()
     t_row = QHBoxLayout()
-    tunnel_btn = _button("Stop phone tunnel" if t_status.get("active") else "Pair phone (Tunnel)")
+    lan_btn = _button("Disable Phone / LAN" if lan_on else "Allow Phone / LAN")
     copy_phone_btn = _button("Copy phone link")
-    copy_phone_btn.setEnabled(bool(t_status.get("active") and token))
-    tunnel_lbl = _label(
-        f"Phone tunnel active: {t_status['url']} (auto-closes in ~{max(1, int(t_status.get('remaining_sec', 0) // 60))}m)"
-        if t_status.get("active")
-        else "Remote phone access: off (zero background resources). Uses Cloudflare Quick Tunnel on demand.",
-        WARN if t_status.get("active") else MUTED,
+    copy_phone_btn.setEnabled(bool(lan_on and token))
+    lan_lbl = _label(
+        f"Phone / LAN active: {lan_url} (works even when ASSella is closed; anyone on your Wi-Fi with the token can access)."
+        if lan_on
+        else "Phone / LAN access: off (127.0.0.1 only, zero extra processes).",
+        WARN if lan_on else MUTED,
     )
 
-    def _toggle_tunnel():
-        if comp.phone_tunnel_status().get("active"):
-            comp.stop_phone_tunnel()
-            rebuild()
-            return
-        if ThemedMessageBox.warning(
+    def _toggle_lan():
+        want = not comp.is_epsilon_lan_enabled()
+        if want and ThemedMessageBox.warning(
             dialog,
-            "Remote Phone Tunnel",
-            "This starts a temporary Cloudflare Quick Tunnel to 127.0.0.1:1952 so your phone can reach AT0-M.\n\n"
+            "Allow Phone / LAN Access",
+            "This binds Epsilon's socket to 0.0.0.0:1952 so your phone can open the web UI on the same Wi-Fi, even when ASSella is closed.\n\n"
             "• Protected by your console token\n"
-            "• Automatically closes after 30 minutes (or when ASSella exits)\n\n"
-            "Do not leave it running when you are done.",
+            "• Still exits after 120s of inactivity (zero idle resources)\n"
+            "• Anyone on the same Wi-Fi with the token can reach port 1952",
             ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
             ThemedMessageBox.StandardButton.Yes,
         ) != ThemedMessageBox.StandardButton.Yes:
             return
-        tunnel_btn.setEnabled(False)
-        tunnel_btn.setText("Starting tunnel…")
-
-        def _do_start():
-            return comp.start_phone_tunnel(timeout_sec=1800)
-
-        def _on_started(res):
-            if not res or not res.get("ok"):
-                ThemedMessageBox.warning(
-                    dialog,
-                    "Phone Tunnel",
-                    (res or {}).get("error") or "Failed to start cloudflared tunnel.",
-                )
-            else:
-                live = comp.epsilon_console_token() or token
-                if live:
-                    QApplication.clipboard().setText(f"{comp.EPSILON_CONSOLE_URL}?bridge={res['url']}#k={live}")
-                    ThemedMessageBox.information(
-                        dialog,
-                        "Phone Tunnel Ready",
-                        f"Tunnel active: {res['url']}\n\nPairing URL copied to clipboard. Open it on your phone.",
-                    )
-            rebuild()
-
-        _start(dialog, _do_start, _on_started)
+        lan_btn.setEnabled(False)
+        _start(
+            dialog,
+            lambda: comp.set_epsilon_lan_enabled(want),
+            lambda res: (
+                ThemedMessageBox.warning(dialog, "Phone / LAN", res[1])
+                if res and not res[0]
+                else None,
+                rebuild(),
+            ),
+        )
 
     def _copy_phone():
-        st = comp.phone_tunnel_status()
         live = comp.epsilon_console_token() or token
-        if st.get("active") and live:
-            QApplication.clipboard().setText(f"{comp.EPSILON_CONSOLE_URL}?bridge={st['url']}#k={live}")
+        if comp.is_epsilon_lan_enabled() and live:
+            QApplication.clipboard().setText(comp.epsilon_lan_url(live))
 
-    tunnel_btn.clicked.connect(_toggle_tunnel)
+    lan_btn.clicked.connect(_toggle_lan)
     copy_phone_btn.clicked.connect(_copy_phone)
-    t_row.addWidget(tunnel_btn)
+    t_row.addWidget(lan_btn)
     t_row.addWidget(copy_phone_btn)
     t_row.addStretch(1)
     cl.addLayout(t_row)
-    cl.addWidget(tunnel_lbl)
+    cl.addWidget(lan_lbl)
 
-    if t_status.get("active") and token:
+    if lan_on and token:
         import shutil
         import subprocess
         qr_bin = shutil.which("qrencode")
         if qr_bin:
             try:
-                pair_url = f"{comp.EPSILON_CONSOLE_URL}?bridge={t_status['url']}#k={token}"
+                pair_url = comp.epsilon_lan_url(token)
                 res_qr = subprocess.run(
                     [qr_bin, "-o", "-", "-t", "PNG", "-s", "5", pair_url],
                     capture_output=True,

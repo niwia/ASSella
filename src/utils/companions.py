@@ -574,129 +574,64 @@ def key_state(companion_key: str, assella_key: str) -> str:
     return "same" if c == (assella_key or "").strip() else "own"
 
 
-# ---------------------------------------------------------------- Phone Tunnel (cloudflared)
+# ---------------------------------------------------------------- Phone / LAN Access (epsilon.socket)
 
-def _tunnel_marker_path() -> Path:
-    return _config_home() / "assella-decky" / "tunnel_active.json"
+def get_lan_ip() -> str:
+    """Return this machine's local LAN IPv4 address (zero packets sent)."""
+    import socket
 
-
-_tunnel_proc = None
-_tunnel_timer = None
-_tunnel_state: Dict[str, Any] = {"active": False, "url": "", "host": "", "expires_at": 0.0}
-
-
-def stop_phone_tunnel() -> bool:
-    """Stop any active cloudflared quick tunnel and remove its Epsilon host marker."""
-    global _tunnel_proc, _tunnel_timer
-    if _tunnel_timer is not None:
-        try:
-            _tunnel_timer.cancel()
-        except Exception as e:
-            logger.debug("[companions] tunnel timer cancel: %s", e)
-        _tunnel_timer = None
-    if _tunnel_proc is not None:
-        try:
-            _tunnel_proc.terminate()
-            _tunnel_proc.wait(timeout=3)
-        except Exception as e:
-            logger.debug("[companions] tunnel terminate: %s", e)
-            try:
-                _tunnel_proc.kill()
-            except Exception as ke:
-                logger.debug("[companions] tunnel kill: %s", ke)
-        _tunnel_proc = None
-    _tunnel_state.update({"active": False, "url": "", "host": "", "expires_at": 0.0})
-    marker = _tunnel_marker_path()
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        if marker.exists():
-            marker.unlink()
+        s.connect(("1.1.1.1", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def _lan_dropin_path() -> Path:
+    return _systemd_user_dir() / "epsilon.socket.d" / "lan.conf"
+
+
+def is_epsilon_lan_enabled() -> bool:
+    """True when epsilon_console_lan is enabled in shared settings or lan.conf exists."""
+    if bool(read_companion_settings().get("epsilon_console_lan", False)):
+        return True
+    return _lan_dropin_path().exists()
+
+
+def epsilon_lan_url(token: str = "") -> str:
+    ip = get_lan_ip()
+    base = f"http://{ip}:1952/"
+    return f"{base}#k={token}" if token else base
+
+
+def set_epsilon_lan_enabled(enabled: bool) -> tuple[bool, str]:
+    """Toggle Epsilon LAN binding (0.0.0.0:1952) via shared settings + systemd drop-in."""
+    update_companion_settings({"epsilon_console_lan": bool(enabled)})
+    dropin = _lan_dropin_path()
+    try:
+        if enabled:
+            dropin.parent.mkdir(parents=True, exist_ok=True)
+            dropin.write_text("[Socket]\nListenStream=\nListenStream=0.0.0.0:1952\n", encoding="utf-8")
+        elif dropin.exists():
+            dropin.unlink()
     except OSError as e:
-        logger.debug("[companions] unlink tunnel marker: %s", e)
-    return True
+        return False, f"Failed to update {dropin}: {e}"
 
+    if not have_systemd_user():
+        return True, "Saved setting (systemd user not detected; restart Epsilon manually)."
 
-def phone_tunnel_status() -> Dict[str, Any]:
-    import time
-
-    if not _tunnel_state.get("active") or _tunnel_proc is None or _tunnel_proc.poll() is not None:
-        return {"active": False, "url": "", "host": "", "remaining_sec": 0}
-    rem = max(0.0, float(_tunnel_state.get("expires_at") or 0) - time.time())
-    if rem <= 0:
-        stop_phone_tunnel()
-        return {"active": False, "url": "", "host": "", "remaining_sec": 0}
-    return {
-        "active": True,
-        "url": _tunnel_state["url"],
-        "host": _tunnel_state["host"],
-        "remaining_sec": rem,
-    }
-
-
-def start_phone_tunnel(timeout_sec: int = 1800) -> Dict[str, Any]:
-    """Start an on-demand cloudflared Quick Tunnel to 127.0.0.1:1952 with auto-expiry."""
-    import atexit
-    import shutil
-    import threading
-    import time
-
-    global _tunnel_proc, _tunnel_timer
-
-    cur = phone_tunnel_status()
-    if cur.get("active"):
-        return {"ok": True, **cur}
-
-    cf = shutil.which("cloudflared")
-    if not cf:
-        return {
-            "ok": False,
-            "error": "cloudflared is not installed. Install cloudflared to use remote phone pairing.",
-        }
-
-    stop_phone_tunnel()
     try:
-        proc = subprocess.Popen(
-            host_cmd([cf, "tunnel", "--url", EPSILON_URL, "--no-autoupdate"]),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
+        _systemctl("daemon-reload")
+        r = _systemctl("restart", "epsilon.socket")
+        if r.returncode != 0:
+            return False, (r.stderr or r.stdout or "Failed to restart epsilon.socket").strip()
+        return True, (
+            f"Phone / LAN access enabled at {epsilon_lan_url()}"
+            if enabled
+            else "Phone / LAN access disabled (bound to 127.0.0.1:1952 only)."
         )
     except Exception as e:
-        return {"ok": False, "error": f"Failed to launch cloudflared: {e}"}
-
-    url_found = ""
-    deadline = time.time() + 14.0
-    pat = re.compile(r"(https://[a-z0-9-]+\.trycloudflare\.com)")
-    while time.time() < deadline and proc.poll() is None:
-        line = proc.stdout.readline() if proc.stdout else ""
-        if not line:
-            time.sleep(0.1)
-            continue
-        m = pat.search(line)
-        if m:
-            url_found = m.group(1)
-            break
-
-    if not url_found:
-        try:
-            proc.terminate()
-        except Exception as e:
-            logger.debug("[companions] cleanup failed cloudflared: %s", e)
-        return {"ok": False, "error": "cloudflared did not return a trycloudflare.com URL in time."}
-
-    host = url_found.replace("https://", "").strip("/")
-    expires_at = time.time() + max(60, int(timeout_sec))
-    _tunnel_proc = proc
-    _tunnel_state.update({"active": True, "url": url_found, "host": host, "expires_at": expires_at})
-
-    marker = _tunnel_marker_path()
-    try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(json.dumps({"host": host, "url": url_found, "expires_at": expires_at}), encoding="utf-8")
-    except OSError as e:
-        logger.warning("[Companions] Could not write tunnel marker: %s", e)
-
-    _tunnel_timer = threading.Timer(max(60, int(timeout_sec)), stop_phone_tunnel)
-    _tunnel_timer.daemon = True
-    _tunnel_timer.start()
-    atexit.register(stop_phone_tunnel)
-    return {"ok": True, "active": True, "url": url_found, "host": host, "remaining_sec": float(timeout_sec)}
+        return False, str(e)
