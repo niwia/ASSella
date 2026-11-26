@@ -755,6 +755,60 @@ function saveBridgeToken() {
   if (token) probeBridge()
 }
 
+function unpairBridge() {
+  bridgeToken.value = ''
+  bridgeBase.value = DEFAULT_BRIDGE_BASE
+  paired.value = false
+  bridge.value = false
+  try {
+    localStorage.removeItem('at0m.token')
+    localStorage.removeItem('at0m.bridge')
+  } catch {
+    /* ignore */
+  }
+  toast('unpaired', 'Console token cleared from this browser.')
+}
+
+function resetToLocalhost() {
+  bridgeBase.value = DEFAULT_BRIDGE_BASE
+  try {
+    localStorage.removeItem('at0m.bridge')
+  } catch {
+    /* ignore */
+  }
+  probeBridge()
+}
+
+async function toggleCefSentinel() {
+  if (!paired.value) return
+  const want = !(store.value?.cef?.sentinel)
+  try {
+    const res = await bridgeFetch('/v1/store/cef', {
+      method: 'POST',
+      body: JSON.stringify({ enabled: want })
+    })
+    toast('CEF debugging', res.message || (want ? 'Enabled' : 'Disabled'))
+    await loadStore()
+  } catch (error) {
+    toast('CEF toggle failed', error.message)
+  }
+}
+
+async function checkUpdates() {
+  if (!paired.value) return
+  try {
+    const res = await bridgeFetch('/v1/updates/check', { method: 'POST', body: '{}' })
+    const updates = res.updates || res.results || {}
+    const count = Object.values(updates).filter((u) => u && u.update_available).length
+    toast(
+      count ? `${count} update${count === 1 ? '' : 's'} available` : 'all games up to date',
+      count ? 'Open a game and press re-register / refresh keys.' : 'Checked via Epsilon AT0-M.'
+    )
+  } catch (error) {
+    toast('update check failed', error.message)
+  }
+}
+
 /* --------------------------- epsilon data ---------------------------- */
 
 function relTime(seconds) {
@@ -1675,7 +1729,7 @@ watch(query, (value) => {
               </p>
               <dl class="bridge-dl">
                 <dt>endpoint</dt>
-                <dd>127.0.0.1:1952</dd>
+                <dd>{{ bridgeBase.replace(/^https?:\/\//, '') }}</dd>
                 <dt>state</dt>
                 <dd>
                   {{
@@ -1705,6 +1759,22 @@ watch(query, (value) => {
               <div class="pop-actions">
                 <button type="button" class="btn" :disabled="probing" @click="probeBridge()">
                   {{ probing ? 'checking…' : probed ? 'check again' : 'check for epsilon' }}
+                </button>
+                <button
+                  v-if="bridgeBase !== DEFAULT_BRIDGE_BASE"
+                  type="button"
+                  class="btn tiny"
+                  @click="resetToLocalhost"
+                >
+                  localhost
+                </button>
+                <button
+                  v-if="paired || bridgeToken"
+                  type="button"
+                  class="btn tiny danger"
+                  @click="unpairBridge"
+                >
+                  unpair
                 </button>
                 <button type="button" class="btn ghost" @click="bridgeOpen = false">close</button>
               </div>
@@ -1817,9 +1887,17 @@ watch(query, (value) => {
                   <span class="set-k">cef debugging</span>
                   <span class="set-v" :class="{ off: !store?.cef?.available }">{{ storeCefLabel() }}</span>
                 </div>
+                <div class="pop-actions" style="margin-top: 0.35rem; margin-bottom: 0.35rem;">
+                  <button type="button" class="btn tiny" @click="toggleCefSentinel">
+                    {{ store?.cef?.sentinel ? 'disable cef' : 'enable cef' }}
+                  </button>
+                  <button type="button" class="btn tiny" @click="checkUpdates">
+                    check updates
+                  </button>
+                </div>
                 <p class="pop-note">
-                  The switch is shared with Uran and ASSella; Uran draws the button inside Steam.
-                  Launch Steam with <code>--cef-enable-debugging</code> for it to appear.
+                  Shared with Uran and ASSella. Uses Steam's <code>.cef-enable-remote-debugging</code> file
+                  (restart Steam after toggling).
                 </p>
               </template>
               <p v-else class="pop-note">

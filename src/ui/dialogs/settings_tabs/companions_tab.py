@@ -523,6 +523,30 @@ def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
     cl.addLayout(t_row)
     cl.addWidget(tunnel_lbl)
 
+    if t_status.get("active") and token:
+        import shutil
+        import subprocess
+        qr_bin = shutil.which("qrencode")
+        if qr_bin:
+            try:
+                pair_url = f"{comp.EPSILON_CONSOLE_URL}?bridge={t_status['url']}#k={token}"
+                res_qr = subprocess.run(
+                    [qr_bin, "-o", "-", "-t", "PNG", "-s", "5", pair_url],
+                    capture_output=True,
+                    timeout=3,
+                )
+                if res_qr.returncode == 0 and res_qr.stdout:
+                    from PyQt6.QtGui import QPixmap
+                    pm = QPixmap()
+                    if pm.loadFromData(res_qr.stdout, "PNG"):
+                        qr_lbl = QLabel()
+                        qr_lbl.setPixmap(pm)
+                        qr_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        qr_lbl.setStyleSheet("background: transparent; border: none; padding: 4px;")
+                        cl.addWidget(qr_lbl)
+            except Exception as qr_err:
+                logger.debug("[companions_tab] QR render skipped: %s", qr_err)
+
     cl.addWidget(_label(
         "Tip: copy the token into the console if you open it on another browser. "
         "Rotate it if you ever pasted it somewhere you no longer trust."
