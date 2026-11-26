@@ -26,7 +26,7 @@
   },
   "version": 1,
   "description": "ASSella Recommended & Tested Game Builds (Voices)",
-  "updated_at": "2026-11-01",
+  "updated_at": "2026-11-26",
   "games": {
     "2161700": {
       "game_name": "Persona 3 Reload",
@@ -404,6 +404,33 @@
         "2928601": "8081071784331207732",
         "2928602": "6874708570332166581",
         "3653840": "5802061408931620269"
+      }
+    },
+    "4115450": {
+      "game_name": "Phantom Blade Zero",
+      "aliases": [
+        "phantom blade zero",
+        "pbz"
+      ],
+      "recommended_build_id": "26367565",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {
+        "4115451": "3746360227235602232"
+      }
+    },
+    "4078430": {
+      "game_name": "STAR WARS: Galactic Racer\u2122",
+      "aliases": [
+        "star wars galactic racer",
+        "galactic racer"
+      ],
+      "recommended_build_id": "26133805",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {
+        "4078431": "2758459333337832979",
+        "4554460": "8263595189143129981"
       }
     }
   },
