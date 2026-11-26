@@ -209,7 +209,8 @@ const PIVOTS = [
   { id: 'installed', label: 'installed' },
   { id: 'registered', label: 'registered' },
   { id: 'ready', label: 'ready' },
-  { id: 'needs-key', label: 'needs key' }
+  { id: 'needs-key', label: 'needs key' },
+  { id: 'pairing', label: 'pairing' }
 ]
 
 const STATUS_LABEL = {
@@ -476,7 +477,12 @@ const installedCount = computed(() => {
 const activeDepots = computed(() => (activeGame.value ? includedDepots(activeGame.value) : []))
 const hasKey = computed(() => hubcapKey.value.trim().length >= 8 || Boolean(hubcap.value?.ok))
 
+const pairedDevices = ref([])
+const pairInvite = ref(null)
+const pairingBusy = ref(false)
+
 function countFor(p) {
+  if (p === 'pairing') return pairedDevices.value.length
   const source = demo.value ? DEMO_GAMES : library.value
   return source.filter((g) => matchesPivot(g, p)).length
 }
@@ -645,6 +651,7 @@ function pickAccent(hex) {
 function selectPivot(id) {
   pivot.value = id
   if (searchMode.value) query.value = ''
+  if (id === 'pairing' && paired.value) loadPairedDevices()
 }
 
 /* ------------------------------ actions ------------------------------ */
@@ -702,7 +709,7 @@ async function probeBridge({ silent = false } = {}) {
       const count = body.library_count ?? 0
       const slsNote = body.sls_active === false ? ' · SLSsteam inactive' : ''
       toast('console paired', `epsilon ${bridgeVersion.value} · ${count} ${count === 1 ? 'game' : 'games'}${slsNote}`)
-      await Promise.all([loadLibrary(), loadHubcap(), loadSettings(), loadStore()])
+      await Promise.all([loadLibrary(), loadHubcap(), loadSettings(), loadStore(), loadPairedDevices()])
     } else if (res.status === 401) {
       toast('bridge found', 'Paste the console token from ASSella → Companions → Epsilon.')
     } else if (res.status === 429) {
@@ -791,6 +798,43 @@ async function toggleCefSentinel() {
     await loadStore()
   } catch (error) {
     toast('CEF toggle failed', error.message)
+  }
+}
+
+async function loadPairedDevices() {
+  if (!paired.value) return
+  try {
+    const res = await bridgeFetch('/v1/pair/devices')
+    pairedDevices.value = res.devices || []
+  } catch {
+    pairedDevices.value = []
+  }
+}
+
+async function startPhonePairing() {
+  if (!paired.value || pairingBusy.value) return
+  pairingBusy.value = true
+  try {
+    const res = await bridgeFetch('/v1/pair/start', { method: 'POST', body: '{}' })
+    pairInvite.value = res
+    form.value.lanAccess = true
+    toast('pairing QR ready', 'Scan on your phone, choose a name, and tap Proceed.')
+  } catch (error) {
+    toast('pairing failed', error.message)
+  } finally {
+    pairingBusy.value = false
+  }
+}
+
+async function revokeDevice(id, name) {
+  if (!paired.value || !id) return
+  if (!window.confirm(`Remove '${name}' and revoke its access?`)) return
+  try {
+    await bridgeFetch('/v1/pair/revoke', { method: 'POST', body: JSON.stringify({ id }) })
+    toast('device revoked', `${name} can no longer access Epsilon.`)
+    await loadPairedDevices()
+  } catch (error) {
+    toast('revoke failed', error.message)
   }
 }
 
@@ -1548,6 +1592,9 @@ onMounted(() => {
 
   const qParam = params.get('q')
   if (qParam) query.value = qParam
+  if (params.get('tab') === 'pairing' || window.location.hash === '#pairing') {
+    pivot.value = 'pairing'
+  }
 
   const bridgeParam = params.get('bridge')
   if (bridgeParam && isValidBridgeUrl(bridgeParam)) {
@@ -1934,7 +1981,70 @@ watch(query, (value) => {
 
     <!-- ==================== catalog ==================== -->
     <main class="main">
-      <div v-if="isSearching || searchMode" class="filter-bar">
+      <section v-if="pivot === 'pairing' && !searchMode" class="pairing-panel">
+        <div class="pairing-hd">
+          <div>
+            <h2>phone &amp; device pairing</h2>
+            <p class="muted">
+              Scan a QR code on your phone, name the instance, and tap Proceed. Paired phones talk directly to
+              Epsilon on your Wi-Fi even when ASSella is closed.
+            </p>
+          </div>
+          <div class="pairing-actions">
+            <button
+              type="button"
+              class="btn primary"
+              :disabled="!paired || pairingBusy"
+              @click="startPhonePairing"
+            >
+              {{ pairingBusy ? 'creating QR…' : 'pair phone' }}
+            </button>
+            <label v-if="paired" class="pairing-lan-chk">
+              <input
+                v-model="form.lanAccess"
+                type="checkbox"
+                @change="saveSetting('epsilon_console_lan', form.lanAccess)"
+              />
+              <span>LAN access</span>
+            </label>
+          </div>
+        </div>
+
+        <p v-if="!paired" class="muted">
+          Pair this desktop console with Epsilon first (click <strong>bridge</strong> above) to create phone QR codes.
+        </p>
+
+        <div v-if="pairInvite && pairInvite.url" class="pairing-qr-box">
+          <div v-if="pairInvite.qr_svg" class="pairing-qr-svg" v-html="pairInvite.qr_svg" />
+          <div class="pairing-qr-meta">
+            <div class="muted">Scan with your phone camera, type a name for the device, and tap Proceed (expires in 10 min):</div>
+            <code class="pairing-url">{{ pairInvite.url }}</code>
+          </div>
+        </div>
+
+        <div v-if="paired" class="pairing-list-wrap">
+          <h3>paired phones ({{ pairedDevices.length }})</h3>
+          <p v-if="!pairedDevices.length" class="muted">No phones paired yet.</p>
+          <div v-else class="pairing-list">
+            <div v-for="dev in pairedDevices" :key="dev.id" class="pairing-item">
+              <div>
+                <strong>{{ dev.name }}</strong>
+                <span v-if="dev.created_at" class="muted"> · paired {{ new Date(dev.created_at * 1000).toLocaleString() }}</span>
+              </div>
+              <button
+                type="button"
+                class="btn tiny danger"
+                :title="`Revoke access for ${dev.name}`"
+                @click="revokeDevice(dev.id, dev.name)"
+              >
+                🗑 revoke
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div v-else-if="isSearching || searchMode" class="filter-bar">
         <div>
           showing <strong>{{ visibleGames.length }}</strong> matching title{{ visibleGames.length === 1 ? '' : 's' }}
           <span v-if="query" class="filter-q">“{{ query.trim() }}”</span>
@@ -1943,7 +2053,7 @@ watch(query, (value) => {
         <button type="button" class="btn tiny" @click="query = ''; pivot = 'catalog'">reset view</button>
       </div>
 
-      <div v-if="!visibleGames.length" class="empty">
+      <div v-if="pivot !== 'pairing' && !visibleGames.length" class="empty">
         <template v-if="searchMode && searching">
           <div class="empty-title">searching the store…</div>
           <p>Valve's catalogue can take a second.</p>
@@ -4060,6 +4170,82 @@ code {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.45rem;
   margin-top: 0.5rem;
+}
+
+.pairing-panel {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.pairing-hd {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+.pairing-hd h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.25rem;
+  font-weight: 400;
+}
+.pairing-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+.pairing-lan-chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.pairing-qr-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.28);
+}
+.pairing-qr-svg {
+  background: #fff;
+  padding: 6px;
+  line-height: 0;
+}
+.pairing-qr-svg svg {
+  width: 160px;
+  height: 160px;
+}
+.pairing-url {
+  display: block;
+  margin-top: 0.4rem;
+  word-break: break-all;
+}
+.pairing-list-wrap h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.pairing-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.pairing-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 /* ------------------------------ responsive ---------------------------- */

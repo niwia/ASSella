@@ -635,3 +635,42 @@ def set_epsilon_lan_enabled(enabled: bool) -> tuple[bool, str]:
         )
     except Exception as e:
         return False, str(e)
+
+
+def create_pairing_invite(ttl_sec: int = 600) -> tuple[bool, str, str]:
+    """Create a 10-minute one-time pairing invite in shared settings and return (ok, url, err)."""
+    import time
+
+    if not is_epsilon_lan_enabled():
+        ok, msg = set_epsilon_lan_enabled(True)
+        if not ok:
+            return False, "", msg
+
+    now = time.time()
+    stored = read_companion_settings()
+    invites = stored.get("pairing_invites", [])
+    if not isinstance(invites, list):
+        invites = []
+    invites = [i for i in invites if isinstance(i, dict) and float(i.get("expires_at") or 0) > now]
+    code = os.urandom(16).hex()
+    invites.append({"code": code, "expires_at": int(now + ttl_sec)})
+    if not update_companion_settings({"pairing_invites": invites}):
+        return False, "", "Failed to write pairing invite to settings.json."
+    return True, f"http://{get_lan_ip()}:1952/#pair={code}", ""
+
+
+def list_paired_devices() -> list:
+    """Return paired phone/device records from shared settings."""
+    raw = read_companion_settings().get("paired_devices", [])
+    if not isinstance(raw, list):
+        return []
+    return [d for d in raw if isinstance(d, dict) and d.get("id")]
+
+
+def revoke_paired_device(device_id: str) -> bool:
+    """Remove a paired device by id so its token is immediately invalidated."""
+    devices = list_paired_devices()
+    kept = [d for d in devices if str(d.get("id")) != str(device_id)]
+    if len(kept) == len(devices):
+        return False
+    return update_companion_settings({"paired_devices": kept})

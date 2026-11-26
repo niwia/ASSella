@@ -453,19 +453,34 @@ def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
     row.addWidget(rotate_btn)
     cl.addLayout(row)
 
-    # Phone / LAN Access (zero idle resources via epsilon.socket; works when ASSella is closed)
+    # Phone / LAN Access & Named QR Pairing
     lan_on = comp.is_epsilon_lan_enabled()
     lan_url = comp.epsilon_lan_url()
     t_row = QHBoxLayout()
-    lan_btn = _button("Disable Phone / LAN" if lan_on else "Allow Phone / LAN")
-    copy_phone_btn = _button("Copy phone link")
-    copy_phone_btn.setEnabled(bool(lan_on and token))
+    pair_phone_btn = _button("Pair phone (QR)", primary=True)
+    lan_btn = _button("Disable LAN" if lan_on else "Allow LAN")
     lan_lbl = _label(
-        f"Phone / LAN active: {lan_url} (works even when ASSella is closed; anyone on your Wi-Fi with the token can access)."
+        f"Phone / LAN active: {lan_url} (works even when ASSella is closed)."
         if lan_on
         else "Phone / LAN access: off (127.0.0.1 only, zero extra processes).",
         WARN if lan_on else MUTED,
     )
+
+    def _pair_phone():
+        def _do():
+            return comp.create_pairing_invite()
+
+        def _done(res):
+            ok, pair_url, err = res or (False, "", "Failed to create pairing invite.")
+            if not ok:
+                ThemedMessageBox.warning(dialog, "Pair Phone", err)
+                rebuild()
+                return
+            dialog._active_pair_url = pair_url
+            rebuild()
+
+        pair_phone_btn.setEnabled(False)
+        _start(dialog, _do, _done)
 
     def _toggle_lan():
         want = not comp.is_epsilon_lan_enabled()
@@ -473,9 +488,9 @@ def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
             dialog,
             "Allow Phone / LAN Access",
             "This binds Epsilon's socket to 0.0.0.0:1952 so your phone can open the web UI on the same Wi-Fi, even when ASSella is closed.\n\n"
-            "• Protected by your console token\n"
+            "• Protected by per-device tokens\n"
             "• Still exits after 120s of inactivity (zero idle resources)\n"
-            "• Anyone on the same Wi-Fi with the token can reach port 1952",
+            "• Anyone on the same Wi-Fi with a paired token can reach port 1952",
             ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
             ThemedMessageBox.StandardButton.Yes,
         ) != ThemedMessageBox.StandardButton.Yes:
@@ -492,28 +507,23 @@ def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
             ),
         )
 
-    def _copy_phone():
-        live = comp.epsilon_console_token() or token
-        if comp.is_epsilon_lan_enabled() and live:
-            QApplication.clipboard().setText(comp.epsilon_lan_url(live))
-
+    pair_phone_btn.clicked.connect(_pair_phone)
     lan_btn.clicked.connect(_toggle_lan)
-    copy_phone_btn.clicked.connect(_copy_phone)
+    t_row.addWidget(pair_phone_btn)
     t_row.addWidget(lan_btn)
-    t_row.addWidget(copy_phone_btn)
     t_row.addStretch(1)
     cl.addLayout(t_row)
     cl.addWidget(lan_lbl)
 
-    if lan_on and token:
+    active_pair_url = getattr(dialog, "_active_pair_url", "")
+    if active_pair_url:
         import shutil
         import subprocess
         qr_bin = shutil.which("qrencode")
         if qr_bin:
             try:
-                pair_url = comp.epsilon_lan_url(token)
                 res_qr = subprocess.run(
-                    [qr_bin, "-o", "-", "-t", "PNG", "-s", "5", pair_url],
+                    [qr_bin, "-o", "-", "-t", "PNG", "-s", "5", active_pair_url],
                     capture_output=True,
                     timeout=3,
                 )
@@ -528,6 +538,38 @@ def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
                         cl.addWidget(qr_lbl)
             except Exception as qr_err:
                 logger.debug("[companions_tab] QR render skipped: %s", qr_err)
+        cl.addWidget(_label("Scan this QR on your phone, enter a device name, and tap Proceed (expires in 10m)."))
+
+    paired_devices = comp.list_paired_devices()
+    if paired_devices:
+        from datetime import datetime
+        cl.addWidget(_label("Paired phones:", "#E2E8F0"))
+        for dev in paired_devices:
+            d_row = QHBoxLayout()
+            dev_id = str(dev.get("id", ""))
+            dev_name = str(dev.get("name", "Phone"))
+            ts = int(dev.get("created_at") or 0)
+            when = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+            d_row.addWidget(_label(f"• {dev_name}" + (f" ({when})" if when else ""), MUTED), 1)
+            del_btn = _button("🗑")
+            del_btn.setToolTip(f"Revoke access for {dev_name}")
+            del_btn.setFixedWidth(36)
+
+            def _revoke(_checked=False, _did=dev_id, _dname=dev_name):
+                if ThemedMessageBox.question(
+                    dialog,
+                    "Revoke Device",
+                    f"Remove '{_dname}' and revoke its access token?",
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.No,
+                ) != ThemedMessageBox.StandardButton.Yes:
+                    return
+                comp.revoke_paired_device(_did)
+                rebuild()
+
+            del_btn.clicked.connect(_revoke)
+            d_row.addWidget(del_btn)
+            cl.addLayout(d_row)
 
     cl.addWidget(_label(
         "Tip: copy the token into the console if you open it on another browser. "
