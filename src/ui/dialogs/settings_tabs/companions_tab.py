@@ -441,6 +441,7 @@ def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
             ThemedMessageBox.StandardButton.No,
         ) != ThemedMessageBox.StandardButton.Yes:
             return
+        comp.stop_phone_tunnel()
         comp.rotate_console_token()
         rebuild()
 
@@ -452,6 +453,76 @@ def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
     row.addStretch(1)
     row.addWidget(rotate_btn)
     cl.addLayout(row)
+
+    # Phone pairing via on-demand Cloudflare Quick Tunnel (zero idle resources)
+    t_status = comp.phone_tunnel_status()
+    t_row = QHBoxLayout()
+    tunnel_btn = _button("Stop phone tunnel" if t_status.get("active") else "Pair phone (Tunnel)")
+    copy_phone_btn = _button("Copy phone link")
+    copy_phone_btn.setEnabled(bool(t_status.get("active") and token))
+    tunnel_lbl = _label(
+        f"Phone tunnel active: {t_status['url']} (auto-closes in ~{max(1, int(t_status.get('remaining_sec', 0) // 60))}m)"
+        if t_status.get("active")
+        else "Remote phone access: off (zero background resources). Uses Cloudflare Quick Tunnel on demand.",
+        WARN if t_status.get("active") else MUTED,
+    )
+
+    def _toggle_tunnel():
+        if comp.phone_tunnel_status().get("active"):
+            comp.stop_phone_tunnel()
+            rebuild()
+            return
+        if ThemedMessageBox.warning(
+            dialog,
+            "Remote Phone Tunnel",
+            "This starts a temporary Cloudflare Quick Tunnel to 127.0.0.1:1952 so your phone can reach AT0-M.\n\n"
+            "• Protected by your console token\n"
+            "• Automatically closes after 30 minutes (or when ASSella exits)\n\n"
+            "Do not leave it running when you are done.",
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes,
+        ) != ThemedMessageBox.StandardButton.Yes:
+            return
+        tunnel_btn.setEnabled(False)
+        tunnel_btn.setText("Starting tunnel…")
+
+        def _do_start():
+            return comp.start_phone_tunnel(timeout_sec=1800)
+
+        def _on_started(res):
+            if not res or not res.get("ok"):
+                ThemedMessageBox.warning(
+                    dialog,
+                    "Phone Tunnel",
+                    (res or {}).get("error") or "Failed to start cloudflared tunnel.",
+                )
+            else:
+                live = comp.epsilon_console_token() or token
+                if live:
+                    QApplication.clipboard().setText(f"{comp.EPSILON_CONSOLE_URL}?bridge={res['url']}#k={live}")
+                    ThemedMessageBox.information(
+                        dialog,
+                        "Phone Tunnel Ready",
+                        f"Tunnel active: {res['url']}\n\nPairing URL copied to clipboard. Open it on your phone.",
+                    )
+            rebuild()
+
+        _start(dialog, _do_start, _on_started)
+
+    def _copy_phone():
+        st = comp.phone_tunnel_status()
+        live = comp.epsilon_console_token() or token
+        if st.get("active") and live:
+            QApplication.clipboard().setText(f"{comp.EPSILON_CONSOLE_URL}?bridge={st['url']}#k={live}")
+
+    tunnel_btn.clicked.connect(_toggle_tunnel)
+    copy_phone_btn.clicked.connect(_copy_phone)
+    t_row.addWidget(tunnel_btn)
+    t_row.addWidget(copy_phone_btn)
+    t_row.addStretch(1)
+    cl.addLayout(t_row)
+    cl.addWidget(tunnel_lbl)
+
     cl.addWidget(_label(
         "Tip: copy the token into the console if you open it on another browser. "
         "Rotate it if you ever pasted it somewhere you no longer trust."

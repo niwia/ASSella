@@ -13,7 +13,18 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
  *   - otherwise: demo catalog (?demo=1 keeps it on purpose)
  * ------------------------------------------------------------------ */
 
-const BRIDGE_BASE = 'http://127.0.0.1:1952'
+const DEFAULT_BRIDGE_BASE = 'http://127.0.0.1:1952'
+const bridgeBase = ref(DEFAULT_BRIDGE_BASE)
+
+function isValidBridgeUrl(raw) {
+  try {
+    const u = new URL(String(raw || '').trim())
+    if (u.origin === DEFAULT_BRIDGE_BASE) return true
+    return u.protocol === 'https:' && u.hostname.endsWith('.trycloudflare.com')
+  } catch {
+    return false
+  }
+}
 const CACHE_KEY = 'at0m.library'
 const CACHE_VERSION = 2
 const CACHE_MAX = 500
@@ -675,7 +686,7 @@ async function probeBridge({ silent = false } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 5000)
   try {
-    const res = await fetch(`${BRIDGE_BASE}/v1/session`, {
+    const res = await fetch(`${bridgeBase.value}/v1/session`, {
       signal: controller.signal,
       mode: 'cors',
       cache: 'no-store',
@@ -850,7 +861,7 @@ async function bridgeFetch(path, options = {}) {
   if (method !== 'GET') headers['X-At0m-Client'] = '1'
   if (options.body) headers['Content-Type'] = 'application/json'
 
-  const res = await fetch(`${BRIDGE_BASE}${path}`, {
+  const res = await fetch(`${bridgeBase.value}${path}`, {
     ...options,
     method,
     headers,
@@ -1363,6 +1374,54 @@ async function refetch() {
   }
 }
 
+async function installInSteam() {
+  const game = activeGame.value
+  if (!game || !paired.value || registering.value) return
+  registering.value = true
+  try {
+    await bridgeFetch('/v1/steam/install', { method: 'POST', body: JSON.stringify({ appid: game.appId }) })
+    toast('sent to Steam', `Requested Steam install/verify for ${game.title}.`)
+  } catch (error) {
+    toast('Steam install failed', error.message)
+  } finally {
+    registering.value = false
+  }
+}
+
+async function unregisterGame() {
+  const game = activeGame.value
+  if (!game || !paired.value || registering.value) return
+  if (!window.confirm(`Unregister ${game.title} from AT0-M? (Game files on disk are kept.)`)) return
+  registering.value = true
+  try {
+    await bridgeFetch('/v1/unregister', { method: 'POST', body: JSON.stringify({ appid: game.appId }) })
+    toast('unregistered', `${game.title} removed from AT0-M library.`)
+    activeId.value = null
+    await loadLibrary()
+  } catch (error) {
+    toast('unregister failed', error.message)
+  } finally {
+    registering.value = false
+  }
+}
+
+async function uninstallGame() {
+  const game = activeGame.value
+  if (!game || !paired.value || registering.value) return
+  if (!window.confirm(`Uninstall ${game.title}? This sends SLSsteam uninstall|${game.appId} and deletes game files/ACF.`)) return
+  registering.value = true
+  try {
+    await bridgeFetch('/v1/uninstall', { method: 'POST', body: JSON.stringify({ appid: game.appId }) })
+    toast('uninstalled', `${game.title} uninstalled via SLSsteam & AT0-M.`)
+    activeId.value = null
+    await loadLibrary()
+  } catch (error) {
+    toast('uninstall failed', error.message)
+  } finally {
+    registering.value = false
+  }
+}
+
 /* ----------------------------- lifecycle ----------------------------- */
 
 function onDocumentClick(e) {
@@ -1424,8 +1483,31 @@ function cycleLiveTiles() {
 }
 
 onMounted(() => {
-  if (new URLSearchParams(window.location.search).get('demo') === '1') demo.value = true
+  const params = new URLSearchParams(window.location.search)
+  if (params.get('demo') === '1') demo.value = true
   else restoreCache()
+
+  const qParam = params.get('q')
+  if (qParam) query.value = qParam
+
+  const bridgeParam = params.get('bridge')
+  if (bridgeParam && isValidBridgeUrl(bridgeParam)) {
+    bridgeBase.value = bridgeParam.replace(/\/+$/, '')
+    try {
+      localStorage.setItem('at0m.bridge', bridgeBase.value)
+    } catch {
+      /* ignore */
+    }
+  } else {
+    try {
+      const savedBridge = localStorage.getItem('at0m.bridge')
+      if (savedBridge && isValidBridgeUrl(savedBridge)) {
+        bridgeBase.value = savedBridge.replace(/\/+$/, '')
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 
   try {
     const savedAccent = localStorage.getItem('at0m.accent')
@@ -2146,6 +2228,17 @@ watch(query, (value) => {
                       : 'register to at0-m'
                 }}
               </button>
+              <div v-if="activeGame.inLibrary" class="fo-actions-row">
+                <button type="button" class="btn" :disabled="registering || !paired" @click="installInSteam">
+                  install in Steam
+                </button>
+                <button type="button" class="btn" :disabled="registering || !paired" @click="unregisterGame">
+                  unregister
+                </button>
+                <button type="button" class="btn danger" :disabled="registering || !paired" @click="uninstallGame">
+                  uninstall
+                </button>
+              </div>
               <p class="fo-fine">
                 <template v-if="!paired">
                   Pair with Epsilon first — the console never touches
@@ -3867,6 +3960,13 @@ code {
   }
 }
 
+.fo-actions-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+}
+
 /* ------------------------------ responsive ---------------------------- */
 
 @media (max-width: 760px) {
@@ -3915,8 +4015,24 @@ code {
     grid-row: span 2;
   }
   .flyout {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
     width: 100%;
+    max-height: 86vh;
     border-left: 0;
+    border-top: 2px solid var(--accent);
+  }
+  .btn,
+  .fo-actions-row .btn {
+    min-height: 44px;
+  }
+  .fo-actions-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.45rem;
+    margin-top: 0.5rem;
   }
   .appbar-in {
     justify-content: center;
