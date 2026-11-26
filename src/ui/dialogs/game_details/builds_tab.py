@@ -248,8 +248,8 @@ def init_builds_tab(dialog) -> None:
     page_layout.addWidget(dialog.builds_bottom_bar)
 
     try:
-        from core.steamdb_scraper import ByparrManager, cffi_requests
-        has_byparr = ByparrManager.is_available() or bool(cffi_requests)
+        from core.steamdb_scraper import ByparrManager, has_curl_cffi
+        has_byparr = ByparrManager.is_available() or has_curl_cffi()
     except Exception:
         has_byparr = False
     dialog.builds_bottom_bar.setVisible(has_byparr)

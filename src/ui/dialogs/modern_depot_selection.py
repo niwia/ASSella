@@ -1521,7 +1521,8 @@ class ModernDepotSelectionDialog(QDialog):
 
     def _on_dump_finished(self, dump, ok: bool, message: str):
         if not ok or not dump:
-            ThemedMessageBox.critical(self, "Error", message or "Failed to prepare manifest.")
+            if message:
+                ThemedMessageBox.critical(self, "Error", message)
             return
 
         from ui.dialogs.fileselection import FileSelectionDialog

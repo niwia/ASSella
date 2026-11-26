@@ -217,8 +217,8 @@ class GameDetailsDialogV2(QDialog):
         self._builds_fetch_requested = False
 
         try:
-            from core.steamdb_scraper import ByparrManager, cffi_requests
-            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or bool(cffi_requests)
+            from core.steamdb_scraper import ByparrManager, has_curl_cffi
+            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or has_curl_cffi()
         except Exception:
             has_solver = False
 
@@ -548,8 +548,8 @@ class GameDetailsDialogV2(QDialog):
             return
         self._builds_fetch_requested = True
         try:
-            from core.steamdb_scraper import ByparrManager, cffi_requests
-            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or bool(cffi_requests)
+            from core.steamdb_scraper import ByparrManager, has_curl_cffi
+            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or has_curl_cffi()
         except Exception:
             has_solver = False
 

@@ -174,11 +174,35 @@ def is_service_enabled() -> bool:
 
 
 def update_service_status(dialog) -> None:
+    """Refresh the service badges without blocking the GUI thread.
+
+    ``systemctl`` can take up to a couple of seconds, and the poll timer fires
+    every 2s, so probe on a worker thread and apply the result on the main one.
+    """
     if sys.platform == "win32":
         return
+    if getattr(dialog, "_service_status_probe_running", False):
+        return
+    dialog._service_status_probe_running = True
 
-    status = get_service_status()
-    enabled = is_service_enabled()
+    import threading
+
+    from utils.main_thread import post_to_main_thread
+
+    def _probe():
+        status = get_service_status()
+        enabled = is_service_enabled()
+        post_to_main_thread(lambda: _apply_service_status(dialog, status, enabled))
+
+    threading.Thread(target=_probe, daemon=True, name="webui_service_status").start()
+
+
+def _apply_service_status(dialog, status: str, enabled: bool) -> None:
+    from PyQt6 import sip
+
+    dialog._service_status_probe_running = False
+    if sip.isdeleted(dialog):
+        return
 
     if status == "running":
         dialog.service_status_label.setText("Background Service: <font color='#44cc44'>Active (Running)</font>")

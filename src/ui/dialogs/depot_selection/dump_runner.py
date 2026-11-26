@@ -15,6 +15,7 @@ the key file is cleaned up on failure.
 import logging
 import os
 import subprocess
+import threading
 from typing import Optional
 
 from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
@@ -39,6 +40,8 @@ class _DumpThread(QThread):
         self._app_id = app_id
         self._depot_id = depot_id
         self._manifest_id = manifest_id
+        self._proc = None
+        self._cancel_event = threading.Event()
 
     def run(self):
         proxy_mgr = None
@@ -70,7 +73,29 @@ class _DumpThread(QThread):
                 proxy_mgr = None
 
             env = get_dotnet_env()
-            subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            if self._cancel_event.is_set():
+                try:
+                    self._proc.terminate()
+                except Exception:
+                    pass
+            _, stderr_out = self._proc.communicate()
+
+            if self._cancel_event.is_set():
+                if dump and hasattr(dump, "keys_path"):
+                    discard_keys_file(dump.keys_path)
+                self.finished_signal.emit(False, "", None)
+                return
+
+            if self._proc.returncode != 0:
+                detail = (stderr_out or "").strip() or f"DepotDownloader exited with code {self._proc.returncode}"
+                raise RuntimeError(detail)
 
             if not os.path.exists(dump.txt_path):
                 discard_keys_file(dump.keys_path)
@@ -83,12 +108,23 @@ class _DumpThread(QThread):
                 discard_keys_file(dump.keys_path)
             self.finished_signal.emit(False, f"Failed to load file list: {ex}", None)
         finally:
+            self._proc = None
             mgr, proxy_mgr = proxy_mgr, None
             if mgr is not None:
                 try:
                     mgr.stop()
                 except Exception as e:
                     logger.debug(f"[DumpRunner] Error stopping stealth proxy manager: {e}")
+
+    def cancel(self):
+        """Terminate the running DepotDownloader, if any (safe from the GUI thread)."""
+        self._cancel_event.set()
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception as e:
+                logger.debug(f"[DumpRunner] Error terminating DepotDownloader: {e}")
 
 
 class ManifestDumpRunner(QObject):
@@ -132,6 +168,7 @@ class ManifestDumpRunner(QObject):
             parent=self,
         )
         thread.finished_signal.connect(self._on_thread_finished)
+        progress.canceled.connect(thread.cancel)
         self._thread = thread
         thread.start()
 
@@ -153,4 +190,6 @@ class ManifestDumpRunner(QObject):
 
         if message and dump and hasattr(dump, "keys_path"):
             discard_keys_file(dump.keys_path)
-        self.finished.emit(not message, message)
+        # ok is False on both failure and cancel; a cancel arrives with an empty
+        # message so callers can stay silent instead of showing an error dialog.
+        self.finished.emit(bool(ok) and not message, message)

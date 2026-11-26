@@ -77,13 +77,25 @@ def main() -> int:
     calls = []
     failures = []
 
-    def fake_run(cmd, **kwargs):
+    def fake_popen(cmd, **kwargs):
         calls.append(cmd)
-        if failures:
-            raise RuntimeError(failures.pop(0))
-        return subprocess.CompletedProcess(cmd, 0)
+        fail_msg = failures.pop(0) if failures else None
 
-    subprocess.run = fake_run
+        class _FakeProc:
+            def __init__(self):
+                self.args = cmd
+                self.returncode = 1 if fail_msg is not None else 0
+                self._stderr = fail_msg or ""
+
+            def communicate(self, *args, **kwargs):
+                return ("", self._stderr)
+
+            def terminate(self):
+                self.returncode = -15
+
+        return _FakeProc()
+
+    subprocess.Popen = fake_popen
 
     def drive(dump, timeout=10.0):
         parent = QWidget()

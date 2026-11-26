@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
@@ -44,11 +44,14 @@ class Batch2FixesTests(unittest.TestCase):
         morrenus_api._cached_health_check = None
         morrenus_api._contents_cache.clear()
 
-        with tempfile.TemporaryDirectory() as tmp_home, patch.dict(
-            os.environ,
-            {"HOME": tmp_home, "XDG_DATA_HOME": tmp_home, "XDG_CONFIG_HOME": tmp_home},
-            clear=False,
-        ), patch.object(morrenus_api, "_make_json_request", return_value={"error": "offline"}) as mock_req, patch(
+        # Inject a fake settings so the test does not depend on a QSettings
+        # singleton bound to the real HOME (order-independent).
+        fake_settings = MagicMock()
+        fake_settings.value.return_value = None
+
+        with patch.object(morrenus_api, "get_settings", return_value=fake_settings), patch.object(
+            morrenus_api, "_make_json_request", return_value={"error": "offline"}
+        ) as mock_req, patch(
             "utils.isp_bypass.execute_hubcap_request", side_effect=RuntimeError("offline")
         ) as mock_health_req:
             r1 = morrenus_api.get_user_stats()

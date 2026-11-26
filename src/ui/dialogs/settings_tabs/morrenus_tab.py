@@ -635,22 +635,60 @@ def create_morrenus_tab(dialog) -> QWidget:
         }
     """)
 
-    def _update_byparr_ui():
-        if ByparrManager.is_custom_service():
-            url = ByparrManager.get_service_url()
-            running = ByparrManager.is_running()
+    _byparr_ui_gen = 0
+
+    def _apply_byparr_badge(kind, url, running):
+        if kind == "custom":
             stat_text = "Online" if running else "Configured"
             color = "#81C784" if running else "#FFB74D"
             byparr_status_badge.setText(f"Custom Bypasser ({stat_text}: {url})")
             byparr_status_badge.setStyleSheet(f"color: {color}; font-size: 8.5pt; font-weight: bold;")
             btn_toggle_local.setText("Enable Byparr")
+        else:  # local managed
+            stat_text = "Online" if running else "Ready on Demand"
+            byparr_status_badge.setText(f"Local Managed ({stat_text})")
+            byparr_status_badge.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: bold;")
+            btn_toggle_local.setText("Disable Byparr")
+
+    def _probe_byparr_running(kind, url):
+        # is_running() opens a TCP socket; probe off the GUI thread.
+        nonlocal _byparr_ui_gen
+        _byparr_ui_gen += 1
+        gen = _byparr_ui_gen
+
+        import threading
+
+        from utils.main_thread import post_to_main_thread
+
+        def _worker():
+            try:
+                running = bool(ByparrManager.is_running())
+            except Exception as e:
+                logger.debug(f"[ByparrConfig] is_running probe failed: {e}")
+                running = False
+
+            def _apply():
+                if gen != _byparr_ui_gen:
+                    return
+                try:
+                    from PyQt6 import sip
+
+                    if sip.isdeleted(dialog):
+                        return
+                except Exception:
+                    pass
+                _apply_byparr_badge(kind, url, running)
+
+            post_to_main_thread(_apply)
+
+        threading.Thread(target=_worker, daemon=True, name="byparr_is_running_probe").start()
+
+    def _update_byparr_ui():
+        if ByparrManager.is_custom_service():
+            _probe_byparr_running("custom", ByparrManager.get_service_url())
         elif ByparrManager.find_byparr_dir():
             if ByparrManager.is_local_enabled():
-                running = ByparrManager.is_running()
-                stat_text = "Online" if running else "Ready on Demand"
-                byparr_status_badge.setText(f"Local Managed ({stat_text})")
-                byparr_status_badge.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: bold;")
-                btn_toggle_local.setText("Disable Byparr")
+                _probe_byparr_running("local", "")
             else:
                 byparr_status_badge.setText("Local Managed (Disabled)")
                 byparr_status_badge.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 8.5pt; font-weight: bold;")

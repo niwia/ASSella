@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -24,6 +25,9 @@ SETTING_KEY = "steam_store_enabled"
 CEF_PORTS = (8080, 8081, 8082)
 STORE_HOST = "store.steampowered.com"
 CEF_SENTINEL_FILENAME = ".cef-enable-remote-debugging"
+
+_DECKY_RUNNING_TTL = 5.0
+_decky_running_cache: Tuple[float, bool] = (0.0, False)
 
 
 def shared_settings_path() -> Path:
@@ -104,9 +108,20 @@ def set_cef_sentinel_enabled(enabled: bool) -> Tuple[bool, str]:
 # --------------------------------------------------------------- Uran gate
 
 def is_decky_running() -> bool:
-    """Fast /proc check to see if Decky Loader (PluginLoader) is currently running."""
+    """Fast /proc check to see if Decky Loader (PluginLoader) is currently running.
+
+    Cached briefly: callers such as is_uran_managing_store() run from the
+    settings UI, and a full /proc walk on every call freezes the GUI thread.
+    """
+    global _decky_running_cache
     if sys.platform != "linux":
         return False
+    now = time.monotonic()
+    cached_at, cached_val = _decky_running_cache
+    if now - cached_at < _DECKY_RUNNING_TTL:
+        return cached_val
+
+    result = False
     try:
         for pid in os.listdir("/proc"):
             if not pid.isdigit():
@@ -114,13 +129,16 @@ def is_decky_running() -> bool:
             try:
                 comm = (Path("/proc") / pid / "comm").read_text(encoding="utf-8", errors="ignore").strip()
                 if comm == "PluginLoader":
-                    return True
+                    result = True
+                    break
             except OSError as e:
                 logger.debug("[store_patch] /proc/%s/comm read skipped: %s", pid, e)
                 continue
     except OSError as e:
         logger.debug("[store_patch] /proc scan failed: %s", e)
-    return False
+
+    _decky_running_cache = (now, result)
+    return result
 
 
 def is_uran_managing_store() -> bool:

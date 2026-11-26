@@ -70,6 +70,25 @@ class _LazyModule:
 
 cffi_requests = _LazyModule("curl_cffi.requests")
 
+_curl_cffi_available: Optional[bool] = None
+
+
+def has_curl_cffi() -> bool:
+    """True if curl_cffi is installed, without importing it.
+
+    Safe to call on the GUI thread. ``bool(cffi_requests)`` forces the lazy
+    import (up to ~1s on a cold start); ``find_spec`` only probes the loader.
+    """
+    global _curl_cffi_available
+    if _curl_cffi_available is None:
+        try:
+            import importlib.util
+
+            _curl_cffi_available = importlib.util.find_spec("curl_cffi") is not None
+        except Exception:
+            _curl_cffi_available = False
+    return _curl_cffi_available
+
 
 def BeautifulSoup(*args, **kwargs):  # noqa: N802 - keeps the bs4 name for callers
     from bs4 import BeautifulSoup as _BeautifulSoup
