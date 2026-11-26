@@ -297,7 +297,10 @@ def search_games(
 
 _last_user_stats_fetch: float = 0.0
 _last_generate_usage_fetch: float = 0.0
+_user_stats_backoff_until: float = 0.0
+_generate_usage_backoff_until: float = 0.0
 _STATS_CACHE_TTL: float = 300.0  # 5-minute (300s) interval between API calls when online to avoid rate limits
+_STATS_ERROR_BACKOFF: float = 60.0
 
 
 def is_stats_cache_from_previous_utc_day(cached_stats: Any) -> bool:
@@ -443,13 +446,13 @@ def compute_api_key_expiry_info(
 
 def get_user_stats(force: bool = False) -> Dict:
     """Retrieves user statistics with cached fallback on network timeout or rate limit."""
-    global _last_user_stats_fetch
+    global _last_user_stats_fetch, _user_stats_backoff_until
     settings = get_settings()
     cached = settings.value("last_cached_user_stats", None)
 
     now = time.time()
     cache_day_expired = is_stats_cache_from_previous_utc_day(cached)
-    if not force and now < _last_user_stats_fetch:
+    if not force and now < _user_stats_backoff_until:
         logger.debug("[Hubcap] User stats in failure backoff")
         return cached if isinstance(cached, dict) and cached else {"error": "Hubcap rate-limited / offline (backoff)"}
     if not force and not cache_day_expired and cached and (now - _last_user_stats_fetch < _STATS_CACHE_TTL):
@@ -461,6 +464,7 @@ def get_user_stats(force: bool = False) -> Dict:
     res = _make_json_request("GET", "/user/stats", params={"api_key": api_key})
     if isinstance(res, dict) and "error" not in res and res:
         _last_user_stats_fetch = now
+        _user_stats_backoff_until = 0.0
         settings.setValue("last_cached_user_stats", res)
         # Mark health check cache as healthy too since user stats succeeded
         global _last_health_check_time, _cached_health_check
@@ -468,8 +472,8 @@ def get_user_stats(force: bool = False) -> Dict:
         _cached_health_check = {"status": "healthy", "source": "user_stats"}
         return res
 
-    # On rate limit (429) or error, back off for 120s
-    _last_user_stats_fetch = now + 60.0
+    # On rate limit (429) or error, back off for _STATS_ERROR_BACKOFF seconds
+    _user_stats_backoff_until = now + _STATS_ERROR_BACKOFF
     if isinstance(cached, dict) and cached:
         logger.info("Using cached user stats due to network request error / rate limit")
         if cache_day_expired:
@@ -482,12 +486,12 @@ def get_user_stats(force: bool = False) -> Dict:
 
 def get_generate_usage(force: bool = False) -> Dict:
     """Retrieves cloud generation API quotas and usage limits from /generate/usage."""
-    global _last_generate_usage_fetch
+    global _last_generate_usage_fetch, _generate_usage_backoff_until
     settings = get_settings()
     cached = settings.value("last_cached_generate_usage", None)
 
     now = time.time()
-    if not force and now < _last_generate_usage_fetch:
+    if not force and now < _generate_usage_backoff_until:
         logger.debug("[Hubcap] Generate usage in failure backoff")
         return cached if isinstance(cached, dict) and cached else {"error": "Hubcap rate-limited / offline (backoff)"}
     if not force and cached and (now - _last_generate_usage_fetch < _STATS_CACHE_TTL):
@@ -498,10 +502,11 @@ def get_generate_usage(force: bool = False) -> Dict:
     res = _make_json_request("GET", "/generate/usage")
     if isinstance(res, dict) and "error" not in res and res:
         _last_generate_usage_fetch = now
+        _generate_usage_backoff_until = 0.0
         settings.setValue("last_cached_generate_usage", res)
         return res
 
-    _last_generate_usage_fetch = now + 60.0
+    _generate_usage_backoff_until = now + _STATS_ERROR_BACKOFF
     if isinstance(cached, dict) and cached:
         logger.info("Using cached generation usage stats due to network request error / rate limit")
         return cached

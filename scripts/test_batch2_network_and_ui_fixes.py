@@ -36,12 +36,12 @@ class Batch2FixesTests(unittest.TestCase):
     def test_morrenus_negative_caching(self):
         from core import morrenus_api
 
-        morrenus_api._stats_cache = None
-        morrenus_api._last_stats_fetch = 0.0
-        morrenus_api._usage_cache = None
-        morrenus_api._last_usage_fetch = 0.0
-        morrenus_api._health_cache = None
-        morrenus_api._last_health_fetch = 0.0
+        morrenus_api._last_user_stats_fetch = 0.0
+        morrenus_api._last_generate_usage_fetch = 0.0
+        morrenus_api._user_stats_backoff_until = 0.0
+        morrenus_api._generate_usage_backoff_until = 0.0
+        morrenus_api._last_health_check_time = 0.0
+        morrenus_api._cached_health_check = None
         morrenus_api._contents_cache.clear()
 
         with tempfile.TemporaryDirectory() as tmp_home, patch.dict(

@@ -819,6 +819,7 @@ class PostInstallMixin:
                     f.write(entry_line + "\n")
         except OSError as e:
             logger.error(f"Failed to save depot info: {e}")
+
     def _is_native_steam_download(self) -> bool:
         try:
             from core.tasks.native_steam_download_task import NativeSteamDownloadTask

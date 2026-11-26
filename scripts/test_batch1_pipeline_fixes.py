@@ -58,6 +58,24 @@ class TestBatch1PipelineFixes(unittest.TestCase):
         self.assertTrue(tm._job_failed)
         tm.job_finished.assert_called_once()
 
+    def test_task_manager_interrupted_error_tuple_suppresses_critical_dialog(self):
+        from managers.task_manager import TaskManager
+
+        tm = TaskManager.__new__(TaskManager)
+        tm.is_processing = True
+        tm.is_cancelling = False
+        tm._job_failed = False
+        tm._error_reported_for_job = False
+        tm.main_window = MagicMock()
+        tm.job_finished = MagicMock()
+
+        with patch("managers.task_manager.ThemedMessageBox.critical") as mock_crit:
+            tm._handle_task_error((InterruptedError, "Download cancelled due to stealth connection failure.", None))
+            mock_crit.assert_not_called()
+        self.assertTrue(tm.is_cancelling)
+        self.assertTrue(tm._job_failed)
+        tm.job_finished.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

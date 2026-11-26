@@ -1929,8 +1929,10 @@ class TaskManager(
         self._error_reported_for_job = True
         self._job_failed = True
 
-        _, error_value, _ = error_info
-        if isinstance(error_value, InterruptedError):
+        error_type, error_value, _ = error_info
+        if (
+            isinstance(error_type, type) and issubclass(error_type, InterruptedError)
+        ) or isinstance(error_value, InterruptedError):
             self.is_cancelling = True
             self._job_failed = True
             self.job_finished()
