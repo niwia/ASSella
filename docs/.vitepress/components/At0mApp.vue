@@ -673,7 +673,7 @@ async function probeBridge({ silent = false } = {}) {
     bridgeOpen.value = true
   }
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 2500)
+  const timer = setTimeout(() => controller.abort(), 5000)
   try {
     const res = await fetch(`${BRIDGE_BASE}/v1/session`, {
       signal: controller.signal,
@@ -689,22 +689,33 @@ async function probeBridge({ silent = false } = {}) {
 
     if (paired.value) {
       const count = body.library_count ?? 0
-      toast('console paired', `epsilon ${bridgeVersion.value} · ${count} ${count === 1 ? 'game' : 'games'}`)
+      const slsNote = body.sls_active === false ? ' · SLSsteam inactive' : ''
+      toast('console paired', `epsilon ${bridgeVersion.value} · ${count} ${count === 1 ? 'game' : 'games'}${slsNote}`)
       await Promise.all([loadLibrary(), loadHubcap(), loadSettings(), loadStore()])
     } else if (res.status === 401) {
       toast('bridge found', 'Paste the console token from ASSella → Companions → Epsilon.')
+    } else if (res.status === 429) {
+      const retry = res.headers.get('Retry-After') || '60'
+      toast('rate limited', `Too many failed token attempts — retry in ${retry}s.`)
     } else if (res.status === 404) {
       toast('epsilon needs an update', 'This build has no console API yet — update or restart it.')
     } else {
       toast('bridge refused', `Epsilon replied ${res.status}. Restart it so it accepts this page.`)
     }
-  } catch {
+  } catch (err) {
     bridge.value = false
     paired.value = false
     probed.value = true
     bridgeVersion.value = ''
     if (!silent) {
-      toast('bridge not reachable', 'Epsilon is not running on 127.0.0.1:1952 — export instead.')
+      if (err && err.name === 'AbortError') {
+        toast('bridge timed out', 'Epsilon took too long to wake up on 127.0.0.1:1952 — try again.')
+      } else {
+        toast(
+          'bridge not reachable',
+          'Epsilon is not running on 127.0.0.1:1952 (or browser Shields / Private Network Access blocked localhost).'
+        )
+      }
     }
   } finally {
     clearTimeout(timer)
@@ -994,7 +1005,7 @@ async function loadStore() {
 function storeCefLabel() {
   const cef = store.value?.cef
   if (!cef) return 'unknown'
-  if (!cef.available) return 'no debug port'
+  if (!cef.available) return cef.sentinel ? 'sentinel set · restart Steam' : 'CEF debugging disabled'
   if (!cef.store_tab) return `port ${cef.port} · open the store page`
   return `port ${cef.port} · store page detected`
 }
@@ -1273,14 +1284,16 @@ async function register(games) {
 
   registering.value = true
   let added = 0
+  let fetching = false
   let failure = ''
   for (const game of list) {
     try {
       // Hubcap is only touched here, inside Epsilon, when registering.
-      await bridgeFetch('/v1/register', {
+      const res = await bridgeFetch('/v1/register', {
         method: 'POST',
         body: JSON.stringify({ appid: game.appId })
       })
+      if (res && res.fetching) fetching = true
       added += 1
     } catch (error) {
       failure = failure || `${game.title}: ${error.message}`
@@ -1291,7 +1304,9 @@ async function register(games) {
   if (added) {
     toast(
       `registered ${added} ${added === 1 ? 'title' : 'titles'}`,
-      'Epsilon resolved keys and updated config.yaml — Steam picks it up on the next scan.'
+      fetching
+        ? 'Resolving Hubcap manifests & keys in the background…'
+        : 'Epsilon resolved keys and updated config.yaml — Steam picks it up on the next scan.'
     )
     query.value = ''
     clearSelection()
@@ -1302,6 +1317,20 @@ async function register(games) {
     const fresh = library.value.find((g) => g.appId === list[0].appId)
     if (fresh) {
       await loadDetail(fresh, true)
+      if (fetching) {
+        const pollAppId = fresh.appId
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          await new Promise((r) => setTimeout(r, 2000))
+          if (!paired.value) break
+          const st = await bridgeFetch(`/v1/app/${pollAppId}`).catch(() => null)
+          if (st?.inject_status?.done) {
+            await loadLibrary()
+            const updated = library.value.find((g) => g.appId === pollAppId)
+            if (updated) await loadDetail(updated, true)
+            break
+          }
+        }
+      }
       const missing = fresh.depots.filter((d) => !d.hasKey).length
       if (missing) {
         toast(
