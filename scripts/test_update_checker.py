@@ -940,14 +940,14 @@ class TestBranchAndPrereleaseAwareness(UpdateCheckerTestCase):
 
 class TestBuildDateHelpers(unittest.TestCase):
     def test_default_build_date(self):
-        self.assertEqual(version_mod.BUILD_DATE, "2026-11-22")
-        self.assertTrue(version_mod.BUILD_TIMESTAMP.startswith("2026-11-22T"))
-        self.assertEqual(get_build_date(), "2026-11-22")
+        self.assertEqual(version_mod.BUILD_DATE, "2026-11-26")
+        self.assertTrue(version_mod.BUILD_TIMESTAMP.startswith("2026-11-26T"))
+        self.assertEqual(get_build_date(), "2026-11-26")
         self.assertEqual(version_mod.get_build_timestamp(), version_mod.BUILD_TIMESTAMP)
-        self.assertEqual(get_build_date_display(), "22/11/2026")
+        self.assertEqual(get_build_date_display(), "26/11/2026")
 
     def test_version_file_matches_the_release(self):
-        self.assertEqual(app_version, "3.2.0beta1")
+        self.assertEqual(app_version, "3.2.0beta2")
 
     def test_build_stamp_in_version_file_wins(self):
         """A dated build ('20261024+ASSella-3.0.1') carries its own build date."""
