@@ -83,8 +83,8 @@ class _DumpThread(QThread):
             if self._cancel_event.is_set():
                 try:
                     self._proc.terminate()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[DumpRunner] Error terminating cancelled DepotDownloader: {e}")
             _, stderr_out = self._proc.communicate()
 
             if self._cancel_event.is_set():

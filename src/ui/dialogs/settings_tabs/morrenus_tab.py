@@ -675,8 +675,8 @@ def create_morrenus_tab(dialog) -> QWidget:
 
                     if sip.isdeleted(dialog):
                         return
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[ByparrConfig] sip.isdeleted check skipped: {e}")
                 _apply_byparr_badge(kind, url, running)
 
             post_to_main_thread(_apply)
