@@ -677,6 +677,21 @@ class FetchManifestDialog(QDialog):
             overlay._center_on_parent()
 
     def _request_api_status_update(self):
+        from core.manifest_provider import (
+            Capability,
+            active_provider_id,
+            active_provider_supports,
+            get_cached_health,
+        )
+
+        cached_health = get_cached_health(active_provider_id())
+        has_stats = active_provider_supports(Capability.ACCOUNT_STATS)
+        cached_stats = _get_cached_stats() if has_stats else {}
+
+        if cached_health is not None and (not has_stats or (cached_stats and not cached_stats.get("error"))):
+            self._apply_api_status({"health": cached_health, "stats": cached_stats})
+            return
+
         self.top_spinner.setVisible(True)
         self.api_status_dot.setVisible(False)
         worker = self.status_task_runner.run(self._fetch_api_status)
@@ -686,7 +701,12 @@ class FetchManifestDialog(QDialog):
     @staticmethod
     def _fetch_api_status():
         """Worker: Fetch health and user stats."""
+        from core.manifest_provider import Capability, active_provider_supports
+
         health = morrenus_api.check_health()
+
+        if not active_provider_supports(Capability.ACCOUNT_STATS):
+            return {"health": health, "stats": {}}
 
         stats = _get_cached_stats()
         if not stats or stats.get("error"):
@@ -1276,7 +1296,7 @@ class FetchManifestDialog(QDialog):
             if ok and branch_choice:
                 selected_branch = branch_choice
                 prov_label = getattr(self, "_provider_full", "provider")
-                self._show_loading_overlay(f"Downloading manifests from {prov_label}...")
+                self._show_loading_overlay(f"Preparing '{selected_branch}' branch from {prov_label}...")
             else:
                 self._dismiss_loading_overlay()
                 self.status_label.setText("Fetch cancelled.")
@@ -1284,7 +1304,7 @@ class FetchManifestDialog(QDialog):
                 return
         else:
             prov_label = getattr(self, "_provider_full", "provider")
-            self._update_loading_overlay(f"Downloading manifests from {prov_label}...")
+            self._update_loading_overlay(f"Preparing manifest bundle from {prov_label}...")
 
         self._discovered_branches = branches or {"public": {}}
         self._current_selected_branch = selected_branch
@@ -1419,9 +1439,17 @@ class FetchManifestDialog(QDialog):
             self._async_pending = True
             self._toggle_inputs(False)
             self._set_loading_active(True)
-            self._show_loading_overlay(f"Checking {prov_full} for {name}...")
+            self._show_loading_overlay(f"Querying {prov_full} for {name}...")
 
             def _preflight_worker():
+                from utils.main_thread import post_to_main_thread
+                if prov_id == "luatools":
+                    post_to_main_thread(
+                        lambda: self._update_loading_overlay(f"Probing {prov_full} availability for {name}...")
+                    )
+                post_to_main_thread(
+                    lambda: self._update_loading_overlay(f"Downloading manifest bundle from {prov_full}...")
+                )
                 res_tuple, _, _ = verify_or_download_manifest(aid_str, branch="public")
                 return res_tuple
 
@@ -1735,7 +1763,7 @@ class FetchManifestDialog(QDialog):
         self._async_pending = True
         self._toggle_inputs(False)
         self._set_loading_active(True)
-        self._show_loading_overlay(f"Checking branches for {name}...")
+        self._show_loading_overlay(f"Fetching Steam branches for {name}...")
         worker = self.task_runner.run(self._fetch_branches_and_prompt, aid_str)
         worker.finished.connect(self._on_branches_fetched)
         worker.error.connect(self.on_task_error)

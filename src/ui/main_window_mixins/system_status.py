@@ -100,32 +100,44 @@ class MainWindowSystemStatusMixin:
             if not st_enabled:
                 self.stealth_status_value.setText("Inactive")
                 self.stealth_status_value.setStyleSheet(self._get_status_style("neutral"))
+                self.stealth_status_value.setToolTip("Stealth proxy is disabled. Click to configure.")
             else:
-                rotation = st_settings.value("stealth_rotation_enabled", False, type=bool)
-                if rotation:
-                    from utils.kuroko import StealthPoolManager
-                    candidates = StealthPoolManager.get_pool_candidates(st_settings)
-                    st_label = f"Pool ({len(candidates)})" if candidates else "Pool (Empty)"
+                from utils.kuroko import StealthPoolManager, get_stealth_warmup_state
+                warm_state = get_stealth_warmup_state()
+                if warm_state == "warming":
+                    self.stealth_status_value.setText("Warming...")
+                    self.stealth_status_value.setStyleSheet(self._get_status_style("warning"))
+                    self.stealth_status_value.setToolTip("Stealth proxy is warming up in the background...")
+                elif warm_state == "offline":
+                    self.stealth_status_value.setText("Offline")
+                    self.stealth_status_value.setStyleSheet(self._get_status_style("error"))
+                    self.stealth_status_value.setToolTip("Stealth proxy failed to connect. Requests will fall back to direct.")
                 else:
-                    mode = st_settings.value("stealth_proxy_mode", "warp", type=str).lower().strip()
-                    if mode == "warp":
-                        st_label = "WARP"
-                    elif mode == "wireguard":
-                        st_label = "WireGuard"
-                    elif mode == "custom":
-                        custom_url = st_settings.value("stealth_proxy_custom_url", "", type=str).strip().lower()
-                        if custom_url.startswith("socks5"):
-                            st_label = "SOCKS5"
-                        elif custom_url.startswith("https://"):
-                            st_label = "HTTPS"
-                        elif custom_url.startswith("http://"):
-                            st_label = "HTTP"
+                    rotation = st_settings.value("stealth_rotation_enabled", False, type=bool)
+                    if rotation:
+                        candidates = StealthPoolManager.get_pool_candidates(st_settings)
+                        st_label = f"Pool ({len(candidates)})" if candidates else "Pool (Empty)"
+                    else:
+                        mode = st_settings.value("stealth_proxy_mode", "warp", type=str).lower().strip()
+                        if mode == "warp":
+                            st_label = "WARP"
+                        elif mode == "wireguard":
+                            st_label = "WireGuard"
+                        elif mode == "custom":
+                            custom_url = st_settings.value("stealth_proxy_custom_url", "", type=str).strip().lower()
+                            if custom_url.startswith("socks5"):
+                                st_label = "SOCKS5"
+                            elif custom_url.startswith("https://"):
+                                st_label = "HTTPS"
+                            elif custom_url.startswith("http://"):
+                                st_label = "HTTP"
+                            else:
+                                st_label = "Active"
                         else:
                             st_label = "Active"
-                    else:
-                        st_label = "Active"
-                self.stealth_status_value.setText(st_label)
-                self.stealth_status_value.setStyleSheet(self._get_status_style("success"))
+                    self.stealth_status_value.setText(st_label)
+                    self.stealth_status_value.setStyleSheet(self._get_status_style("success"))
+                    self.stealth_status_value.setToolTip(f"Stealth proxy active ({st_label}). Click to configure.")
 
         if hasattr(self, "steam_updates_value") and self.steam_updates_value:
             blocked = self.check_steam_updates_blocked()

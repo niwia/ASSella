@@ -65,12 +65,10 @@ def run_connection_check(force: bool = False, provider_id: str = "hubcap") -> Tu
             prov_mode = configured_mode.capitalize() if configured_mode in ("direct", "doh", "tor", "wire") else "Online"
     else:
         try:
-            from core.providers.registry import get as get_provider
-            prov = get_provider(prov_id)
-            if prov is not None:
-                health = prov.check_health(force=force)
-                prov_ok = health.get("status") == "healthy"
-                prov_mode = "Direct" if prov_ok else "Offline"
+            from core.manifest_provider import check_health
+            health = check_health(force=force)
+            prov_ok = health.get("status") == "healthy"
+            prov_mode = "Direct" if prov_ok else "Offline"
         except Exception as e:
             logger.debug(f"Provider '{prov_id}' health check failed: {e}")
 

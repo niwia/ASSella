@@ -502,13 +502,40 @@ def get_all_hubcap_stats(force: bool = False) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
+_HEALTH_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_HEALTH_OK_TTL = 300.0
+_HEALTH_ERR_TTL = 60.0
+
+
+def get_cached_health(provider_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Return cached health dict for provider_id if still within TTL, else None."""
+    import time
+    pid = (provider_id or active_provider_id() or "hubcap").strip().lower()
+    entry = _HEALTH_CACHE.get(pid)
+    if not entry:
+        return None
+    ts, payload = entry
+    ttl = _HEALTH_OK_TTL if payload.get("status") == "healthy" else _HEALTH_ERR_TTL
+    if (time.time() - ts) < ttl:
+        return dict(payload)
+    return None
+
+
 def check_health(force: bool = False) -> Dict[str, Any]:
+    import time
+    pid = active_provider_id() or "hubcap"
+    if not force:
+        cached = get_cached_health(pid)
+        if cached is not None:
+            return cached
     try:
-        return _first(Capability.HEALTH, _BUNDLE_ORDER, "check_health", force=force) or {}
+        res = _first(Capability.HEALTH, _BUNDLE_ORDER, "check_health", force=force) or {"status": "unknown"}
     except CapabilityNotSupported:
-        return {"status": "unknown"}
+        res = {"status": "unknown"}
     except Exception as e:
-        return {"status": "unhealthy", "error": str(e)}
+        res = {"status": "unhealthy", "error": str(e)}
+    _HEALTH_CACHE[pid] = (time.time(), dict(res))
+    return res
 
 
 def mark_hubcap_manifest_used() -> None:

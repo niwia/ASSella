@@ -42,6 +42,7 @@ from .pool import (
     is_network_or_proxy_error,
     prompt_stealth_fallback,
     resolve_stealth_proxy_url,
+    get_stealth_warmup_state,
     stealth_http_request,
     warmup_stealth_proxy_async,
 )

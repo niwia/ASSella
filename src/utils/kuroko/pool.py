@@ -616,23 +616,61 @@ def prompt_stealth_fallback(error_message: str) -> StealthChoice:
     return StealthChoice(choice[0])
 
 
-def warmup_stealth_proxy_async() -> None:
+_stealth_warmup_state: str = "idle"  # "idle" | "warming" | "ready" | "offline"
+
+
+def get_stealth_warmup_state() -> str:
+    """Return the current Stealth proxy warmup state ('idle', 'warming', 'ready', 'offline')."""
+    try:
+        from .tunnel import get_kuroko
+        if get_kuroko().is_running:
+            return "ready"
+    except Exception as e:
+        logger.debug(f"[Stealth] Could not read tunnel running state: {e}")
+    return _stealth_warmup_state
+
+
+def warmup_stealth_proxy_async(on_state_changed=None) -> None:
     """Pre-warm the Stealth proxy (WARP / WireGuard / Custom) on startup if enabled."""
+    global _stealth_warmup_state
     try:
         from utils.settings import get_settings
         if not get_settings().value("enable_stealth_proxy", False, type=bool):
+            _stealth_warmup_state = "idle"
             return
     except Exception as e:
         logger.debug(f"[Stealth] Settings check failed during warmup: {e}")
         return
 
+    _stealth_warmup_state = "warming"
+    if on_state_changed:
+        try:
+            on_state_changed()
+        except Exception as e:
+            logger.debug(f"[Stealth] State callback error: {e}")
+
+    def _notify():
+        if on_state_changed:
+            try:
+                from utils.main_thread import post_to_main_thread
+                post_to_main_thread(on_state_changed)
+            except Exception as e:
+                logger.debug(f"[Stealth] State callback dispatch error: {e}")
+
     def _warmup():
+        global _stealth_warmup_state
         try:
             url, _ = resolve_stealth_proxy_url()
             if url:
+                _stealth_warmup_state = "ready"
                 logger.info(f"[Stealth] Pre-warmed stealth proxy at {url}")
+            else:
+                _stealth_warmup_state = "offline"
         except Exception as e:
+            _stealth_warmup_state = "offline"
             logger.debug(f"[Stealth] Pre-warm skipped or failed: {e}")
+        finally:
+            _notify()
 
     threading.Thread(target=_warmup, name="kuroko-warmup", daemon=True).start()
 
@@ -657,7 +695,12 @@ def stealth_http_request(
         from utils.settings import get_settings
         s = get_settings()
         if s.value("enable_stealth_proxy", False, type=bool):
-            proxy_url, _ = resolve_stealth_proxy_url(s)
+            from .tunnel import get_kuroko
+            shared = get_kuroko()
+            if shared.is_running and shared.proxy_url:
+                proxy_url = shared.proxy_url
+            else:
+                proxy_url, _ = resolve_stealth_proxy_url(s)
     except Exception as e:
         logger.debug(f"[Stealth] Could not resolve stealth proxy: {e}")
 
@@ -709,6 +752,7 @@ __all__ = [
     "is_network_or_proxy_error",
     "prompt_stealth_fallback",
     "resolve_stealth_proxy_url",
+    "get_stealth_warmup_state",
     "stealth_http_request",
     "warmup_stealth_proxy_async",
 ]

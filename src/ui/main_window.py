@@ -686,12 +686,12 @@ class MainWindow(
             threading.Thread(target=_sync_hubcap_key, name="hubcap-key-sync", daemon=True).start()
 
         # Initial stats fetch & optional Stealth proxy warm-up
-        self.refresh_hubcap_stats()
         try:
             from utils.kuroko import warmup_stealth_proxy_async
-            warmup_stealth_proxy_async()
+            warmup_stealth_proxy_async(on_state_changed=self.refresh_system_status)
         except Exception as e:
             logger.debug(f"[MainWindow] Stealth warmup skipped: {e}")
+        self.refresh_hubcap_stats()
 
         self.game_manager.scan_steam_libraries_async()
 
