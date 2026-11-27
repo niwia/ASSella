@@ -13,10 +13,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/niwia/ASSella/releases"><img src="https://img.shields.io/github/v/release/niwia/ASSella?include_prereleases&label=beta&color=orange" alt="Beta Release"></a>
+  <a href="https://github.com/niwia/ASSella/releases"><img src="https://img.shields.io/github/v/release/niwia/ASSella?include_prereleases=true&label=beta&color=orange" alt="Beta Release"></a>
   <a href="https://github.com/niwia/ASSella/releases/latest"><img src="https://img.shields.io/github/v/release/niwia/ASSella?label=stable&color=brightgreen" alt="Stable Release"></a>
   <a href="https://github.com/niwia/ASSella/releases"><img src="https://img.shields.io/badge/arch-x86__64%20%7C%20arm64-blue" alt="x86_64 | ARM64"></a>
-  <a href="https://github.com/niwia/ASSella/releases"><img src="https://img.shields.io/github/downloads/niwia/ASSella/total?color=teal" alt="Downloads"></a>
+  <a href="https://github.com/niwia/ASSella/stargazers"><img src="https://img.shields.io/github/stars/niwia/ASSella?color=f4c8ab" alt="GitHub Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License"></a>
 </p>
 
