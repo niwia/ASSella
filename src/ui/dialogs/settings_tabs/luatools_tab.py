@@ -95,11 +95,24 @@ def create_luatools_tab(dialog) -> QWidget:
     main_lay.setContentsMargins(0, 8, 0, 0)
     main_lay.setSpacing(12)
 
-    # ── Card 1: Account & Authentication ──
-    card, card_lay = dialog._create_card_frame("Account Authentication")
-    card_lay.setSpacing(8)
+    # ── Card 1: Manifest Provider & Account Status ──
+    prov_card, prov_layout = dialog._create_card_frame("Manifest Provider & Account")
+    prov_layout.setSpacing(6)
 
-    # Status box
+    dialog.luatools_primary_checkbox = QCheckBox("Use LuaTools (Luie) as primary manifest provider")
+    dialog.luatools_primary_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: bold;")
+    prov_desc = QLabel(
+        "Requires being logged in to lua.tools below. When enabled, manifest bundles are downloaded "
+        "from lua.tools (Luie) with live availability checks."
+    )
+    prov_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    prov_desc.setWordWrap(True)
+    prov_layout.addWidget(dialog.luatools_primary_checkbox)
+    prov_layout.addWidget(prov_desc)
+
+    prov_layout.addSpacing(8)
+
+    # Status box (directly under Use LuaTools)
     status_frame = QFrame()
     status_frame.setStyleSheet(
         "background: rgba(255, 255, 255, 0.04); border: none; border-radius: 8px;"
@@ -122,7 +135,7 @@ def create_luatools_tab(dialog) -> QWidget:
     dialog.luatools_disconnect_btn.setVisible(False)
     status_lay.addWidget(dialog.luatools_disconnect_btn)
 
-    card_lay.addWidget(status_frame)
+    prov_layout.addWidget(status_frame)
 
     # Login methods container
     dialog.luatools_login_container = QWidget()
@@ -181,6 +194,7 @@ def create_luatools_tab(dialog) -> QWidget:
     code_desc = QLabel(
         "If you are already logged in to lua.tools on another device or browser, enter your 6-character connect code:"
     )
+    code_desc.setWordWrap(True)
     code_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
     login_lay.addWidget(code_desc)
 
@@ -210,25 +224,8 @@ def create_luatools_tab(dialog) -> QWidget:
     code_row.addStretch()
     login_lay.addLayout(code_row)
 
-    card_lay.addWidget(dialog.luatools_login_container)
-    main_lay.addWidget(card)
-
-    # ── Card 2: Manifest Provider ──
-    prov_card, prov_layout = dialog._create_card_frame("Manifest Provider")
-    prov_layout.setSpacing(6)
-
-    dialog.luatools_primary_checkbox = QCheckBox("Use LuaTools (Luie) as primary manifest provider")
-    dialog.luatools_primary_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: bold;")
-    prov_desc = QLabel(
-        "Requires being logged in to lua.tools above. When enabled, manifest bundles are downloaded "
-        "from lua.tools (Luie) with live availability checks."
-    )
-    prov_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
-    prov_desc.setWordWrap(True)
-    prov_layout.addWidget(dialog.luatools_primary_checkbox)
-    prov_layout.addWidget(prov_desc)
-
-    prov_layout.addSpacing(6)
+    prov_layout.addWidget(dialog.luatools_login_container)
+    prov_layout.addSpacing(10)
 
     dialog.luatools_allow_sushi_checkbox = QCheckBox("Allow Sushi as fallback manifest source")
     dialog.luatools_allow_sushi_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9pt;")

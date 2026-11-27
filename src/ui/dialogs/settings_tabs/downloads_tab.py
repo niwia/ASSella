@@ -387,7 +387,10 @@ def create_downloads_tab(dialog) -> QWidget:
     dialog.manifest_provider_combo.addItem("Wudrm", "wudrm")
     dialog.manifest_provider_combo.addItem("SteamRun", "steamrun")
     dialog.manifest_provider_combo.addItem("OpenSteamTool*", "opensteamtool")
-    dialog.manifest_provider_combo.addItem("Hubcap Manifest", "hubcap")
+    hubcap_key_present = bool(str(dialog.settings.value("morrenus_api_key", "", type=str) or "").strip())
+    bundle_prov = str(dialog.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower()
+    if hubcap_key_present and bundle_prov == "hubcap":
+        dialog.manifest_provider_combo.addItem("Hubcap Manifest", "hubcap")
 
     current_provider = dialog.settings.value("manifest_provider", "auto", type=str).lower()
     idx = dialog.manifest_provider_combo.findData(current_provider)
@@ -395,6 +398,8 @@ def create_downloads_tab(dialog) -> QWidget:
         dialog.manifest_provider_combo.setCurrentIndex(idx)
     else:
         dialog.manifest_provider_combo.setCurrentIndex(0)
+        if current_provider == "hubcap":
+            dialog.settings.setValue("manifest_provider", "auto")
 
     def _on_provider_changed(index):
         val = dialog.manifest_provider_combo.currentData()

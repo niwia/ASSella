@@ -1406,6 +1406,50 @@ class FetchManifestDialog(QDialog):
                 dialog.exec()
                 return
 
+        # For non-Hubcap providers (e.g. Ryu, LuaTools), there is no guaranteed pre-search
+        # catalog, so probe/fetch the bundle FIRST before prompting for download backend or branch.
+        from core.manifest_provider import active_provider_id, get_manifest_zip_path, get_active_provider_label
+        prov_id = active_provider_id()
+        if (
+            prov_id != "hubcap"
+            and getattr(self, "_preflight_done_appid", None) != aid_str
+            and not get_manifest_zip_path(aid_str).is_file()
+        ):
+            prov_full = get_active_provider_label(full=True)
+            self._async_pending = True
+            self._toggle_inputs(False)
+            self._set_loading_active(True)
+            self._show_loading_overlay(f"Checking {prov_full} for {name}...")
+
+            def _preflight_worker():
+                res_tuple, _, _ = verify_or_download_manifest(aid_str, branch="public")
+                return res_tuple
+
+            def _on_preflight_done(res):
+                self._toggle_inputs(True)
+                self._set_loading_active(False)
+                fpath, err = res if isinstance(res, tuple) and len(res) == 2 else (None, "Unexpected response")
+                if err or not fpath:
+                    self._dismiss_loading_overlay()
+                    self._handle_error(err or f"{name} is not available on {prov_full}.")
+                    self._end_selection()
+                    return
+                if hasattr(self, "_cached_app_ids"):
+                    self._cached_app_ids.add(aid_str)
+                self._dismiss_loading_overlay()
+                self._preflight_done_appid = aid_str
+                try:
+                    self._route_game_selection(aid_str, name)
+                finally:
+                    self._preflight_done_appid = None
+                if not getattr(self, "_async_pending", False) and self.isVisible() and self.result() == 0:
+                    self._end_selection()
+
+            worker = self.task_runner.run(_preflight_worker)
+            worker.finished.connect(_on_preflight_done)
+            worker.error.connect(self.on_task_error)
+            return
+
         enable_at0m = (
             sys.platform == "linux"
             and self.settings.value(

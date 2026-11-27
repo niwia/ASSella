@@ -506,11 +506,11 @@ class MainWindowSystemStatusMixin:
         if not active_provider_supports(Capability.ACCOUNT_STATS):
             if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
                 self.hubcap_api_value.setText("API: N/A")
-                self.hubcap_api_value.setStyleSheet("color: rgba(255, 255, 255, 0.35);")
+                self.hubcap_api_value.setStyleSheet("color: rgba(255, 255, 255, 0.28); font-style: italic;")
                 self.hubcap_api_value.setToolTip(f"No API quota tracked for {prov_full}.")
             if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
                 self.active_hubcap_label.setText(f"{prov_short}: Active")
-                self.active_hubcap_label.setStyleSheet("color: rgba(255, 255, 255, 0.5);")
+                self.active_hubcap_label.setStyleSheet("color: rgba(255, 255, 255, 0.35);")
             return
 
         # Set stats text to loading
@@ -540,14 +540,7 @@ class MainWindowSystemStatusMixin:
         def run_check():
             try:
                 from utils.network_status import run_connection_check
-                steam_ok, prov_ok, prov_mode = run_connection_check(force=force)
-                if prov_id in ("ryuu", "luatools"):
-                    from core.providers.registry import get as get_provider
-                    prov = get_provider(prov_id)
-                    if prov is not None:
-                        health = prov.check_health(force=force)
-                        prov_ok = health.get("status") == "healthy"
-                        prov_mode = "Direct" if prov_ok else "Offline"
+                steam_ok, prov_ok, prov_mode = run_connection_check(force=force, provider_id=prov_id)
             except Exception as e:
                 logger.error(f"Error running network connection check: {e}")
                 steam_ok, prov_ok, prov_mode = False, False, "Offline"
