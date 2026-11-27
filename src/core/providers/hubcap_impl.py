@@ -1,0 +1,1001 @@
+import datetime
+import logging
+import os
+import ssl
+import tempfile
+import threading
+import time
+from pathlib import Path
+from typing import Optional, Dict, List, Union, Tuple, Any
+
+import requests
+import urllib3
+from requests.adapters import HTTPAdapter
+from urllib3.util.ssl_ import create_urllib3_context
+
+from utils.helpers import get_base_path
+from utils.settings import get_settings
+
+logger = logging.getLogger(__name__)
+
+BASE_URL = "https://hubcapmanifest.com/api/v1"
+DEFAULT_SEARCH_LIMIT = 100
+MAX_SEARCH_LIMIT = 100
+
+_hubcap_manifest_used_flag = False
+
+def mark_hubcap_manifest_used() -> None:
+    """Flag that a Hubcap manifest generation/download endpoint was actively invoked."""
+    global _hubcap_manifest_used_flag
+    _hubcap_manifest_used_flag = True
+
+def pop_hubcap_manifest_used() -> bool:
+    """Return and reset whether a Hubcap manifest endpoint was invoked."""
+    global _hubcap_manifest_used_flag
+    used = _hubcap_manifest_used_flag
+    _hubcap_manifest_used_flag = False
+    return used
+
+# Error messages for specific HTTP status codes
+API_ERROR_MESSAGES = {
+    400: "Bad Request. The request parameters were invalid.",
+    401: "Invalid or missing API key. Please check your credentials in Settings.",
+    403: "Access denied. Your account may be blocked or the App ID is not accessible.",
+    404: "Manifest not found on Hubcap. The App ID may be incorrect, unavailable on the server, or belongs to a DLC/depot rather than the base game.",
+    429: "Daily API limit exceeded. Please try again later.",
+    500: "Server error. The manifest may be corrupted or temporarily unavailable on Hubcap.",
+    502: "Bad Gateway. Hubcap server is temporarily unreachable.",
+    503: "Service Unavailable. Hubcap server is temporarily offline or undergoing maintenance.",
+    504: "Gateway Timeout. Hubcap server took too long to respond.",
+}
+
+
+class SSLAdapter(HTTPAdapter):
+    """
+    Custom HTTPAdapter used ONLY when the user has explicitly opted out of TLS
+    verification.
+
+    Verification is on by default. This adapter exists as an escape hatch for
+    genuinely broken TLS stacks (outdated CA bundles, middlebox equipment); it
+    must never be the default, because every Hubcap API key and depot decryption
+    key travels over this connection.
+    """
+
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = create_urllib3_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        # Try to set a more compatible set of ciphers
+        try:
+            ctx.set_ciphers("DEFAULT:@SECLEVEL=1")
+        except ssl.SSLError:
+            pass  # Some systems don't support SECLEVEL
+        kwargs["ssl_context"] = ctx
+        return super().init_poolmanager(*args, **kwargs)
+
+
+_thread_local = threading.local()
+
+# Kept so genuinely broken environments still work, but surfaced loudly instead
+# of failing silently. Users who hit TLS errors should fix their CA bundle or
+# opt out explicitly rather than running permanently unverified.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+def tls_verification_enabled() -> bool:
+    """True when Hubcap TLS certificates are verified (the default)."""
+    try:
+        return not get_settings().value("hubcap_disable_tls_verify", False, type=bool)
+    except Exception:
+        return True
+
+
+def get_session() -> requests.Session:
+    """Gets or creates a thread-local requests.Session object.
+
+    TLS verification is enabled unless the user has explicitly opted out. The
+    ISP-bypass tiers (DoH / Tor / Wirecutter) are a *routing* fallback and are
+    entirely unaffected: they still run when a direct request fails, including
+    when that failure is a certificate error.
+    """
+    if not hasattr(_thread_local, "session"):
+        session = requests.Session()
+        if tls_verification_enabled():
+            session.verify = True
+        else:
+            logger.warning(
+                "[HubcapAPI] TLS certificate verification is DISABLED by user setting "
+                "(hubcap_disable_tls_verify). API keys and depot keys are exposed to "
+                "interception on this connection."
+            )
+            session.verify = False
+            session.mount("https://", SSLAdapter())
+        _thread_local.session = session
+    return _thread_local.session
+
+
+def _get_headers() -> Optional[Dict[str, str]]:
+    """Retrieves API key and constructs headers."""
+    settings = get_settings()
+    api_key = settings.value("morrenus_api_key", "", type=str)
+    if not api_key:
+        logger.warning("Hubcab API key is not set in settings.")
+        return None
+    return {"Authorization": f"Bearer {api_key}"}
+
+
+def _handle_request_exception(e: Exception, context: str) -> str:
+    """Centralized exception handler for request errors."""
+    error_str = str(e).lower()
+    if "429" in error_str:
+        logger.warning(f"{context} rate limited (HTTP 429 Too Many Requests). Backing off.")
+        return API_ERROR_MESSAGES.get(429, "Rate limit reached. Please wait before retrying.")
+
+    logger.error(f"{context} failed: {e}")
+
+    if isinstance(e, requests.exceptions.HTTPError):
+        response = getattr(e, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code is None:
+            for code in (404, 401, 403, 400, 429, 500, 502, 503, 504):
+                if str(code) in error_str:
+                    status_code = code
+                    break
+
+        # Return mapped user-friendly error if exists
+        if isinstance(status_code, int) and status_code in API_ERROR_MESSAGES:
+            return API_ERROR_MESSAGES[status_code]
+
+        # Try to get detail from API response if JSON
+        try:
+            if response is not None:
+                content_type = response.headers.get("content-type", "")
+                if "application/json" in content_type:
+                    error_detail = response.json().get("detail")
+                    if error_detail:
+                        return f"API Error ({status_code or 'Unknown'}): {error_detail}"
+        except Exception:
+            pass
+
+        if status_code and status_code != "N/A":
+            return f"API Error ({status_code})"
+        return f"HTTP Request Failed: {e}"
+
+    if "404" in error_str or "not found" in error_str:
+        return API_ERROR_MESSAGES[404]
+
+    if "ssl" in error_str or "wrong_version_number" in error_str:
+        return "SSL connection failed. Check proxy/firewall settings."
+
+    if "expecting value" in error_str or "line 1 column 1" in error_str or "blocked" in error_str:
+        return "Gateway returned HTML or invalid payload (ISP block detected. Try DoH/Wirecutter in Settings)."
+
+    return f"Request Failed: {e}"
+
+
+
+def _make_json_request(
+    method: str, endpoint: str, params: dict = None
+) -> Union[Dict, List]:
+    """
+    Helper to perform JSON requests (GET/POST) through the ISP bypass pipeline.
+    Returns the JSON data (dict or list) on success.
+    Returns a dict with {"error": msg} on failure.
+    """
+    headers = _get_headers()
+    if not headers:
+        return {"error": "API Key is not set. Please set it in Settings."}
+
+    url = f"{BASE_URL}{endpoint}"
+
+    try:
+        from utils.isp_bypass import execute_hubcap_request
+        response = execute_hubcap_request(
+            get_session(), method, url, headers=headers, params=params, timeout=10
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        error_msg = _handle_request_exception(e, f"API {method} to {endpoint}")
+        return {"error": error_msg}
+
+
+def search_games(
+    query: str, limit: int = DEFAULT_SEARCH_LIMIT
+) -> dict | dict[str, list] | dict[str, list[Any]]:
+    """
+    Search Hubcap for games by name or AppID using the free /search endpoint.
+
+    Strategy:
+      - Numeric queries: try exact AppID match first (/search?appid=true). If Hubcap
+        returns no results (e.g. user typed "007" meaning the game title), transparently
+        fall through to a name-based search so titles like "007: First Light" still surface.
+      - Text queries: use /search?q=... directly (fast, free, no quota consumed).
+      - Fallback: if /search itself errors, fall back to the old paginated /library endpoint.
+    """
+    logger.info(f"Searching Hubcap API for: {query}")
+    try:
+        normalized_limit = int(limit)
+    except (TypeError, ValueError):
+        normalized_limit = DEFAULT_SEARCH_LIMIT
+    normalized_limit = max(1, min(normalized_limit, MAX_SEARCH_LIMIT))
+
+    # ── Path 1: Numeric query — try AppID exact-match first ──────────────────
+    if query.strip().isdigit():
+        data = _make_json_request(
+            "GET", "/search",
+            params={"q": query.strip(), "appid": "true", "limit": normalized_limit},
+        )
+        if isinstance(data, dict) and "error" not in data:
+            results = data.get("results") or []
+            total = data.get("total_matches", len(results))
+            if results:
+                logger.info(f"[search_games] Exact AppID match for '{query}': {len(results)} result(s)")
+                return {"results": results, "total_count": total}
+            # No AppID match — treat as a game-name number (e.g. "007", "1984")
+            logger.info(f"[search_games] AppID '{query}' not found in Hubcap — retrying as name search")
+
+    # ── Path 2: Name-based search via the free /search endpoint ──────────────
+    data = _make_json_request(
+        "GET", "/search",
+        params={"q": query.strip(), "limit": normalized_limit},
+    )
+    if isinstance(data, dict) and "error" not in data:
+        results = data.get("results") or []
+        total = data.get("total_matches", len(results))
+        logger.info(f"[search_games] Name search for '{query}': {len(results)} result(s) (total_matches={total})")
+        return {"results": results, "total_count": total}
+
+    # ── Path 3: Fallback — paginated /library (legacy) ───────────────────────
+    logger.warning(f"[search_games] /search failed for '{query}', falling back to /library")
+    offset = 0
+    all_games: list[Any] = []
+    total_count: Optional[int] = None
+
+    while True:
+        lib_data = _make_json_request(
+            "GET", "/library",
+            params={
+                "search": query,
+                "limit": normalized_limit,
+                "offset": offset,
+                "sort_by": "name",
+            },
+        )
+        if isinstance(lib_data, dict) and "error" in lib_data:
+            return lib_data
+
+        page_games: list[Any] = []
+        if isinstance(lib_data, dict):
+            if isinstance(lib_data.get("games"), list):
+                page_games = lib_data["games"]
+            elif isinstance(lib_data.get("results"), list):
+                page_games = lib_data["results"]
+            if total_count is None:
+                raw_total = lib_data.get("total_count")
+                if raw_total is not None:
+                    try:
+                        total_count = int(raw_total)
+                    except (TypeError, ValueError):
+                        total_count = None
+        elif isinstance(lib_data, list):
+            page_games = lib_data
+
+        if not page_games:
+            break
+
+        all_games.extend(page_games)
+        offset += len(page_games)
+
+        if total_count is not None and offset >= total_count:
+            break
+        if len(page_games) < normalized_limit:
+            break
+
+    return {"results": all_games, "total_count": total_count or len(all_games)}
+
+
+_last_user_stats_fetch: float = 0.0
+_last_generate_usage_fetch: float = 0.0
+_user_stats_backoff_until: float = 0.0
+_generate_usage_backoff_until: float = 0.0
+_STATS_CACHE_TTL: float = 300.0  # 5-minute (300s) interval between API calls when online to avoid rate limits
+_STATS_ERROR_BACKOFF: float = 60.0
+
+
+def is_stats_cache_from_previous_utc_day(cached_stats: Any) -> bool:
+    """Return True if cached_stats timestamp is from a prior UTC calendar day."""
+    if not isinstance(cached_stats, dict):
+        return False
+    ts_str = cached_stats.get("timestamp")
+    if not ts_str:
+        return False
+    try:
+        if str(ts_str).endswith("Z"):
+            ts_str = str(ts_str)[:-1] + "+00:00"
+        cached_dt = datetime.datetime.fromisoformat(str(ts_str))
+        if cached_dt.tzinfo is None:
+            cached_dt = cached_dt.replace(tzinfo=datetime.timezone.utc)
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        return cached_dt.date() < now_utc.date()
+    except Exception as e:
+        logger.debug(f"[Hubcap] Error checking UTC timestamp: {e}")
+        return False
+
+
+def compute_api_key_expiry_info(
+    expires_str: Optional[str],
+    api_key: str = "",
+    settings: Optional[Any] = None,
+    now_utc: Optional[datetime.datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Computes remaining days/hours, percentage, and semantic warning color for API key expiry.
+
+    Rules:
+    - >= 75% remaining: Green (#10b981)
+    - 25% - 74.9% remaining: Orange (#f59e0b)
+    - < 25% remaining: Red (#ef4444)
+    - <= 24 hours remaining: display in hours ('{hours}h')
+    - Expired: '0d' in Red
+    - Never expires / lifetime: '∞' in Green
+    """
+    if now_utc is None:
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+    elif now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=datetime.timezone.utc)
+
+    if not expires_str or str(expires_str).strip().lower() in ("", "never", "none", "null"):
+        return {
+            "text": "∞",
+            "color": "#10b981",
+            "status": "success",
+            "percentage": 100.0,
+            "days": 999999,
+            "hours": 999999,
+            "is_expired": False,
+            "is_lifetime": True,
+            "formatted_date": "Never",
+        }
+
+    try:
+        clean_exp = str(expires_str).strip()
+        if clean_exp.endswith("Z"):
+            clean_exp = clean_exp[:-1] + "+00:00"
+        dt = datetime.datetime.fromisoformat(clean_exp)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        formatted_date = dt.strftime("%d/%m/%Y")
+    except Exception as e:
+        logger.debug(f"[Hubcap] Could not parse expiration date '{expires_str}': {e}")
+        return {
+            "text": "Unknown",
+            "color": "rgba(255, 255, 255, 0.75)",
+            "status": "neutral",
+            "percentage": 0.0,
+            "days": 0,
+            "hours": 0,
+            "is_expired": False,
+            "is_lifetime": False,
+            "formatted_date": "Unknown",
+        }
+
+    delta = dt - now_utc
+    total_seconds = delta.total_seconds()
+
+    if total_seconds <= 0:
+        return {
+            "text": "0d",
+            "color": "#ef4444",
+            "status": "error",
+            "percentage": 0.0,
+            "days": 0,
+            "hours": 0,
+            "is_expired": True,
+            "is_lifetime": False,
+            "formatted_date": formatted_date,
+        }
+
+    # Baseline tracking in QSettings for percentage
+    import hashlib
+    if settings is None:
+        from utils.settings import get_settings
+        settings = get_settings()
+
+    key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12] if api_key else "default"
+    stored_hash = str(settings.value("hubcap_key_hash", "", type=str) or "")
+    stored_total = float(settings.value("hubcap_key_total_seconds", 0.0, type=float) or 0.0)
+
+    if stored_hash != key_hash or stored_total <= 0.0 or total_seconds > stored_total:
+        stored_total = total_seconds
+        settings.setValue("hubcap_key_hash", key_hash)
+        settings.setValue("hubcap_key_total_seconds", float(stored_total))
+
+    percentage = min(100.0, max(0.0, (total_seconds / stored_total) * 100.0))
+
+    days = int(total_seconds // 86400)
+    hours = int(total_seconds // 3600)
+
+    if total_seconds <= 86400:
+        display_text = f"{max(1, hours)}h"
+    else:
+        display_text = f"{days}d"
+
+    if percentage >= 75.0:
+        color = "#10b981"  # Emerald green fallback
+        status = "success"
+    elif percentage >= 25.0:
+        color = "#f59e0b"  # Amber / orange fallback
+        status = "warning"
+    else:
+        color = "#ef4444"  # Red fallback
+        status = "error"
+
+    return {
+        "text": display_text,
+        "color": color,
+        "status": status,
+        "percentage": percentage,
+        "days": days,
+        "hours": hours,
+        "is_expired": False,
+        "is_lifetime": False,
+        "formatted_date": formatted_date,
+    }
+
+
+def get_user_stats(force: bool = False) -> Dict:
+    """Retrieves user statistics with cached fallback on network timeout or rate limit."""
+    global _last_user_stats_fetch, _user_stats_backoff_until
+    settings = get_settings()
+    cached = settings.value("last_cached_user_stats", None)
+
+    now = time.time()
+    cache_day_expired = is_stats_cache_from_previous_utc_day(cached)
+    if not force and now < _user_stats_backoff_until:
+        logger.debug("[Hubcap] User stats in failure backoff")
+        return cached if isinstance(cached, dict) and cached else {"error": "Hubcap rate-limited / offline (backoff)"}
+    if not force and not cache_day_expired and cached and (now - _last_user_stats_fetch < _STATS_CACHE_TTL):
+        logger.debug("[Hubcap] Using recently cached user stats (throttled)")
+        return cached
+
+    logger.info("Fetching user stats")
+    api_key = settings.value("morrenus_api_key", "", type=str)
+    res = _make_json_request("GET", "/user/stats", params={"api_key": api_key})
+    if isinstance(res, dict) and "error" not in res and res:
+        _last_user_stats_fetch = now
+        _user_stats_backoff_until = 0.0
+        settings.setValue("last_cached_user_stats", res)
+        # Mark health check cache as healthy too since user stats succeeded
+        global _last_health_check_time, _cached_health_check
+        _last_health_check_time = now
+        _cached_health_check = {"status": "healthy", "source": "user_stats"}
+        return res
+
+    # On rate limit (429) or error, back off for _STATS_ERROR_BACKOFF seconds
+    _user_stats_backoff_until = now + _STATS_ERROR_BACKOFF
+    if isinstance(cached, dict) and cached:
+        logger.info("Using cached user stats due to network request error / rate limit")
+        if cache_day_expired:
+            fallback_copy = dict(cached)
+            fallback_copy["daily_usage"] = 0
+            return fallback_copy
+        return cached
+    return res
+
+
+def get_generate_usage(force: bool = False) -> Dict:
+    """Retrieves cloud generation API quotas and usage limits from /generate/usage."""
+    global _last_generate_usage_fetch, _generate_usage_backoff_until
+    settings = get_settings()
+    cached = settings.value("last_cached_generate_usage", None)
+
+    now = time.time()
+    if not force and now < _generate_usage_backoff_until:
+        logger.debug("[Hubcap] Generate usage in failure backoff")
+        return cached if isinstance(cached, dict) and cached else {"error": "Hubcap rate-limited / offline (backoff)"}
+    if not force and cached and (now - _last_generate_usage_fetch < _STATS_CACHE_TTL):
+        logger.debug("[Hubcap] Using recently cached generation usage stats (throttled)")
+        return cached
+
+    logger.info("Fetching generation usage stats")
+    res = _make_json_request("GET", "/generate/usage")
+    if isinstance(res, dict) and "error" not in res and res:
+        _last_generate_usage_fetch = now
+        _generate_usage_backoff_until = 0.0
+        settings.setValue("last_cached_generate_usage", res)
+        return res
+
+    _generate_usage_backoff_until = now + _STATS_ERROR_BACKOFF
+    if isinstance(cached, dict) and cached:
+        logger.info("Using cached generation usage stats due to network request error / rate limit")
+        return cached
+    return res
+
+
+def get_all_hubcap_stats(force: bool = False) -> Dict:
+    """Fetches both user stats and generation usage limits with rate-limit pacing."""
+    user_stats = get_user_stats(force=force)
+    time.sleep(0.35)  # Pace queries to respect Hubcap 3/3/s rate ceiling
+    gen_usage = get_generate_usage(force=force)
+    return {
+        "user_stats": user_stats,
+        "gen_usage": gen_usage,
+    }
+
+
+def generate_single_manifest(
+    depot_id: Union[str, int],
+    manifest_id: Union[str, int],
+    depot_key: Optional[Union[str, bytes]] = None,
+    force_hubcap: bool = False,
+) -> Tuple[Optional[bytes], Optional[str]]:
+    """
+    Generates a single depot manifest.
+    Primary: Vapor engine (direct Steam CDN via wudrm MRC).
+    Fallback: Hubcap API (/generate/manifest) using the 1,500/day pool.
+    Returns (raw_manifest_bytes, None) on success, or (None, error_message) on failure.
+    """
+    if not force_hubcap:
+        try:
+            try:
+                from core import at0m
+            except ImportError:
+                from core import vapor as at0m
+            raw_bytes, err = at0m.generate_single_manifest(
+                depot_id, manifest_id, depot_key=depot_key, force_fallback=False
+            )
+            if raw_bytes and not err:
+                return raw_bytes, None
+            logger.info(f"at0-m engine failed for depot {depot_id} ({err}), falling back to Hubcap API...")
+        except Exception as e:
+            logger.warning(f"at0-m invocation exception for depot {depot_id}: {e}, falling back to Hubcap API")
+
+    headers = _get_headers()
+    if not headers:
+        return None, "API Key is not set. Please set it in Settings."
+
+    url = f"{BASE_URL}/generate/manifest?depot_id={depot_id}&manifest_id={manifest_id}"
+    try:
+        from utils.isp_bypass import execute_hubcap_request
+        response = execute_hubcap_request(
+            get_session(), "GET", url, headers=headers, stream=True, timeout=60
+        )
+        response.raise_for_status()
+        mark_hubcap_manifest_used()
+        return response.content, None
+    except Exception as e:
+        err = _handle_request_exception(e, f"Single manifest generate (depot {depot_id}, gid {manifest_id})")
+        return None, err
+
+
+_last_health_check_time: float = 0.0
+_cached_health_check: Optional[Dict] = None
+_HEALTH_CACHE_TTL: float = 300.0  # 5-minute (300s) cache for confirmed healthy status
+_HEALTH_ERROR_TTL: float = 60.0   # 60s negative cache so 30s health polling doesn't hammer offline tiers
+
+
+def check_health(force: bool = False) -> Dict:
+    """
+    Checks if the Hubcap API is healthy using the ISP bypass pipeline,
+    so users with ISP bypass enabled still get accurate health status.
+    Does not require an API key. Caches successful check for 5 minutes (300s)
+    and failures for 60s to avoid burning requests against the rate limit ceiling.
+    """
+    global _last_health_check_time, _cached_health_check
+    now = time.time()
+    if not force and _cached_health_check:
+        ttl = _HEALTH_ERROR_TTL if _cached_health_check.get("status") == "unhealthy" else _HEALTH_CACHE_TTL
+        if now - _last_health_check_time < ttl:
+            logger.debug("[Hubcap] Using recently cached health check")
+            return _cached_health_check
+
+    url = f"{BASE_URL}/health"
+    try:
+        from utils.isp_bypass import execute_hubcap_request, is_html_or_blocked_payload
+        response = execute_hubcap_request(get_session(), "GET", url, timeout=10)
+        response.raise_for_status()
+        if is_html_or_blocked_payload(response):
+            _cached_health_check = None
+            return {"status": "unhealthy", "error": "Gateway returned HTML payload (ISP block detected). Switch ISP bypass in Settings."}
+        data = response.json()
+        _last_health_check_time = now
+        _cached_health_check = data
+        return data
+    except Exception as e:
+        from utils.isp_bypass import HubcapRateLimitError
+        # A 429 rate limit response proves Hubcap API is alive and reachable!
+        if isinstance(e, HubcapRateLimitError) or getattr(getattr(e, "response", None), "status_code", None) == 429:
+            logger.info("[Hubcap] Health check encountered 429 rate limit - server is online and responding.")
+            rate_limited_health = {"status": "healthy", "rate_limited": True}
+            _last_health_check_time = now
+            _cached_health_check = rate_limited_health
+            return rate_limited_health
+        error_msg = _handle_request_exception(e, "Health check")
+        err_payload = {"status": "unhealthy", "error": error_msg}
+        _last_health_check_time = now
+        _cached_health_check = err_payload
+        return err_payload
+
+
+def get_selected_branch(app_id) -> str:
+    """
+    Returns the branch to fetch for this app:
+      1. selected_branch/{app_id} — what the user picked in the UI, when set.
+      2. installed_branch/{app_id} — the ACF "betakey" of the current install,
+         for games the user never opened the branch selector for.
+      3. "public".
+
+    Every fetch/update path that does not receive an explicit branch must go
+    through this so a game installed on a beta branch is never silently
+    refreshed from the public branch.
+    """
+    try:
+        settings = get_settings()
+        if settings:
+            selected = (settings.value(f"selected_branch/{app_id}", "", type=str) or "").strip()
+            if selected:
+                return selected
+            installed = (settings.value(f"installed_branch/{app_id}", "", type=str) or "").strip()
+            if installed:
+                return installed
+    except Exception as e:
+        logger.debug(f"Could not read selected branch for {app_id}: {e}")
+    return "public"
+
+
+def get_manifest_zip_path(app_id, branch: str = "public") -> Path:
+    """
+    Returns the local cache path of the Hubcap bundle for an app/branch pair:
+      hubcap_manifests/accela_fetch_{app_id}.zip                 (public)
+      hubcap_manifests/accela_fetch_{app_id}_branch_{branch}.zip (any other branch)
+    The hubcap_manifests directory is created if missing.
+    """
+    manifests_dir = Path(get_base_path()) / "hubcap_manifests"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    if branch and branch != "public":
+        return manifests_dir / f"accela_fetch_{app_id}_branch_{branch}.zip"
+    return manifests_dir / f"accela_fetch_{app_id}.zip"
+
+
+def download_manifest(
+    app_id, branch: str = "public", force_update: bool = True
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Downloads the Hubcap bundle for an app through the ISP bypass pipeline.
+
+    Hubcap's /manifest/{app_id} has NO branch parameter: it always serves the
+    public bundle (lua with depot keys + public depot manifests). The public
+    bundle is always saved to accela_fetch_{app_id}.zip. For any other branch the
+    branch bundle is then assembled client-side (see core.branch_bundle): branch
+    manifest GIDs come from Steam PICS and each differing manifest is fetched by
+    GID via /generate/manifest. The result is saved to
+    accela_fetch_{app_id}_branch_{branch}.zip and returned instead.
+
+    Always attempts with ?force_update=true by default to trigger a server-side
+    refresh before serving. If that fails (e.g. server error), automatically falls
+    back to standard download without force_update as a resilient safety net.
+    Returns (filepath, None) on success, or (None, error_message) on failure.
+    """
+    headers = _get_headers()
+    if not headers:
+        return None, "API Key is not set. Please set it in Settings."
+
+    branch = branch or "public"
+
+    def _build_url(with_force_update: bool) -> str:
+        url = f"{BASE_URL}/manifest/{app_id}"
+        if with_force_update:
+            url += "?force_update=true"
+        return url
+
+    # The server only has public bundles — always cache it under the public name.
+    public_path = get_manifest_zip_path(app_id, "public")
+    manifests_dir = public_path.parent
+
+    logger.info(
+        f"Downloading public manifest bundle {app_id} to {public_path} "
+        f"(force_update={force_update}, target branch={branch})"
+    )
+
+    # Backup previous manifest if setting is enabled and old buildid differs
+    try:
+        settings = get_settings()
+        save_old_manifests = False
+        if public_path.exists() and settings and save_old_manifests:
+            old_buildid = settings.value(f"fetched_buildid/{app_id}", "", type=str) if settings else ""
+            if old_buildid:
+                backup_path = manifests_dir / f"accela_fetch_{app_id}_build_{old_buildid}.zip"
+                try:
+                    if backup_path.exists():
+                        backup_path.unlink()
+                    os.rename(public_path, backup_path)
+                    logger.info(f"Backed up previous manifest (build {old_buildid}) to {backup_path.name}")
+                except OSError as e:
+                    logger.warning(f"Failed to backup old manifest: {e}")
+
+                limit = settings.value("max_old_manifests", 3, type=int)
+                backups = list(manifests_dir.glob(f"accela_fetch_{app_id}_*.zip"))
+                if len(backups) > limit:
+                    backups.sort(key=lambda p: p.stat().st_mtime)
+                    to_delete = len(backups) - limit
+                    for b in backups[:to_delete]:
+                        try:
+                            os.remove(b)
+                            logger.info(f"Deleted old manifest backup {b.name}")
+                        except OSError as e:
+                            logger.warning(f"Failed to delete old manifest backup {b.name}: {e}")
+    except Exception as e:
+        logger.warning(f"Error during manifest backup routine: {e}")
+
+    from utils.isp_bypass import execute_hubcap_request
+
+    try:
+        manifests_dir.mkdir(parents=True, exist_ok=True)
+        temp_fd, temp_name = tempfile.mkstemp(
+            prefix=f".{public_path.name}.", suffix=".part", dir=manifests_dir
+        )
+        os.close(temp_fd)
+        temp_path = Path(temp_name)
+    except OSError as e:
+        return None, f"Could not prepare manifest cache file: {e}"
+
+    def _stream_to_file(url: str) -> None:
+        r = execute_hubcap_request(
+            get_session(), "GET", url, headers=headers, stream=True, timeout=60
+        )
+        try:
+            r.raise_for_status()
+            ctype = str(r.headers.get("Content-Type", "")).lower()
+            # A captive portal / ISP block page is served with HTTP 200. When
+            # streaming, isp_bypass cannot inspect the body, so reject obvious
+            # text payloads before they are written into the cache.
+            if "text/html" in ctype or "text/plain" in ctype:
+                raise ValueError(f"server returned non-binary payload ({ctype or 'unknown'})")
+            mark_hubcap_manifest_used()
+            with open(temp_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        finally:
+            try:
+                r.close()
+            except Exception as e:
+                logger.debug(f"[Hubcap] Error closing response stream: {e}")
+
+        # Validate the payload before it can replace a known-good bundle.
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(temp_path) as archive:
+                names = archive.namelist()
+        except (zipfile.BadZipFile, OSError) as zip_err:
+            raise ValueError(f"downloaded bundle is not a valid zip: {zip_err}") from zip_err
+        if not any(name.endswith((".lua", ".manifest")) for name in names):
+            raise ValueError("downloaded bundle contains no .lua or .manifest entries")
+
+    def _cleanup_partial() -> None:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+    # Primary attempt (with force_update if enabled), then the standard endpoint
+    try:
+        _stream_to_file(_build_url(force_update))
+    except Exception as primary_err:
+        logger.warning(
+            f"Download manifest with force_update={force_update} failed for {app_id}: {primary_err}"
+        )
+        if not force_update:
+            _cleanup_partial()
+            return None, _handle_request_exception(primary_err, f"Download {app_id}")
+        logger.info(f"Retrying download for {app_id} using standard endpoint (force_update=False)...")
+        try:
+            _stream_to_file(_build_url(False))
+        except Exception as fallback_err:
+            _cleanup_partial()
+            return None, _handle_request_exception(fallback_err, f"Download {app_id} (fallback)")
+
+    # Publish a complete download in one filesystem operation. A failed refresh
+    # must not truncate or remove the previously cached bundle.
+    try:
+        os.replace(temp_path, public_path)
+    except OSError as e:
+        _cleanup_partial()
+        return None, f"Could not replace cached manifest: {e}"
+
+    if branch == "public":
+        return str(public_path), None
+
+    # Beta branch: assemble the branch bundle from the public one + PICS + /generate/manifest
+    from core.branch_bundle import build_branch_bundle
+    branch_path = get_manifest_zip_path(app_id, branch)
+    zip_path, err = build_branch_bundle(app_id, branch, public_path, branch_path)
+    if err:
+        logger.error(f"Branch bundle assembly failed for {app_id} '{branch}': {err}")
+        return None, err
+    return zip_path, None
+
+
+def get_manifest_status(app_id: str) -> Dict:
+    """
+    Calls /api/v1/status/{app_id} to check Hubcap's manifest freshness.
+    Returns dict with keys: status, needs_update, update_in_progress, file_modified, error
+
+    NOTE: this endpoint has no branch parameter — it describes the PUBLIC bundle
+    only. Do not use its needs_update / file_size to judge a beta-branch bundle.
+    """
+    logger.info(f"Fetching manifest status for app {app_id}")
+    return _make_json_request("GET", f"/status/{app_id}")
+
+
+_contents_cache: Dict[str, Tuple[float, Dict]] = {}
+
+
+def get_manifest_contents(app_id: Union[str, int], branch: str = "public") -> Dict:
+    """
+    Calls /api/v1/manifest/{app_id}/contents to fetch the list of depot/manifest IDs
+    currently bundled in Hubcap's ZIP for this app.
+
+    This endpoint is FREE (zero generation quota) and fast — use it as a cheap
+    pre-flight check before committing to the quota-consuming /generate/manifest call.
+
+    NOTE: like /manifest/{app_id}, this endpoint has no branch parameter and always
+    describes the PUBLIC bundle (the response's "branch" is always "public"). The
+    `branch` argument is accepted for call-site symmetry only — the depot *set* is
+    what callers use, and it is the same across branches in practice.
+
+    Returns a dict with:
+        - zip_exists (bool): True if a bundle ZIP exists for this app.
+        - manifest_count (int): Number of manifests in the bundle.
+        - manifests (list[dict]): Each entry has "depot_id" and "manifest_id".
+        - depot_ids (set[str]): Convenience set of depot IDs Hubcap currently has.
+        - manifest_map (dict[str, str]): Convenience mapping of depot_id -> manifest_id.
+        - error (str, optional): Present on failure.
+    """
+    cache_key = f"{app_id}_{branch}"
+    now = time.time()
+    if cache_key in _contents_cache:
+        cached_time, cached_val = _contents_cache[cache_key]
+        if (now - cached_time) < 60:
+            return dict(cached_val)
+
+    logger.info(f"Fetching manifest contents for app {app_id} (public bundle; requested branch={branch})")
+    data = _make_json_request("GET", f"/manifest/{app_id}/contents")
+
+    if isinstance(data, dict):
+        if "error" not in data:
+            manifests = data.get("manifests") or []
+            data["depot_ids"] = {str(m.get("depot_id", "")) for m in manifests if isinstance(m, dict) and m.get("depot_id")}
+            data["manifest_map"] = {
+                str(m["depot_id"]): str(m.get("manifest_id", ""))
+                for m in manifests
+                if isinstance(m, dict) and m.get("depot_id")
+            }
+        # Negative-cache errors/404s for the same 60s TTL to avoid hammering offline/rate-limited endpoints.
+        _contents_cache[cache_key] = (now, dict(data))
+
+    return data
+
+
+def fetch_depot_keys_index(etag: Optional[str] = None) -> Dict[str, Any]:
+    """
+    GET /api/v1/depot-keys, optionally conditional on a previously seen ETag.
+
+    The endpoint returns every depot id in existence (~380k ids, ~7 MB of
+    JSON), so the caller is expected to keep the result rather than to ask
+    for it repeatedly.
+
+    Returns a dict:
+        ok          - the request succeeded
+        not_modified - the server answered 304, the copy we hold is current
+        data        - the parsed payload (None when not_modified)
+        etag        - the ETag the server handed out
+        error       - a human readable reason when ok is False
+    """
+    headers = _get_headers()
+    if not headers:
+        return {
+            "ok": False,
+            "not_modified": False,
+            "data": None,
+            "etag": None,
+            "error": "API Key is not set. Please set it in Settings.",
+        }
+
+    headers = dict(headers)
+    if etag:
+        headers["If-None-Match"] = etag
+
+    url = f"{BASE_URL}/depot-keys"
+    try:
+        from utils.isp_bypass import execute_hubcap_request
+
+        # The payload is several megabytes, so the default 10s budget is too
+        # tight for a slow line.
+        response = execute_hubcap_request(
+            get_session(), "GET", url, headers=headers, timeout=60
+        )
+        if response.status_code == 304:
+            return {
+                "ok": True,
+                "not_modified": True,
+                "data": None,
+                "etag": response.headers.get("ETag") or etag,
+                "error": None,
+            }
+        response.raise_for_status()
+
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "json" not in content_type:
+            return {
+                "ok": False,
+                "not_modified": False,
+                "data": None,
+                "etag": response.headers.get("ETag"),
+                "error": f"unexpected content type '{content_type or 'unknown'}' (ISP block?)",
+            }
+
+        data = response.json()
+        if not isinstance(data, dict) or "existing_depot_ids" not in data:
+            return {
+                "ok": False,
+                "not_modified": False,
+                "data": None,
+                "etag": response.headers.get("ETag"),
+                "error": "the depot-key index had an unexpected shape",
+            }
+        # depot_ids duplicates the two lists; drop it before the payload is
+        # kept around, it is the third copy of ~380k strings.
+        data.pop("depot_ids", None)
+        return {
+            "ok": True,
+            "not_modified": False,
+            "data": data,
+            "etag": response.headers.get("ETag"),
+            "error": None,
+        }
+    except Exception as e:
+        error_msg = _handle_request_exception(e, "API GET to /depot-keys")
+        return {
+            "ok": False,
+            "not_modified": False,
+            "data": None,
+            "etag": None,
+            "error": error_msg,
+        }
+
+
+def get_hubcap_depot_keys(force: bool = False, allow_network: bool = False) -> Dict:
+    """
+    The global list of existing and pending depot IDs with keys.
+
+    This endpoint is FREE (zero quota consumed) and returns:
+        - status: 'success'
+        - total_depot_ids: int
+        - pending_count: int
+        - existing_count: int
+        - pending_depot_ids: set[str] (depots Hubcap is still awaiting keys for)
+        - existing_depot_ids: set[str] (depots Hubcap currently has decryption keys for)
+
+    The payload is several megabytes, so it is cached on disk for two hours
+    and refreshed in the background. ``allow_network`` stays False by
+    default: a caller on the GUI thread must never pay for the download.
+    The background AT0-M checker keeps the index fresh.
+    """
+    from core.hubcap_key_index import get_index
+
+    index = get_index(allow_network=allow_network or force, force=force)
+    if not index.loaded:
+        # Callers read an empty existing_depot_ids as "Hubcap has no key for
+        # this yet", which is what decides whether to refetch a manifest
+        # bundle. A failed or mis-shaped response yields the same empty set,
+        # so without this the entire recovery path would look like "nothing
+        # new upstream" and fail silently. Say so instead.
+        logger.warning(
+            f"[Hubcap] /depot-keys index unavailable ({index.error}); treating every "
+            f"depot as still missing a key, so the bundle refetch will be skipped."
+        )
+    return index.to_dict()

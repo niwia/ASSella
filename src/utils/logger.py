@@ -34,7 +34,7 @@ class SensitiveDataFilter(logging.Filter):
         # URL or JSON auth parameters
         (
             re.compile(
-                r"(api_key|apikey|morrenus_api_key|access_token|secret_key|private_key|token)[=:\s]+([\"']?)([^\s,\"\'&]+)([\"']?)",
+                r"(api_key|apikey|morrenus_api_key|ryuu_auth_key|auth_key|access_token|secret_key|private_key|token)[=:\s]+([\"']?)([^\s,\"\'&]+)([\"']?)",
                 re.IGNORECASE,
             ),
             r"\1=\2[REDACTED_KEY]\4",
@@ -68,6 +68,9 @@ class SensitiveDataFilter(logging.Filter):
                 api_key = settings.value("morrenus_api_key", "", type=str)
                 if api_key and len(api_key) > 5 and api_key in text:
                     text = text.replace(api_key, "[REDACTED_API_KEY]")
+                ryuu_key = settings.value("ryuu_auth_key", "", type=str)
+                if ryuu_key and len(ryuu_key) > 5 and ryuu_key in text:
+                    text = text.replace(ryuu_key, "[REDACTED_API_KEY]")
                 steam_pass = settings.value("steam_password", "", type=str)
                 if steam_pass and len(steam_pass) > 3 and steam_pass in text:
                     text = text.replace(steam_pass, "[REDACTED_PASSWORD]")

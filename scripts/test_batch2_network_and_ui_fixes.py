@@ -34,7 +34,7 @@ class Batch2FixesTests(unittest.TestCase):
         )
 
     def test_morrenus_negative_caching(self):
-        from core import morrenus_api
+        from core.providers import hubcap_impl as morrenus_api
 
         morrenus_api._last_user_stats_fetch = 0.0
         morrenus_api._last_generate_usage_fetch = 0.0

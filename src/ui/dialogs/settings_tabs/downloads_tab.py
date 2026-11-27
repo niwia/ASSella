@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QPushButton,
     QSlider,
+    QLineEdit,
     QTabWidget,
     QDialog,
     QScrollArea,
@@ -470,6 +471,92 @@ def create_downloads_tab(dialog) -> QWidget:
     test_btn.clicked.connect(_on_test_clicked)
 
     gen_layout.addWidget(mrc_card)
+
+    # ── Remote manifest bundle & key provider ──────────────────────────────
+    mp_card, mp_layout = dialog._create_card_frame("Manifest Bundle & Key Provider")
+    mp_layout.setSpacing(8)
+
+    mp_desc = QLabel(
+        "Choose which remote provider supplies manifest bundles and depot keys. "
+        "Auto tries Ryuu first when a key is configured, then Hubcap. "
+        "The local MRC engine above still handles per-depot manifest generation."
+    )
+    mp_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    mp_desc.setWordWrap(True)
+    mp_layout.addWidget(mp_desc)
+
+    mp_row = QHBoxLayout()
+    mp_row.setSpacing(10)
+    mp_label = QLabel("Provider:")
+    mp_label.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500; border: none; background: transparent;")
+    mp_row.addWidget(mp_label)
+
+    dialog.manifest_bundle_provider_combo = ModernComboBox()
+    dialog.manifest_bundle_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+    dialog.manifest_bundle_provider_combo.addItem("Auto (Ryuu → Hubcap)", "auto")
+    dialog.manifest_bundle_provider_combo.addItem("Ryuu's Manifests", "ryuu")
+    dialog.manifest_bundle_provider_combo.addItem("Hubcap Manifest", "hubcap")
+
+    current_bundle_provider = str(
+        dialog.settings.value("manifest_bundle_provider", "auto", type=str) or "auto"
+    ).lower()
+    idx = dialog.manifest_bundle_provider_combo.findData(current_bundle_provider)
+    dialog.manifest_bundle_provider_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _on_bundle_provider_changed(_index):
+        dialog.settings.setValue(
+            "manifest_bundle_provider",
+            dialog.manifest_bundle_provider_combo.currentData() or "auto",
+        )
+
+    dialog.manifest_bundle_provider_combo.currentIndexChanged.connect(_on_bundle_provider_changed)
+    mp_row.addWidget(dialog.manifest_bundle_provider_combo)
+    mp_row.addStretch()
+    mp_layout.addLayout(mp_row)
+
+    key_row = QHBoxLayout()
+    key_row.setSpacing(10)
+    key_label = QLabel("Ryuu auth key:")
+    key_label.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500; border: none; background: transparent;")
+    key_row.addWidget(key_label)
+
+    dialog.ryuu_auth_key_edit = QLineEdit()
+    dialog.ryuu_auth_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+    dialog.ryuu_auth_key_edit.setPlaceholderText("Permanent auth code from generator.ryuu.lol/login")
+    dialog.ryuu_auth_key_edit.setText(
+        str(dialog.settings.value("ryuu_auth_key", "", type=str) or "")
+    )
+    dialog.ryuu_auth_key_edit.setStyleSheet(
+        "QLineEdit { background: rgba(255,255,255,0.06); color: #FFFFFF; border: 1px solid rgba(255,255,255,0.15);"
+        " border-radius: 6px; padding: 5px 10px; font-size: 9pt; }"
+    )
+    key_row.addWidget(dialog.ryuu_auth_key_edit, 1)
+
+    def _save_ryuu_key():
+        dialog.settings.setValue("ryuu_auth_key", dialog.ryuu_auth_key_edit.text().strip())
+
+    dialog.ryuu_auth_key_edit.editingFinished.connect(_save_ryuu_key)
+
+    show_key_btn = QPushButton("Show")
+    show_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    show_key_btn.setStyleSheet(
+        "QPushButton { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2);"
+        " border-radius: 6px; padding: 5px 12px; color: #FFFFFF; font-size: 8.5pt; }"
+    )
+
+    def _toggle_key_visibility():
+        if dialog.ryuu_auth_key_edit.echoMode() == QLineEdit.EchoMode.Password:
+            dialog.ryuu_auth_key_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            show_key_btn.setText("Hide")
+        else:
+            dialog.ryuu_auth_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            show_key_btn.setText("Show")
+
+    show_key_btn.clicked.connect(_toggle_key_visibility)
+    key_row.addWidget(show_key_btn)
+    mp_layout.addLayout(key_row)
+
+    gen_layout.addWidget(mp_card)
     gen_layout.addStretch()
     # Scrollable, so wrapped descriptions get the height they need instead of
     # being squeezed (and clipped) when the window is short.

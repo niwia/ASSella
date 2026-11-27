@@ -15,10 +15,6 @@
     "broad": 8,
     "narrow": 0
   },
-  "core/morrenus_api.py": {
-    "broad": 1,
-    "narrow": 2
-  },
   "core/native_steam/compat_tool.py": {
     "broad": 1,
     "narrow": 0
@@ -30,6 +26,10 @@
   "core/native_steam/steam_manifest_pinning.py": {
     "broad": 1,
     "narrow": 0
+  },
+  "core/providers/hubcap_impl.py": {
+    "broad": 1,
+    "narrow": 2
   },
   "core/ratings.py": {
     "broad": 1,

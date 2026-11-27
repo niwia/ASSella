@@ -278,7 +278,7 @@ def refresh(force: bool = False) -> HubcapKeyIndex:
             return previous
         return HubcapKeyIndex(error="the Hubcap depot-key index cannot be loaded on the GUI thread")
 
-    from core.morrenus_api import fetch_depot_keys_index
+    from core.manifest_provider import fetch_depot_keys_index
 
     etag = previous.etag if previous is not None else None
     result = fetch_depot_keys_index(etag=etag)
