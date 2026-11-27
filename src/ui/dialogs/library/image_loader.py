@@ -144,7 +144,14 @@ class LibraryImageLoaderMixin:
         def fetch_and_update():
             try:
                 from utils.image_fetcher import ImageFetcher
-                return ImageFetcher.fetch_header_from_web_api(app_id)
+                url = ImageFetcher.fetch_header_from_web_api(app_id)
+                if url:
+                    try:
+                        from managers.db_manager import DatabaseManager
+                        DatabaseManager().upsert_app_info(app_id, {"header_url": url})
+                    except Exception as db_err:
+                        logger.debug(f"Failed to save header URL to db for {app_id}: {db_err}")
+                return url
             except Exception as e:
                 logger.warning(f"Header refresh failed for {app_id}: {e}")
             return None
@@ -153,26 +160,22 @@ class LibraryImageLoaderMixin:
             try:
                 url = future_result.result()
                 if url and not self._closing:
-                    QTimer.singleShot(
-                        0, lambda: self._apply_header_refresh(app_id, url)
-                    )
-            except RuntimeError:
-                pass
+                    from utils.main_thread import post_to_main_thread
+
+                    post_to_main_thread(lambda: self._apply_header_refresh(app_id, url))
+            except RuntimeError as e:
+                logger.debug(f"[ImageLoader] Header refresh skipped/failed for {app_id}: {e}")
 
         future = self.executor.submit(fetch_and_update)
         future.add_done_callback(on_complete)
 
     def _apply_header_refresh(self, app_id: str, api_url: str) -> None:
-        """Update DB and retry fetch with new URL."""
+        """Retry fetch with new URL on GUI thread without blocking on DB."""
         if self._closing or not self.isVisible():
             return
 
         try:
-            from managers.db_manager import DatabaseManager
-            db = DatabaseManager()
-            db.upsert_app_info(app_id, {"header_url": api_url})
-
-            # Retry fetch
+            # Retry fetch immediately on GUI thread
             if app_id not in self._active_fetchers and ImageFetcher:
                 fetcher = ImageFetcher(api_url)
                 fetcher.setProperty("app_id", app_id)

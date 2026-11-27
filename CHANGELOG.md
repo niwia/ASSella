@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0beta1] - 2026-11-22
+
+### Added
+- **Standalone Custom Folder Installs**: Download a game directly into any arbitrary directory without requiring a Steam library, `.acf` manifest, or SLSsteam involvement. Features a dedicated storage picker in depot selection, persistent tracking in `standalone_games`, dedicated "Standalone install" badge in library view, safe uninstallation refusing system paths, and isolated cancel cleanup that removes only files created by the job.
+- **Modernized Interactive Uninstall Modal**: Redesigned uninstall dialog with inline option cards, reclaimable disk size calculation, pre- and post-uninstall transparency summaries, prefix preservation guarantees, and a direct "Open Prefix" tool button.
+- **Stealth Proxy Multi-Endpoint Rotation Pool**: Multi-endpoint proxy rotation with sequential benchmarking, alive probing, latency probe suppression, and automated failover guards.
+- **UI Modernization & Material You Checkmarks**: Vector checkmarks and glyphs replacing emojis and legacy controls, hero banner layout in Game Details with ProtonDB / SteamDB lockup parity, and active notifications when adding a new Steam library while Steam is running.
+- **Updated Bundled Plugins**: Upgraded bundled Styx to 2.5 and SpaceBunny to 2.0.5 with modern test harness recognition.
+- **Hermetic Testing & CI Gates**: Added `scripts/test_config_write_safety.py` and `scripts/test_yaml_and_ratings_fixes.py` to CI; made test suites completely hermetic and independent of external Hubcap network dependencies and local Steam installations.
+
+### Fixed
+- **Failed Job Status Reporting**: Worker exceptions and finalize errors are now properly propagated and reported as `Failed` in terminal history and DDM status; `job_finished()` consumes an explicit failure flag, preventing failed jobs from falsely reporting success or marking games up-to-date.
+- **AT0-M & Plugin Game Classification**: Library scans no longer stamp `is_accela_install=True` onto AT0-M and plugin installs, restoring their visibility in `At0mUpdateChecker` and preventing them from being falsely routed through ACCELA update routines.
+- **ACF Depot Discovery Fallback**: Repaired the depot cache manifest discovery regex (`app<appid>_depot(\d+)`), which previously failed due to a string-split assumption; enables repair of adopted ACFs with empty `InstalledDepots`.
+- **Stale Scope Pruning on Re-registration**: Plugin re-registration and DLC-only purging now diff against previous records to remove deselected DLC AppIDs, depots, keys, and tokens from `config.yaml` while strictly preserving shared redists and entitlements.
+- **Unkeyed AT0-M Depot Transparency**: AT0-M handoff performs an emergency Hubcap refresh when encountering unkeyed depots; if still missing, displays an explicit themed warning dialog detailing the excluded depots instead of silently installing an incomplete game.
+- **Key & MRC Validation Hardening**: Rejects HTTP error bodies (such as `403` or `500`) and numbers under 8 digits from being treated as manifest request codes; validates cached depot keys to be 64-hex non-placeholder AES keys; and added `DepotKeyManager.get_depot_key()` with strict key validation.
+- **Manifest Pinning Safety**: Guards against pinning manifest GID `0` into `ManifestIds`.
+- **User Launch Options Preservation**: Automatic DLC, Netsock, and AT0-M cleanup removes only entries carrying ASSella markers (`netsock.so`, `LD_AUDIT`, `#assella-bypass`), preserving user-configured flags (e.g. `-dx11`, `PROTON_*`).
+- **Consistent Large DLC Handling**: Centralized `DLC_DATA_THRESHOLD = 64` across modules; DLC sets with 64+ entries consistently use `DlcData` instead of overflowing `AdditionalApps`.
+- **Ghost DLC Pending Game Filtering**: `assella_pending.py` filters out child DLC AppIDs found in `DlcData`, plugin records, and `[DLC]` comments, stopping DLCs from appearing as uninstalled standalone base games.
+- **Atomic ACF Writing & Linux Shape**: ACFs are written atomically via backup or PID-specific temp files; sets `include_depots=True` across all platforms so Linux/SteamOS ACFs include `InstalledDepots`.
+- **SLSsteam Config & YAML Architecture Overhaul**:
+  - `_atomic_write` and `batch_config_edit` preserve system file inodes for SLSsteam inotify watchers.
+  - Normalizes empty flow sections (`AdditionalApps: {}`, `DlcData: {}`, etc.) and single-line flow collections (`AdditionalApps: [1, 2]`) to editable block style, fixing silent write drops.
+  - Comment-safe value updates: inline comments survive boolean updates without mangling (`Plugins: yes # note`).
+  - Strict duplicate-key validation rejecting invalid edits across all YAML mapping depths.
+  - Multi-writer concurrency serialization via process-local `config_write_lock`.
+  - Config writers return explicit `WriteOutcome` codes (`CHANGED`, `ALREADY_PRESENT`, `NOT_PRESENT`, `REFUSED`, `FAILED`).
+  - Empty sections no longer tombstone the following key's line or child entries.
+- **Tolerant Manifest & Zip Handling**: Hubcap zip reader tolerates CRC-32 mismatches on modified zip streams, and guards progress dialog lifetimes during file previews.
+- **NixOS Launcher Resilience**: Defensive user resolution for NixOS PATH profile expansion and execution sentinel handling.
+- **Library Detection & Double Nesting**: Fixed `is_path_in_steam_library` recognition of fresh/dual-boot libraries, and prevented double `steamapps/common` path nesting.
+- **Standalone Lifecycle & Uninstall Safety**: Cancel cleanup snapshots created files and preserves user folders; standalone uninstallation refuses system/home ancestors.
+
+### Changed
+- Version bumped to **3.2.0beta1** (build 2026-11-22).
+
 ## [3.1.0] - 2026-11-09
 
 ### Added

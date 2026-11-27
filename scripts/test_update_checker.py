@@ -131,11 +131,12 @@ class UpdateCheckerTestCase(unittest.TestCase):
                 build_timestamp if build_timestamp is not None else "",
             ):
                 with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
-                    return check_for_updates(
-                        configured_channel=channel,
-                        current_version=current,
-                        update_server=update_server,
-                    )
+                    with mock.patch("utils.version.get_platform_key", return_value="linux-x86_64"):
+                        return check_for_updates(
+                            configured_channel=channel,
+                            current_version=current,
+                            update_server=update_server,
+                        )
 
 
 class TestUpdateCheckerRules(UpdateCheckerTestCase):
@@ -939,14 +940,14 @@ class TestBranchAndPrereleaseAwareness(UpdateCheckerTestCase):
 
 class TestBuildDateHelpers(unittest.TestCase):
     def test_default_build_date(self):
-        self.assertEqual(version_mod.BUILD_DATE, "2026-11-12")
-        self.assertTrue(version_mod.BUILD_TIMESTAMP.startswith("2026-11-12T"))
-        self.assertEqual(get_build_date(), "2026-11-12")
+        self.assertEqual(version_mod.BUILD_DATE, "2026-11-26")
+        self.assertTrue(version_mod.BUILD_TIMESTAMP.startswith("2026-11-26T"))
+        self.assertEqual(get_build_date(), "2026-11-26")
         self.assertEqual(version_mod.get_build_timestamp(), version_mod.BUILD_TIMESTAMP)
-        self.assertEqual(get_build_date_display(), "12/11/2026")
+        self.assertEqual(get_build_date_display(), "26/11/2026")
 
     def test_version_file_matches_the_release(self):
-        self.assertEqual(app_version, "3.1.1")
+        self.assertEqual(app_version, "3.2.0beta2")
 
     def test_build_stamp_in_version_file_wins(self):
         """A dated build ('20261024+ASSella-3.0.1') carries its own build date."""

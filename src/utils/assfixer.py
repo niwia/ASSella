@@ -94,6 +94,12 @@ FALLBACK_TEMPLATE_SOURCE_URL = (
 TEMPLATE_TIMEOUT  = 15   # seconds – GitHub raw file download
 STEAM_API_TIMEOUT =  5   # seconds – per-game name lookups (many in parallel)
 
+# How many rotated copies of config.yaml repair keeps (`.bak`, `.bak2`, `.bak3`).
+_MAX_BACKUPS = 3
+# The boot check runs on every launch; a successful upstream fetch is reused
+# for this long so a normal start-up does not touch the network at all.
+_BOOT_TEMPLATE_TTL = 24 * 60 * 60
+
 
 def extract_template_yaml(raw_text: str) -> str:
     """Extract YAML text, whether downloaded directly from res/config.yaml or embedded in C++ header."""
@@ -203,9 +209,14 @@ def _fetch_url(url: str, timeout: int) -> str:
         return resp.read().decode("utf-8")
 
 
+def _template_cache_path() -> Path:
+    """Where the last downloaded upstream template is kept."""
+    return Path.home() / ".config" / "SLSsteam" / "sls_config_template.yaml"
+
+
 def get_bundled_or_cached_template() -> Optional[str]:
     """Retrieve template from local user cache or bundled resources."""
-    cache_path = Path.home() / ".config" / "SLSsteam" / "sls_config_template.yaml"
+    cache_path = _template_cache_path()
     if cache_path.is_file():
         try:
             txt = cache_path.read_text(encoding="utf-8")
@@ -235,10 +246,39 @@ def get_bundled_or_cached_template() -> Optional[str]:
     return None
 
 
+def get_boot_template() -> str:
+    """Return the upstream template for the boot check, reusing a recent fetch.
+
+    ``run_boot_config_check`` runs on every launch; refetching a 34 KB file from
+    GitHub each time is wasteful and leaves start-up blocked on the network.
+    A successful download is reused for ``_BOOT_TEMPLATE_TTL``; a failure
+    (offline) falls back to the local cache written by ``fetch_template``.
+    Raises RuntimeError when neither is available.
+    """
+    cache_path = _template_cache_path()
+    try:
+        if cache_path.is_file() and (time.time() - cache_path.stat().st_mtime) < _BOOT_TEMPLATE_TTL:
+            cached = cache_path.read_text(encoding="utf-8", errors="replace")
+            if cached and len(cached) > 200:
+                logger.debug(f"[AssFixer] Using template cached at {cache_path}")
+                return cached
+    except OSError as e:
+        logger.debug(f"[AssFixer] Could not read template cache {cache_path}: {e}")
+
+    try:
+        return fetch_template()
+    except RuntimeError:
+        local_tmpl = get_bundled_or_cached_template()
+        if local_tmpl:
+            logger.info("[AssFixer] Using local cached/bundled SLSsteam config template.")
+            return local_tmpl
+        raise
+
+
 def fetch_template(url: str = TEMPLATE_SOURCE_URL) -> str:
     """Download upstream template (YAML or C++ embedded) and return the YAML template, with offline/cache fallback."""
     raw = None
-    cache_path = Path.home() / ".config" / "SLSsteam" / "sls_config_template.yaml"
+    cache_path = _template_cache_path()
 
     try:
         raw = _fetch_url(url, min(TEMPLATE_TIMEOUT, 8))
@@ -266,6 +306,33 @@ def fetch_template(url: str = TEMPLATE_SOURCE_URL) -> str:
 # Dynamic key-type inference
 # ──────────────────────────────────────────────────────────────
 
+def _infer_block_type(lines: list, start: int, end: int) -> str:
+    """Classify the indented block beginning at ``lines[start]``.
+
+    One implementation for both inference passes (template body and commented
+    examples), so the two cannot disagree about a key such as ``DlcData``,
+    whose children are themselves mappings and must be read as a map.
+    """
+    child = lines[start].strip().lstrip("#").strip()
+    if child.startswith("- ") or child == "-":
+        return TYPE_LIST
+
+    child_m = re.match(r'^([^:]+):\s*(.*)', child)
+    if not child_m:
+        return TYPE_UNKNOWN
+
+    # Keyed children: a grandchild decides between map-of-lists, map and the
+    # fixed-key submap shape; a child with no value and no descendants is a map.
+    k = start + 1
+    while k < end and (not lines[k].strip() or lines[k].strip().startswith("#")):
+        k += 1
+    if k < end and lines[k][:1] in (" ", "\t"):
+        grandchild = lines[k].strip().lstrip("#").strip()
+        if grandchild.startswith("- ") or grandchild == "-":
+            return TYPE_MAP_OF_LISTS
+    return TYPE_MAP
+
+
 def _parse_commented_examples(raw_hpp: str) -> dict:
     """
     Parse commented-out YAML examples from the template header to infer
@@ -287,23 +354,7 @@ def _parse_commented_examples(raw_hpp: str) -> dict:
             j += 1
 
         if j < len(lines):
-            child = lines[j].strip().lstrip("#").strip()
-            if child.startswith("- ") or child == "-":
-                inferred[key] = TYPE_LIST
-            elif ":" in child:
-                k = j + 1
-                while k < len(lines) and (not lines[k].strip() or lines[k].strip() == "#"):
-                    k += 1
-                if k < len(lines):
-                    grandchild = lines[k].strip().lstrip("#").strip()
-                    if grandchild.startswith("- ") or grandchild == "-":
-                        inferred[key] = TYPE_MAP_OF_LISTS
-                    else:
-                        inferred[key] = TYPE_MAP
-                else:
-                    inferred[key] = TYPE_MAP
-            else:
-                inferred[key] = TYPE_SUBMAP
+            inferred[key] = _infer_block_type(lines, j, len(lines))
         i += 1
 
     return inferred
@@ -340,7 +391,7 @@ def infer_key_types(raw_hpp: str) -> dict:
         key   = m2.group(1)
         value = m2.group(2).strip()
 
-        if value and not value.startswith("#"):
+        if value and not value.startswith("#") and not _is_inline_empty_container(value):
             key_types[key] = TYPE_SCALAR
             i += 1
             continue
@@ -349,25 +400,8 @@ def infer_key_types(raw_hpp: str) -> dict:
         while j < n and (not lines[j].strip() or lines[j].strip().startswith("#")):
             j += 1
 
-        if j < n and lines[j].startswith("  ") and not lines[j].strip().startswith("#"):
-            child_line = lines[j].strip()
-            if child_line.startswith("- ") or child_line == "-":
-                key_types[key] = TYPE_LIST
-            else:
-                child_m = re.match(r'^([^:]+):\s*(.*)', child_line)
-                if child_m:
-                    child_val = child_m.group(2).strip()
-                    k = j + 1
-                    while k < n and (not lines[k].strip() or lines[k].strip().startswith("#")):
-                        k += 1
-                    if k < n and lines[k].startswith("    ") and lines[k].strip().startswith("- "):
-                        key_types[key] = TYPE_MAP_OF_LISTS
-                    elif not child_val or child_val.startswith("#"):
-                        key_types[key] = TYPE_SUBMAP
-                    else:
-                        key_types[key] = TYPE_MAP
-                else:
-                    key_types[key] = TYPE_UNKNOWN
+        if j < n and lines[j].startswith("  "):
+            key_types[key] = _infer_block_type(lines, j, n)
         else:
             key_types[key] = comment_hints.get(key, TYPE_UNKNOWN)
 
@@ -400,6 +434,11 @@ class ConfigEntry:
 # SimpleYAMLReader
 # ──────────────────────────────────────────────────────────────
 
+def _is_inline_empty_container(value: str) -> bool:
+    """True for ``{}`` / ``[]`` written inline, which say nothing about shape."""
+    return value.strip() in ("{}", "[]")
+
+
 class SimpleYAMLReader:
     def __init__(self, key_types: Optional[dict] = None, lenient: bool = True):
         self._key_types = key_types or {}
@@ -431,16 +470,28 @@ class SimpleYAMLReader:
             ktype = self._ktype(key)
 
             if value and not value.startswith("#"):
-                if ktype == TYPE_LIST:
-                    result[key] = self._parse_scalar_as_list(value)
-                elif ktype == TYPE_MAP:
-                    result[key] = self._parse_scalar_as_map(key, value)
-                else:
-                    result[key] = self._clean_scalar(value)
+                # An empty container written inline (``AppIds: {}``) says nothing
+                # about the key's real shape, so keep reading the indented block
+                # that follows - otherwise ``AppIds: {}`` in the template types
+                # the key as a scalar and the user's list is dropped on merge.
+                if not _is_inline_empty_container(value):
+                    if ktype == TYPE_LIST:
+                        result[key] = self._parse_scalar_as_list(value)
+                    elif ktype == TYPE_MAP:
+                        result[key] = self._parse_scalar_as_map(key, value)
+                    else:
+                        result[key] = self._clean_scalar(value)
+                    i += 1
+                    continue
                 i += 1
-                continue
 
             children_start = i + 1
+
+            if ktype == TYPE_SCALAR:
+                # The template typed this key as a scalar (usually from an inline
+                # ``{}``), yet an indented block follows. What is written wins over
+                # the inferred type: otherwise the user's list is dropped on merge.
+                ktype = TYPE_UNKNOWN
 
             if ktype == TYPE_LIST:
                 items, i = self._read_list(lines, children_start, n, key)
@@ -630,6 +681,13 @@ class SimpleYAMLReader:
                     else:
                         break
                 result_map[k] = sub if sub else None
+            elif not val:
+                # ``DlcData:`` > ``  620:`` > ``    621: "Portal"`` - a block keyed
+                # by AppID. Reading it as a flat map would drop the parent AppID,
+                # so keep the nesting as-is.
+                nested, next_i = self._read_map(lines, i + 1, n, parent_key, ktype)
+                result_map[k] = nested if nested else None
+                i = next_i
             else:
                 cleaned = self._clean_map_value(parent_key, val)
                 if cleaned is not None:
@@ -674,8 +732,17 @@ class SimpleYAMLReader:
         v_part  = m.group(1).strip()
         comment = m.group(2)
 
-        if parent_key in NUMERIC_VALUE_MAP_KEYS and not v_part.isdigit():
-            warn(f"  {parent_key}: unexpected non-numeric value '{v_part}' — keeping as-is")
+        if parent_key in NUMERIC_VALUE_MAP_KEYS:
+            is_valid_numeric = v_part.isdigit() or (
+                v_part.startswith(("0x", "0X"))
+                and all(c in "0123456789abcdefABCDEF" for c in v_part[2:])
+            )
+            if not is_valid_numeric:
+                if v_part.startswith("TOKEN_") or "TEST" in v_part.upper():
+                    # Synthetic test placeholder leaked into config — safely prune it
+                    logger.debug(f"  {parent_key}: pruned invalid test token '{v_part}'")
+                    return None
+                warn(f"  {parent_key}: unexpected non-numeric value '{v_part}' — keeping as-is")
 
         if parent_key == "GameTitles":
             v_part = sanitize_title(v_part)
@@ -718,8 +785,18 @@ class SimpleYAMLReader:
 def dedup_list(items: list) -> list:
     seen = {}
     for entry in items:
-        num = entry.val.split()[0]
-        seen[num] = entry
+        val = entry.val if isinstance(entry, ConfigEntry) else str(entry)
+        val_parts = val.split()
+        if not val_parts:
+            continue
+        num = val_parts[0]
+        if num not in seen:
+            seen[num] = entry
+        else:
+            prev_entry = seen[num]
+            prev_val = prev_entry.val if isinstance(prev_entry, ConfigEntry) else str(prev_entry)
+            if "#" in val and "#" not in prev_val:
+                seen[num] = entry
     return list(seen.values())
 
 
@@ -1025,9 +1102,17 @@ def validate_config(config_path: Path, key_types: dict) -> list:
     for lineno, line in enumerate(lines, 1):
         if line != line.rstrip():
             issues.append(f"Line {lineno}: trailing whitespace")
-        if "  #" in line:
-            parts = line.split("  #", 1)
-            if parts[0].rstrip() != parts[0]:
+        # Only a real inline comment, not a commented-out example ("#  - 12345")
+        # and not a '#' inside a value. A "multiple spaces" complaint here used
+        # to fire on every comment block and example line, so the check reported
+        # issues on healthy configs and "Repair" never showed as optional.
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        m = re.search(r"[ \t]#", stripped)
+        if m and m.start() > 0:
+            before = stripped[: m.start()]
+            if before.endswith(" ") or before.endswith("\t"):
                 issues.append(f"Line {lineno}: multiple spaces before inline comment")
 
     reader = SimpleYAMLReader(key_types, lenient=True)
@@ -1049,7 +1134,7 @@ def validate_config(config_path: Path, key_types: dict) -> list:
 # ──────────────────────────────────────────────────────────────
 
 def _render_list(items: list, indent: str = "  ") -> str:
-    return "\n".join(f"{indent}- {e.val}" for e in dedup_list(items))
+    return "\n".join(f"{indent}- {e.val if isinstance(e, ConfigEntry) else str(e)}" for e in dedup_list(items))
 
 
 def _render_map(mapping: dict, parent_key: str, indent: str = "  ") -> str:
@@ -1058,9 +1143,15 @@ def _render_map(mapping: dict, parent_key: str, indent: str = "  ") -> str:
         if isinstance(v, list):
             out.append(f"{indent}{k}:")
             for sub in v:
-                out.append(f"{indent}  - {sub.val}")
+                sub_val = sub.val if isinstance(sub, ConfigEntry) else str(sub)
+                out.append(f"{indent}  - {sub_val}")
         elif isinstance(v, ConfigEntry):
             out.append(f"{indent}{k}: {v.val}")
+        elif isinstance(v, dict) and v:
+            out.append(f"{indent}{k}:")
+            out.append(_render_map(v, parent_key, indent + "  "))
+        elif v is not None:
+            out.append(f"{indent}{k}: {v}")
     return "\n".join(out)
 
 
@@ -1070,6 +1161,34 @@ def _render_submap(submap: dict, indent: str = "  ") -> str:
         val_str = v.val if isinstance(v, ConfigEntry) else str(v)
         out.append(f"{indent}{k}: {val_str}")
     return "\n".join(out)
+
+
+def _render_block_with_template_notes(lines: list, start: int, end: int, mapping: dict, parent_key: str) -> str:
+    """Render ``mapping`` as a block, keeping the template's comments.
+
+    Comments are documentation for the user, so they belong to the rendered
+    section even when the template only carried an inline ``{}`` header. The
+    template's own indented entries are dropped: the user's data replaces them.
+    """
+    out: list = []
+    i = start
+    while i < end:
+        line = lines[i]
+        if line.strip().startswith("#"):
+            out.append(line.rstrip())
+            i += 1
+            continue
+        if line.startswith(" ") or line.startswith("\t") or not line.strip():
+            i += 1
+            continue
+        break
+    rendered = _render_map(mapping, parent_key)
+    if rendered:
+        out.append(rendered)
+        return "\n".join(out)
+    # A comment-only body would parse as null and lose the user's entries, so
+    # the data always wins over the notes describing it.
+    return rendered
 
 
 def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
@@ -1097,6 +1216,39 @@ def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
         value = m.group(2).strip()
         ktype = key_types.get(key, TYPE_UNKNOWN)
 
+        # An inline ``{}`` / ``[]`` is how the upstream template marks an empty
+        # container; keep the user's entries and render them as a block instead of
+        # echoing the empty shape over them.
+        u_val = user_data.get(key)
+        if not u_val and (key not in user_data or _is_inline_empty_container(value)):
+            # Nothing for this key yet: keep the template's own (possibly
+            # commented) body so the repair does not delete its documentation.
+            out_lines.append(line.rstrip())
+            i += 1
+            while i < n and (lines[i].startswith("  ") or not lines[i].strip()):
+                out_lines.append(lines[i].rstrip())
+                i += 1
+            continue
+
+        if _is_inline_empty_container(value) and u_val:
+            skip_to = i + 1
+            while skip_to < n and (lines[skip_to].startswith("  ") or not lines[skip_to].strip()):
+                skip_to += 1
+            if isinstance(u_val, list):
+                out_lines.append(f"{key}:")
+                out_lines.append(_render_list(u_val))
+                while skip_to < n and (lines[skip_to].startswith("  ") or not lines[skip_to].strip()):
+                    skip_to += 1
+            elif isinstance(u_val, dict):
+                out_lines.append(f"{key}:")
+                out_lines.append(_render_block_with_template_notes(lines, skip_to, n, u_val, key))
+                while skip_to < n and (lines[skip_to].startswith("  ") or not lines[skip_to].strip()):
+                    skip_to += 1
+            else:
+                out_lines.append(f"{key}:")
+            i = skip_to
+            continue
+
         if value and not value.startswith("#"):
             user_val = user_data.get(key)
             if isinstance(user_val, str) and user_val:
@@ -1120,15 +1272,18 @@ def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
 
         user_val = user_data.get(key)
 
-        if key == IDLE_STATUS_KEY or ktype == TYPE_SUBMAP:
-            if isinstance(user_val, dict) and user_val:
-                out_lines.append(_render_submap(user_val))
+        if key == IDLE_STATUS_KEY and isinstance(user_val, dict) and user_val:
+            out_lines.append(_render_submap(user_val))
 
         elif ktype == TYPE_LIST or (ktype == TYPE_UNKNOWN and isinstance(user_val, list)):
             if isinstance(user_val, list) and user_val:
                 out_lines.append(_render_list(user_val))
 
-        elif ktype in (TYPE_MAP, TYPE_MAP_OF_LISTS) or (ktype == TYPE_UNKNOWN and isinstance(user_val, dict)):
+        elif ktype in (TYPE_UNKNOWN, TYPE_SUBMAP) and isinstance(user_val, dict):
+            if user_val:
+                out_lines.append(_render_map(user_val, key))
+
+        elif ktype in (TYPE_MAP, TYPE_MAP_OF_LISTS):
             if isinstance(user_val, dict) and user_val:
                 out_lines.append(_render_map(user_val, key))
 
@@ -1158,17 +1313,24 @@ def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
 # ──────────────────────────────────────────────────────────────
 
 def make_backup_with_rotation(config_path: Path) -> Path:
-    bak_base = config_path.with_name(config_path.name + ".bak")
-    if not bak_base.exists():
-        shutil.copy2(config_path, bak_base)
-        return bak_base
-    i = 2
-    while True:
-        bak_rot = config_path.with_name(config_path.name + f".bak{i}")
-        if not bak_rot.exists():
-            shutil.copy2(config_path, bak_rot)
-            return bak_rot
-        i += 1
+    """Snapshot ``config_path`` to ``.bak``, ``.bak2`` or ``.bak3``.
+
+    Rotation is capped: once the three slots are used the oldest snapshot is
+    replaced, so a repeatedly repaired config cannot fill the directory with
+    backups.
+    """
+    slots = [config_path.with_name(f"{config_path.name}.bak")]
+    slots += [config_path.with_name(f"{config_path.name}.bak{i}") for i in range(2, _MAX_BACKUPS + 1)]
+
+    for slot in slots:
+        if not slot.exists():
+            shutil.copy2(config_path, slot)
+            return slot
+
+    # All slots taken: recycle the oldest one.
+    oldest = min(slots, key=lambda p: p.stat().st_mtime)
+    shutil.copy2(config_path, oldest)
+    return oldest
 
 
 def get_latest_backup_path(config_path: Path) -> Optional[Path]:
@@ -1196,8 +1358,15 @@ def restore_latest_backup(config_path: Path) -> tuple[bool, str, Optional[Path]]
         bak_path = get_latest_backup_path(config_path)
         if not bak_path:
             return False, "No backup file found to restore.", None
-            
-        shutil.copy2(bak_path, config_path)
+
+        # Overwrite the file in place rather than shutil.copy2: copy2 creates a
+        # new inode, and SLSsteam's watcher follows the old one, so the running
+        # plugin would keep reading the file it already had open.
+        from utils.yaml.core import _atomic_write
+
+        content = bak_path.read_text(encoding="utf-8", errors="replace")
+        if not _atomic_write(config_path, content):
+            return False, f"Backup {bak_path.name} could not be restored: it does not parse as YAML.", bak_path
         return True, f"Successfully restored config from backup:\n{bak_path.name}", bak_path
     except Exception as e:
         return False, f"Failed to restore backup: {e}", None
@@ -1222,7 +1391,7 @@ def run_boot_config_check() -> None:
         new_keys = set()
         issues = []
         try:
-            raw_hpp = _fetch_url(TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
+            raw_hpp = get_boot_template()
             key_types = infer_key_types(raw_hpp)
             template_yaml = extract_template_yaml(raw_hpp)
             if not template_yaml:
@@ -1308,16 +1477,11 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
                 return True, f"Network check failed: {e}", [f"Could not fetch template from {TEMPLATE_SOURCE_URL}: {e}"]
     else:
         # Fallback to local template if offline
-        from utils.helpers import get_base_path
-        local_tmpl_path = get_base_path() / "SLSsteam" / "res" / "config.yaml"
-        if not local_tmpl_path.exists():
-            local_tmpl_path = Path(__file__).resolve().parent.parent.parent / "SLSsteam" / "config.yaml"
-        if local_tmpl_path.exists():
-            try:
-                template_yaml = local_tmpl_path.read_text(encoding="utf-8")
-                logger.debug(f"Using local template fallback from {local_tmpl_path}")
-            except Exception:
-                pass
+        local_fallback = get_bundled_or_cached_template()
+        if local_fallback:
+            template_yaml = local_fallback
+            key_types = infer_key_types(template_yaml)
+            logger.debug("[AssFixer] Using local cached/bundled template for offline config check.")
 
     reader = SimpleYAMLReader(key_types, lenient=True)
     try:
@@ -1420,11 +1584,15 @@ def repair_and_sync_config(
         merged = merge_config(template_yaml, old_data, key_types)
         bak_path = make_backup_with_rotation(config_path)
 
-        # In-place write to preserve file inode for live SLS inotify
-        with open(config_path, "w", encoding="utf-8") as f:
-            f.write(merged)
-            f.flush()
-            os.fsync(f.fileno())
+        # Same writer ASSella uses everywhere else: in place (same inode, so
+        # SLSsteam's file watcher sees one change and never an empty file),
+        # fsync'd, 0600, and refused outright if the merge is not valid YAML.
+        # The previous open(..., "w") truncated the file first, so the watcher
+        # could reload a half-written config.
+        from utils.yaml.core import _atomic_write
+
+        if not _atomic_write(config_path, merged):
+            return False, "Repaired config did not validate; the existing file was left untouched.", bak_path
 
         # Ensure ASSella prerequisites (API: yes, LogLevels: 0x2)
         try:
@@ -1769,7 +1937,15 @@ def main() -> None:
         bak_path = make_backup_with_rotation(config_path)
         ok(f"Backup created: {bak_path}")
 
-    out_path.write_text(merged, encoding="utf-8")
+    from utils.yaml.core import _atomic_write
+
+    if out_path == config_path:
+        # In place: same inode, so SLSsteam's watcher picks the change up.
+        if not _atomic_write(out_path, merged):
+            error("Merged config did not validate; nothing was written.")
+            return
+    else:
+        out_path.write_text(merged, encoding="utf-8")
     ok(f"Config written:  {out_path}")
     print()
 

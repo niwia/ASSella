@@ -229,7 +229,8 @@ class BranchBuildMixin:
             return
         self._selected_build_id = selected_bid
         self.builds_btn.setText(f"Build: {selected_bid}")
-        if self.current_build_id and selected_bid == self.current_build_id:
+        has_mid_diff = bool(patch_depots)
+        if self.current_build_id and selected_bid == self.current_build_id and not has_mid_diff:
             self._is_build_pinned = False
         else:
             self._is_build_pinned = True
@@ -245,38 +246,19 @@ class BranchBuildMixin:
                     logger.info(f"[DepotSelection] Overrode depot {did} manifest to {mid} for build {selected_bid}")
 
     def _on_builds_clicked(self):
-        from core.steamdb_scraper import ByparrManager
-        has_byparr = ByparrManager.find_byparr_dir() is not None
-
         first_depot = next(iter(self.depots.keys())) if self.depots else str(self.app_id)
-
         active_bid = getattr(self, "_selected_build_id", None) or self.current_build_id
 
-        if not has_byparr:
-            from ui.dialogs.manual_manifest_dialog import ManualManifestDialog
-            dlg = ManualManifestDialog(
-                parent=self,
-                app_id=self.app_id,
-                game_name=self.game_name,
-                depots_dict=self.depots,
-                default_depot_id=first_depot,
-                current_build_id=active_bid,
-                accent_color=self.accent_color,
-            )
-            if dlg.exec():
-                selected_bid, patch_depots = dlg.get_selected_build()
-                self._apply_build_selection(selected_bid, patch_depots)
-        else:
-            from ui.dialogs.build_selection_dialog import BuildSelectionDialog
-            dlg = BuildSelectionDialog(
-                parent=self,
-                app_id=self.app_id,
-                game_name=self.game_name,
-                current_build_id=active_bid,
-                accent_color=self.accent_color,
-                depots_dict=self.depots,
-                default_depot_id=first_depot,
-            )
-            if dlg.exec():
-                selected_bid, patch_depots = dlg.get_selected_build()
-                self._apply_build_selection(selected_bid, patch_depots)
+        from ui.dialogs.build_selection_dialog import BuildSelectionDialog
+        dlg = BuildSelectionDialog(
+            parent=self,
+            app_id=self.app_id,
+            game_name=self.game_name,
+            current_build_id=active_bid,
+            accent_color=self.accent_color,
+            depots_dict=self.depots,
+            default_depot_id=first_depot,
+        )
+        if dlg.exec():
+            selected_bid, patch_depots = dlg.get_selected_build()
+            self._apply_build_selection(selected_bid, patch_depots)

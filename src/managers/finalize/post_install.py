@@ -44,7 +44,13 @@ class PostInstallMixin:
 
     def _on_download_complete(self):
         """Handle download completion"""
-        if self.is_cancelling:
+        # A stopped task also emits ``completed`` (its terminal "ended" signal);
+        # never finalise an install whose downloader was told to stop.
+        stopped = (
+            self.download_task is not None
+            and getattr(self.download_task, "is_running_flag", True) is False
+        )
+        if self.is_cancelling or stopped:
             if self._delete_files_on_cancel:
                 self._cleanup_cancelled_job_files()
             self.job_finished()
@@ -82,6 +88,17 @@ class PostInstallMixin:
                 self.job_finished()
             return
 
+        unkeyed_depots = getattr(self.download_task, "unkeyed_depots", None)
+        if unkeyed_depots:
+            from ui.dialogs.themed_message_box import ThemedMessageBox
+            ThemedMessageBox.warning(
+                self.main_window,
+                "AT0-M Depots Excluded",
+                "Steam will install the remaining keyed depots, but these selected "
+                "depots had no decryption key and were excluded:\n\n"
+                + ", ".join(str(d) for d in unkeyed_depots),
+            )
+
         self.main_window.drop_text_label.setText("Finalizing installation...")
         logger.info("Starting post-download I/O processing in background thread...")
 
@@ -101,6 +118,7 @@ class PostInstallMixin:
 
         # Signal the finalize thread to abort if it's still running
         self._finalize_cancel_event.clear()
+        self._finalize_error = None
         # Start the worker thread
         threading.Thread(
             target=self._run_finalize_io_worker,
@@ -127,41 +145,99 @@ class PostInstallMixin:
             # A `return` inside the `with` would run the context manager's
             # success path and log "done" for a cancelled job, so the loop
             # breaks out instead and the outcome is recorded explicitly.
+            from utils.game_modes import is_standalone_game
+            is_standalone = is_standalone_game(
+                {
+                    **(self.game_data or {}),
+                    "install_path": self.current_dest_path,
+                }
+                if self.current_dest_path
+                else self.game_data
+            )
+            if is_standalone and self.game_data:
+                self.game_data["is_standalone"] = True
+                self.game_data["source"] = "Standalone"
+
             cancelled = False
             with log_step(
                 "Finalizing install",
                 category=CONFIG,
                 skipped_message="cancelled",
             ) as step:
-                for name, run_step in (
-                    ("manifests", lambda: self._finalize_acf_and_manifests(size_on_disk)),
-                    ("wrapper metadata", self._persist_wrapper_metadata),
-                    ("platform specifics", lambda: self._finalize_platform_specifics(config_enabled)),
-                    ("emulation", lambda: self._finalize_goldberg(auto_apply_goldberg)),
-                    ("eosproxy", self._finalize_eosproxy),
-                    ("greenluma", lambda: self._finalize_greenluma(config_enabled)),
-                ):
+                if is_standalone:
+                    steps = (
+                        ("standalone record", lambda: self._finalize_standalone_record(size_on_disk)),
+                        ("permissions", self._set_linux_binary_permissions),
+                        ("emulation", lambda: self._finalize_goldberg(auto_apply_goldberg)),
+                    )
+                else:
+                    steps = (
+                        ("manifests", lambda: self._finalize_acf_and_manifests(size_on_disk)),
+                        ("wrapper metadata", self._persist_wrapper_metadata),
+                        ("platform specifics", lambda: self._finalize_platform_specifics(config_enabled)),
+                        ("emulation", lambda: self._finalize_goldberg(auto_apply_goldberg)),
+                        ("eosproxy", self._finalize_eosproxy),
+                        ("greenluma", lambda: self._finalize_greenluma(config_enabled)),
+                    )
+                for name, run_step in steps:
                     if self._finalize_cancel_event.is_set() or self.is_cancelling:
                         cancelled = True
                         break
                     logger.debug("Finalize step: %s", name)
-                    run_step()
+                    try:
+                        run_step()
+                    except Exception as e:
+                        # A failed step must not be reported as a successful
+                        # install. Stop the chain and let _finalize_job_logic
+                        # mark the job failed without applying up_to_date.
+                        self._finalize_error = f"{name}: {e}"
+                        logger.error(
+                            f"Finalize step '{name}' failed: {e}", exc_info=True
+                        )
+                        break
 
                 if cancelled:
                     step["result"] = "cancelled"
+                elif self._finalize_error:
+                    step["result"] = "failed"
                 else:
                     step["result"] = "complete"
 
         except Exception as e:
+            self._finalize_error = str(e)
             logger.error(
                 f"Critical error in post-processing thread: {e}", exc_info=True
             )
         finally:
-            # Only invoke the main-thread slot if we weren't cancelled mid-way
-            if not self._finalize_cancel_event.is_set():
-                QMetaObject.invokeMethod(
-                    self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
-                )
+            # Always invoke _finalize_job_logic so cancel during finalize still
+            # calls job_finished() and clears is_processing instead of deadlocking.
+            QMetaObject.invokeMethod(
+                self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
+            )
+
+    def _finalize_standalone_record(self, size_on_disk: int):
+        """Register a standalone custom-folder installation in DatabaseManager."""
+        try:
+            if not self.game_data or not self.current_dest_path:
+                return
+            from managers.db_manager import DatabaseManager
+            from utils.steam_manifest import get_game_directory
+
+            appid = str(self.game_data.get("appid", ""))
+            game_name = str(self.game_data.get("name") or self.game_data.get("game_name") or f"App {appid}")
+            buildid = str(self.game_data.get("buildid", ""))
+            game_dir = get_game_directory(self.current_dest_path, self.game_data)
+            DatabaseManager().save_standalone_game(
+                appid=appid,
+                game_name=game_name,
+                install_path=game_dir,
+                buildid=buildid,
+                size=size_on_disk,
+            )
+            logger.info(f"[PostInstall] Saved standalone game '{game_name}' ({appid}) at {game_dir}")
+        except Exception as e:
+            logger.error(f"[PostInstall] Failed to register standalone game: {e}")
+
     def _finalize_acf_and_manifests(self, size_on_disk: int):
         # 1. Manifests → Steam's central depotcache FIRST, so they are in place
         #    before the SLS install|appid|index command fires. Without this,
@@ -175,12 +251,16 @@ class PostInstallMixin:
         self._seed_ddm_delta_cache()
 
         # 3. ACF / SLS install trigger (must be last — depotcache must be ready)
-        self._create_acf_file(size_on_disk)
+        if self._create_acf_file(size_on_disk) is False:
+            raise RuntimeError("Could not create or register the Steam appmanifest")
 
         # 4. Depot Info
         selected_depots = self.game_data.get("selected_depots_list", [])
         all_manifests = self.game_data.get("manifests", {})
-        if selected_depots and all_manifests:
+        # Write the depot file whenever we know the selection, even if no manifest
+        # map came back: otherwise a game with content changes but an empty
+        # ``manifests`` dict keeps the stale manifest ids from an older install.
+        if selected_depots:
             self._save_main_depot_info(self.game_data, selected_depots, all_manifests)
     def _persist_wrapper_metadata(self):
         """
@@ -444,9 +524,20 @@ class PostInstallMixin:
             logger.debug(f"Failed to restore symlinks in finalize_job_logic: {e}")
 
         # --- FINISH ---
-        logger.info("All post-processing steps complete. Finishing job.")
-        self.main_window.job_queue.jobs_completed_count += 1
-        if not self.is_cancelling:
+        finalize_error = getattr(self, "_finalize_error", None)
+        if finalize_error:
+            # A finalisation failure is a failed install, not "Completed".
+            self._job_failed = True
+            logger.error(
+                "Post-processing did not complete; refusing to mark the install "
+                f"up-to-date: {finalize_error}"
+            )
+        elif self.is_cancelling:
+            logger.info("Finalization interrupted by cancellation; finishing job.")
+        else:
+            logger.info("All post-processing steps complete. Finishing job.")
+            self.main_window.job_queue.jobs_completed_count += 1
+        if not self.is_cancelling and not finalize_error:
             # Clear the cached update status for this game so it gets re-checked
             # (it may have gone from "update_available" to "up_to_date")
             if self.game_data:
@@ -461,7 +552,16 @@ class PostInstallMixin:
                     # Cache status: handoff defers to VaporWatcher; a pinned older
                     # build is a deliberate freeze; an unpinned older package shows
                     # the pending update. See _apply_install_update_status.
-                    self._apply_install_update_status(appid, is_stale_or_rollback)
+                    final_status = self._apply_install_update_status(appid, is_stale_or_rollback)
+                    if final_status and final_status != "handoff":
+                        self.game_data["update_status"] = final_status
+                        gm = getattr(self.main_window, "game_manager", None)
+                        if gm:
+                            existing = gm.get_game(appid)
+                            if existing:
+                                existing["update_status"] = final_status
+                            if hasattr(gm, "game_update_status_changed"):
+                                gm.game_update_status_changed.emit(str(appid), final_status)
 
                     # Upsert the new manifest/depot data to SQLite DB to refresh cache age and content
                     try:
@@ -593,7 +693,25 @@ class PostInstallMixin:
             if queue_mgr and getattr(queue_mgr, "job_queue", None):
                 has_queued_jobs = len(queue_mgr.job_queue) > 0
 
-            if has_queued_jobs:
+            from utils.settings import get_settings
+            should_rescan = get_settings().value("rescan_library_after_download", True, type=bool)
+
+            if not should_rescan:
+                logger.info(
+                    "[PostInstall] Post-download library rescan disabled by user settings. Skipping full library scan."
+                )
+                if hasattr(self.main_window, "game_manager") and self.main_window.game_manager and self.game_data:
+                    try:
+                        appid_str = str(self.game_data.get("appid", ""))
+                        gm = self.main_window.game_manager
+                        existing = gm.get_game(appid_str)
+                        if existing:
+                            gm.update_game(appid_str, self.game_data)
+                        else:
+                            gm.add_game(self.game_data)
+                    except Exception as _sync_err:
+                        logger.debug(f"[PostInstall] Could not update in-memory game record: {_sync_err}")
+            elif has_queued_jobs:
                 logger.info(
                     f"[PostInstall] Deferring library scan: {len(queue_mgr.job_queue)} job(s) remaining in queue."
                 )
@@ -616,10 +734,19 @@ class PostInstallMixin:
         Runs in the background and never holds up the rest of the install.
         """
         from utils import desktop_shortcuts
+        from utils.game_modes import is_standalone_game
 
         if (self.is_cancelling or is_dlc_only or not self.game_data or not desktop_shortcuts.supported()
                 or not self.settings.value(desktop_shortcuts.SETTING_AFTER_INSTALL, False, type=bool)):
             return
+
+        if is_standalone_game(self.game_data):
+            logger.info(
+                f"[PostInstall] Skipping Steam desktop shortcut for standalone game "
+                f"{self.game_data.get('appid')}"
+            )
+            return
+
         appid = str(self.game_data.get("appid") or "")
         name = self.game_data.get("game_name", "") or ""
 
@@ -653,14 +780,21 @@ class PostInstallMixin:
             existing_entries = {}
             if depot_file.exists():
                 try:
-                    for line in depot_file.read_text().splitlines():
+                    for line in depot_file.read_text(encoding="utf-8", errors="replace").splitlines():
                         parts = [p.strip() for p in line.split(":")]
                         if len(parts) >= 2:
                             existing_entries[parts[0]] = line
-                except Exception:
-                    pass
+                except Exception as read_err:
+                    logger.debug(f"Could not read existing entries from {depot_file}: {read_err}")
 
-            # Add or update entries for ALL selected depots
+            # Add or update entries for ALL selected depots. A depot the user unticked
+            # is dropped: the selection is the download it represents now, and keeping
+            # the old line would make the checker compare a manifest nobody installed.
+            selected_set = {str(d) for d in selected_depots}
+            for did in list(existing_entries.keys()):
+                if did not in selected_set:
+                    existing_entries.pop(did, None)
+
             for depot_id_raw in selected_depots:
                 depot_id = str(depot_id_raw)
                 manifest_id = all_manifests.get(depot_id)
@@ -671,30 +805,44 @@ class PostInstallMixin:
                 else:
                     existing_entries[depot_id] = f"{depot_id}: {manifest_id}"
 
+            # Also update any existing depots that are present in all_manifests so
+            # tracked depots do not retain stale manifests after an update.
+            for did in list(existing_entries.keys()):
+                if did in all_manifests and all_manifests[did]:
+                    if access_token:
+                        existing_entries[did] = f"{did}: {all_manifests[did]}: {access_token}"
+                    else:
+                        existing_entries[did] = f"{did}: {all_manifests[did]}"
+
             with open(depot_file, "w") as f:
                 for entry_line in existing_entries.values():
                     f.write(entry_line + "\n")
         except OSError as e:
             logger.error(f"Failed to save depot info: {e}")
+
+    def _is_native_steam_download(self) -> bool:
+        try:
+            from core.tasks.native_steam_download_task import NativeSteamDownloadTask
+            return isinstance(self.download_task, NativeSteamDownloadTask)
+        except Exception as e:
+            logger.debug(f"_is_native_steam_download check error: {e}")
+            return False
+
     def _create_acf_file(self, size_on_disk):
         if not self.game_data or not self.current_dest_path:
-            return
+            return True
 
         appid = self.game_data.get("appid")
 
         # If NativeSteamDownloadTask was used, Steam already natively generated the ACF
         # and manages the installation. Skip writing custom ACF and ACCELA metadata markers
         # to prevent subsequent library scans from misidentifying native games as ACCELA.
-        try:
-            from core.tasks.native_steam_download_task import NativeSteamDownloadTask
-            if isinstance(self.download_task, NativeSteamDownloadTask):
-                logger.info(
-                    f"Native Steam download backend was used for {appid} - "
-                    "Steam natively generated the manifest. Skipping custom ACF and ACCELA metadata writing."
-                )
-                return
-        except Exception:
-            pass
+        if self._is_native_steam_download():
+            logger.info(
+                f"Native Steam download backend was used for {appid} - "
+                "Steam natively generated the manifest. Skipping custom ACF and ACCELA metadata writing."
+            )
+            return True
 
         # 1. Always write/update our local metadata.json fallback for non-native downloads
         try:
@@ -727,11 +875,23 @@ class PostInstallMixin:
                 is_sls_filewatcher_dead,
             )
             if _experimental_mode_enabled():
-                is_pinned = False
+                if appid:
+                    from utils.dlc_helpers import is_dlc_only_mode
+                    if is_dlc_only_mode(str(appid)):
+                        logger.info("DLC Only mode active (ACF-Independent). Skipping base game install_via_sls.")
+                        return True
+                is_pinned = bool(
+                    self.game_data.get("pin_build")
+                    or self.game_data.get("_pin_build")
+                    or self.game_data.get("is_rollback")
+                    or self.game_data.get("manifest_overrides")
+                )
                 if appid and appid not in ("0", "N/A", "unknown"):
                     try:
                         from utils.settings import get_settings as _gs
-                        is_pinned = _gs().value(f"pin_build/{appid}", False, type=bool)
+                        is_pinned = is_pinned or _gs().value(
+                            f"pin_build/{appid}", False, type=bool
+                        )
                     except Exception:
                         pass
 
@@ -757,19 +917,20 @@ class PostInstallMixin:
                     job_type = self.game_data.get("job_type", "download") if self.game_data else "download"
                     if job_type == "verify":
                         logger.info("Skipping SLS install API call for verify job — ACF already exists.")
-                        return
+                        return True
                     if appid and appid not in ("0", "N/A", "unknown"):
-                        install_via_sls(
+                        return bool(install_via_sls(
                             appid=str(appid),
                             game_name=self.game_data.get("game_name", ""),
                             library_path=self.current_dest_path or "",
                             main_window=self.main_window,
                             game_data=self.game_data,
                             size_on_disk=size_on_disk,
-                        )
-                    return
+                        ))
+                    return True
         except Exception as e:
             logger.error(f"Error in SLSsteam install flow for {appid}: {e}")
+            return False
 
 
         # 3. Fallback: Write standard Steam .acf manifest file when experimental mode is disabled
@@ -779,18 +940,27 @@ class PostInstallMixin:
             is_dlc_only = is_dlc_only_mode(str(appid))
             if is_dlc_only:
                 logger.info("DLC Only mode active. Skipping base game .acf manifest generation.")
-                return
+                return True
 
         try:
-            write_acf_file(
+            written = write_acf_file(
                 self.current_dest_path,
                 self.game_data,
                 size_on_disk,
-                include_depots=sys.platform == "win32",
+                # This fallback writes the ACF Steam itself will read, so it
+                # must describe the depots we installed on every platform.
+                # An empty InstalledDepots block is flagged as broken and makes
+                # AT0-M adoption/verification think nothing was installed.
+                include_depots=True,
             )
+            if not written:
+                logger.error(f"Could not write .acf manifest file for {appid}")
+                return False
             logger.info(f"Generated .acf manifest file for {appid}")
+            return True
         except Exception as e:
             logger.error(f"Error creating .acf file for {appid}: {e}")
+            return False
     def _move_manifests_to_depotcache(self):
         if not self.game_data or not self.current_dest_path:
             return
@@ -931,14 +1101,15 @@ class PostInstallMixin:
             except OSError as e:
                 logger.warning(f"Failed to seed delta cache for {manifest_filename}: {e}")
 
-        # Ensure .assella marker is written for ASSella managed games
-        try:
-            marker_file = os.path.join(game_install_dir, ".assella")
-            if not os.path.exists(marker_file):
-                with open(marker_file, "w", encoding="utf-8") as f:
-                    f.write(f"appid={self.game_data.get('appid')}\n")
-        except Exception:
-            pass
+        # Ensure .assella marker is written for ASSella managed games (never for AT0-M native Steam)
+        if not self._is_native_steam_download():
+            try:
+                marker_file = os.path.join(game_install_dir, ".assella")
+                if not os.path.exists(marker_file):
+                    with open(marker_file, "w", encoding="utf-8") as f:
+                        f.write(f"appid={self.game_data.get('appid')}\n")
+            except Exception as e:
+                logger.debug(f"Failed writing .assella marker: {e}")
 
         if seeded:
             logger.info(
@@ -954,7 +1125,7 @@ class PostInstallMixin:
         if os.path.exists(game_directory):
             self._run_chmod_recursive(game_directory)
     def _add_appids_to_slssteam_config(self):
-        if not self.game_data:
+        if not self.game_data or self._is_native_steam_download():
             return
 
         try:

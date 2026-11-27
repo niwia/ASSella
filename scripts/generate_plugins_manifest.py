@@ -136,6 +136,14 @@ def plugin_meta(text: str) -> dict:
         h = re.search(r"^--\s*[\w.\-]+\.lua\s*\(v?([\w.\-]+)\)", text, re.M)
         if h:
             meta["version"] = h.group(1)
+        else:
+            h2 = re.search(r"^--\s*SpaceBunny\s+v?([0-9]+(?:\.[0-9]+)+)", text, re.M | re.I)
+            if h2:
+                meta["version"] = h2.group(1)
+            else:
+                h3 = re.search(r'\bversion\s*=\s*["\']([0-9]+(?:\.[0-9]+)+)["\']', text)
+                if h3:
+                    meta["version"] = h3.group(1)
     k = _KATAMARI_RE.search(code)
     if k:
         meta["id"] = k.group(1) or k.group(2)
@@ -202,7 +210,8 @@ def previous_manifest(stage: Path) -> dict:
 
 
 def run_lua_tests(source: Path) -> bool:
-    tests = ["test_SpaceBunny1_8.0beta.lua", "test_styx.lua", "test_lettuce.lua", "test_pinapple.lua", "test_lobster.lua"]
+    sb_test = "test_spacebunny2_x64.lua" if (source / "test_spacebunny2_x64.lua").is_file() else "test_SpaceBunny1_8.0beta.lua"
+    tests = [sb_test, "test_styx.lua", "test_lettuce.lua", "test_pinapple.lua", "test_lobster.lua"]
     luajit = shutil.which("luajit")
     if not luajit:
         print("luajit not found; skipping plugin tests (use --skip-tests to silence this)")

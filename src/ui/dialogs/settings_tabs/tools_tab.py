@@ -454,9 +454,15 @@ def launch_terminal_command(cmd: list, cwd: str, needs_env: bool = False) -> boo
     cmd_str = [str(part) for part in cmd]
     cwd = str(cwd)
     if sys.platform == "win32":
-        q_cmd = " ".join([f'"{c}"' if " " in str(c) else str(c) for c in cmd_str])
+        # Quote arguments with the Windows rules and avoid shell=True. cmd.exe
+        # /k keeps the window open; CREATE_NEW_CONSOLE replaces `start`.
+        q_cmd = subprocess.list2cmdline(cmd_str)
+        command = f'cd /d "{cwd}" && {q_cmd}'
         try:
-            subprocess.Popen(f'start cmd /k "cd /d {cwd} && {q_cmd}"', shell=True)
+            subprocess.Popen(
+                ["cmd.exe", "/k", command],
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
             return True
         except OSError:
             pass

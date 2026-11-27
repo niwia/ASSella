@@ -128,7 +128,7 @@ class AtomPendingDialog(QDialog):
             issue_lay.setContentsMargins(12, 10, 12, 12)
             issue_lay.setSpacing(6)
 
-            issue_hdr = QLabel("⚠ Configuration Needs Attention")
+            issue_hdr = QLabel("Configuration Needs Attention")
             issue_hdr.setStyleSheet("color: #FFD54F; font-size: 9.5pt; font-weight: bold; background: transparent;")
             issue_lay.addWidget(issue_hdr)
 

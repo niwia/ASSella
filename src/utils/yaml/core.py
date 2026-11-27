@@ -18,9 +18,11 @@ import-cycle free.
 import logging
 
 # --- imports ---------------------------------------------------------
-import os, re, shutil
+import os, re, shutil, sys, threading, time
+from contextlib import contextmanager
+from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Iterator, Optional, Tuple, Union
 
 from utils.yaml.constants import BACKUP_SUFFIX, SHARED_REDISTS, TOP_LEVEL_KEY_PATTERN
 from utils.yaml.modes import is_slssteam_config_management_enabled, is_slssteam_mode_enabled
@@ -29,14 +31,201 @@ from utils.yaml.validation import _is_valid_hex64, _sanitize_comment, _sanitize_
 logger = logging.getLogger(__name__)
 
 
+class WriteOutcome(Enum):
+    """What a config write actually did.
+
+    The editor methods used to answer with a bare bool, where False meant any
+    of "already present", "refused by a guard", "nothing to remove" or "write
+    failed". Callers that report results to the user (spelling out "added" vs
+    "already there" vs "refused") need the distinction, so the methods return
+    one of these instead and the module-level wrappers keep their bool for
+    compatibility.
+    """
+
+    CHANGED = "changed"
+    ALREADY_PRESENT = "already_present"
+    NOT_PRESENT = "not_present"
+    REFUSED = "refused"
+    FAILED = "failed"
+
+    @property
+    def ok(self) -> bool:
+        """True when the config already holds (or now holds) what was asked."""
+        return self in (WriteOutcome.CHANGED, WriteOutcome.ALREADY_PRESENT)
+
+
 _CONFIG_DISABLED = object()
 
 # Config paths backed up by this process. One snapshot per session is enough;
 # see _create_backup for why later calls must not overwrite it.
 _BACKED_UP_THIS_SESSION: set = set()
 
+# One lock per config file, held for the whole read-modify-write of a batch
+# edit. Without it two editors that both read the file before either wrote
+# commit the second read over the first, so one of them silently loses its
+# entries (measured: 12 of 20 concurrent entries dropped).
+_CONFIG_LOCKS: Dict[str, threading.RLock] = {}
+_CONFIG_LOCKS_GUARD = threading.Lock()
+
+# How long a batch edit waits for the lock before giving up rather than
+# freezing the UI thread behind a stuck writer.
+_CONFIG_LOCK_TIMEOUT = 15.0
+
+
+def _config_lock_key(config_path: Path) -> str:
+    try:
+        return str(config_path.resolve())
+    except OSError:
+        return str(config_path)
+
+
+@contextmanager
+def config_write_lock(config_path: Path) -> Iterator[None]:
+    """Serialise read-modify-write cycles on one config file across threads.
+
+    Re-entrant, so a writer called from inside another writer on the same file
+    still works. This is a *process-local* lock: it orders the GUI thread and
+    worker threads in this process (plugin DB sync, DLC sync, background
+    tasks). A separate process (headless helper, external update checker)
+    cannot take it, so it is not a cross-process file lock.
+
+    A lock is only held for one short read-modify-write. If it cannot be
+    acquired within the timeout, another writer is stuck or deadlocked;
+    proceeding unlocked would let both writers overwrite each other's entries,
+    so fail instead of silently losing data.
+    """
+    key = _config_lock_key(config_path)
+    with _CONFIG_LOCKS_GUARD:
+        lock = _CONFIG_LOCKS.setdefault(key, threading.RLock())
+
+    acquired = lock.acquire(timeout=_CONFIG_LOCK_TIMEOUT)
+    if not acquired:
+        raise TimeoutError(
+            f"Timed out after {_CONFIG_LOCK_TIMEOUT:.0f}s waiting for the config "
+            f"write lock on {config_path}; another writer is still holding it"
+        )
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def _config_management_enabled() -> bool:
     return is_slssteam_mode_enabled() and is_slssteam_config_management_enabled()
+
+# A top-level section written as a single-line flow collection, e.g.
+# `AdditionalApps: [111, 222]` or `DlcData: {620: {621: "Portal"}}`.
+_TOP_LEVEL_FLOW_SECTION_PATTERN = re.compile(
+    r"^(?P<key>[A-Za-z0-9_]+)[ \t]*:[ \t]*"
+    r"(?P<value>\[[^\r\n]*\]|\{[^\r\n]*\})[ \t]*"
+    r"(?P<comment>#[^\r\n]*)?[ \t]*(?=\r?$)",
+    re.MULTILINE,
+)
+
+
+# Sections whose only valid shape is a collection. Flow style is normalised
+# only for these names, so an unrelated plugin key written as `[yes, no]` is
+# never re-parsed under PyYAML's YAML 1.1 rules and rewritten.
+_EDITABLE_SECTION_NAMES = frozenset(
+    {
+        "AdditionalApps",
+        "AdditionalDepots",
+        "AppIds",
+        "AppTokens",
+        "CDKeys",
+        "DecryptionKeys",
+        "DenuvoGames",
+        "DlcData",
+        "FakeAppIds",
+        "GameTitles",
+        "IdleStatus",
+        "LaunchOptions",
+        "ManifestIds",
+        "SubscriptionTimestamps",
+    }
+)
+
+
+def _newline_style(content: str) -> str:
+    """Return the newline sequence an editor should use for ``content``."""
+    return "\r\n" if "\r\n" in content else "\n"
+
+
+def _normalize_flow_sections(content: str) -> str:
+    """Rewrite top-level non-empty flow collections into block style.
+
+    The section editors are line based: they look for an indented list/map body
+    under a `Section:` header. A flow value (`AdditionalApps: [111, 222]`) has
+    no such body, so an insert appended a *second* `AdditionalApps:` key and
+    the duplicate-key write gate then refused the edit. Re-writing the value as
+    its block equivalent keeps the data and lets every editor see it.
+
+    Only single-line flow collections are converted. A non-empty value is
+    parsed and re-emitted as a block; an empty `[]`/`{}` becomes a bare
+    `Section:` header, which is what every line-based editor expects. The file
+    is never written here, so a read-only caller only pays for parsing a
+    section it was already reading.
+    """
+    if not content or "[" not in content and "{" not in content:
+        return content
+
+    if not any(
+        match.group("key") in _EDITABLE_SECTION_NAMES
+        for match in _TOP_LEVEL_FLOW_SECTION_PATTERN.finditer(content)
+    ):
+        return content
+
+    try:
+        import yaml
+    except Exception:  # pragma: no cover - pyyaml is a hard dependency
+        return content
+
+    newline = _newline_style(content)
+    changed = False
+
+    def _replace(match: re.Match) -> str:
+        nonlocal changed
+        key = match.group("key")
+        value = match.group("value")
+        comment = (match.group("comment") or "").strip()
+        header = f"{key}:" + (f" {comment}" if comment else "")
+
+        if value in ("[]", "{}"):
+            # Empty collection -> bare header. The batch helpers used to do
+            # this only when that section was the edit target, so standalone
+            # writers (FakeAppIds, LaunchOptions, AppTokens, DlcData, ...)
+            # inserted a block under `{}` and the write was refused.
+            changed = True
+            return header
+
+        try:
+            data = yaml.safe_load(value)
+        except Exception:
+            return match.group(0)
+        if not isinstance(data, (list, dict)) or not data:
+            return match.group(0)
+
+        try:
+            dumped = yaml.safe_dump(
+                data,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+                # No line folding: wrapping a long DLC name inserts a `\`
+                # continuation, which the line-based readers cannot parse.
+                width=10**9,
+            ).rstrip("\n")
+        except Exception:
+            return match.group(0)
+
+        body = "".join(f"  {line}{newline}" for line in dumped.splitlines())
+        changed = True
+        # The original line ending is not part of the match and stays in place.
+        return header + newline + body.rstrip("\r\n")
+
+    normalized = _TOP_LEVEL_FLOW_SECTION_PATTERN.sub(_replace, content)
+    return normalized if changed else content
+
 
 def _read_config_content(config_path: Path, log_missing: bool = False) -> Optional[str]:
     if not config_path.exists():
@@ -44,8 +233,9 @@ def _read_config_content(config_path: Path, log_missing: bool = False) -> Option
             logger.warning(f"Config file not found at {config_path}")
         return None
 
-    with open(config_path, "r", encoding="utf-8") as f:
-        return f.read()
+    with open(config_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    return _normalize_flow_sections(content)
 
 def _get_config_content_if_enabled(config_path: Path, log_missing: bool = False):
     if not _config_management_enabled():
@@ -188,8 +378,11 @@ def _get_section_bounds(content: str, section_name: str) -> Optional[Tuple[int, 
     content_start: index of the first character after the newline of the header.
     section_end: index of the start of the next top-level key line or EOF.
     """
+    # Anchored at column 0: an indented `AdditionalApps:` under another key is
+    # a nested mapping, not the top-level section this helper edits. Matching
+    # it would silently write entries into the wrong parent.
     header_pattern = re.compile(
-        r"^[ \t]*['\"]?" + re.escape(section_name) + r"['\"]?[ \t]*:[ \t]*(?:\[[ \t]*\]|\{[ \t]*\})?[ \t]*(?:#[^\r\n]*)?$",
+        r"^['\"]?" + re.escape(section_name) + r"['\"]?[ \t]*:[ \t]*(?:\[[ \t]*\]|\{[ \t]*\})?[ \t]*(?:#[^\r\n]*)?\r?$",
         re.MULTILINE,
     )
     match = header_pattern.search(content)
@@ -206,6 +399,14 @@ def _get_section_bounds(content: str, section_name: str) -> Optional[Tuple[int, 
     after_section = content[content_start:]
     next_match = TOP_LEVEL_KEY_PATTERN.search(after_section)
     section_end = (content_start + next_match.start()) if next_match else len(content)
+
+    if section_end <= content_start:
+        # An empty section (`Section:` or `Section: {}`) makes the search this
+        # side of the newline match the header itself, which would report an
+        # empty body starting on the *next* key's line. Callers insert at
+        # content_start, so that would leave the following section header
+        # childless and silently drop its entries.
+        section_end = content_start
 
     return header_start, content_start, section_end
 
@@ -268,9 +469,10 @@ def _get_section_end(
 ) -> int:
     after_section = content[section_start:]
     next_match = next_key_pattern.search(after_section)
-    if next_match:
+    if next_match and next_match.start() > 0:
         return section_start + next_match.start()
-    return len(content)
+    # A zero-width hit is the line we started on, i.e. an empty body.
+    return section_start
 
 def _remove_entry_in_memory(
     content: str,
@@ -278,6 +480,7 @@ def _remove_entry_in_memory(
     pattern: re.Pattern,
 ) -> Tuple[str, bool]:
     """Remove matching lines only within a specific top-level YAML section in memory."""
+    content = _normalize_flow_sections(content)
     removed = False
     while True:
         bounds = _get_section_bounds(content, section_name)
@@ -292,6 +495,11 @@ def _remove_entry_in_memory(
         abs_match_start = content_start + match.start()
         line_start = content.rfind("\n", 0, abs_match_start)
         line_start = 0 if line_start == -1 else line_start + 1
+        if line_start >= section_end:
+            # An empty body reports section_end == content_start, so a match
+            # here belongs to the following section. Never delete across that
+            # boundary: it would silently tombstone the next section's entries.
+            break
 
         line_end = content.find("\n", abs_match_start)
         if line_end == -1:
@@ -334,16 +542,18 @@ def _add_list_item_in_memory(
     content: str, section_name: str, item_id: str, comment: str = ""
 ) -> Tuple[str, bool]:
     """Add an item to a YAML list section in memory."""
+    content = _normalize_flow_sections(content)
     bounds = _get_section_bounds(content, section_name)
+    newline = _newline_style(content)
     comment_suffix = f" # {comment}" if comment else ""
-    entry_line = f"  - {item_id}{comment_suffix}\n"
+    entry_line = f"  - {item_id}{comment_suffix}{newline}"
 
     if bounds:
         content, bounds = _expand_flow_section_if_needed(content, section_name, bounds)
         _, content_start, section_end = bounds
         sec_content = content[content_start:section_end]
         item_pattern = re.compile(
-            rf"^[ \t]*-[ \t]*{re.escape(item_id)}[ \t]*(?:#[^\r\n]*)?$",
+            rf"^[ \t]*-[ \t]*['\"]?{re.escape(item_id)}['\"]?[ \t]*(?:#[^\r\n]*)?\r?$",
             re.MULTILINE,
         )
         m = item_pattern.search(sec_content)
@@ -351,42 +561,44 @@ def _add_list_item_in_memory(
             if comment:
                 abs_start = content_start + m.start()
                 abs_end = content_start + m.end()
+                cr = "\r" if content.startswith("\r", abs_end - 1) else ""
                 new_line = f"  - {item_id}{comment_suffix}"
-                if content[abs_start:abs_end] != new_line:
-                    return content[:abs_start] + new_line + content[abs_end:], True
+                if content[abs_start:abs_end] != new_line + cr:
+                    return content[:abs_start] + new_line + cr + content[abs_end:], True
             return content, False
 
         insert_pos = _find_section_insert_pos(content, bounds)
         if insert_pos > 0 and content[insert_pos - 1] != "\n":
-            entry_line = "\n" + entry_line
+            entry_line = newline + entry_line
         return content[:insert_pos] + entry_line + content[insert_pos:], True
     else:
-        new_content = content.rstrip() + f"\n\n{section_name}:\n{entry_line}"
+        new_content = content.rstrip() + f"{newline}{newline}{section_name}:{newline}{entry_line}"
         return new_content, True
 
 def _add_map_item_in_memory(
     content: str, section_name: str, key: str, value: str, comment: str = ""
 ) -> Tuple[str, bool]:
     """Add or update a key-value pair in a YAML map section in memory."""
+    content = _normalize_flow_sections(content)
     bounds = _get_section_bounds(content, section_name)
+    newline = _newline_style(content)
     comment_suffix = f" # {comment}" if comment else ""
-    entry_line = f"  {key}: {value}{comment_suffix}\n"
+    entry_line = f"  {key}: {value}{comment_suffix}{newline}"
 
     if bounds:
         content, bounds = _expand_flow_section_if_needed(content, section_name, bounds)
         _, content_start, section_end = bounds
         sec_content = content[content_start:section_end]
+        # A '#' only starts a comment when preceded by whitespace (YAML rule),
+        # so values like `-x=#foo` or hashes containing '#' are not truncated.
         map_pattern = re.compile(
-            rf"^[ \t]*['\"]?{re.escape(key)}['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:#[^\r\n]*)?$",
+            rf"^[ \t]*['\"]?{re.escape(key)}['\"]?[ \t]*:[ \t]*(.+?)(?:[ \t]+#(.*))?\r?$",
             re.MULTILINE,
         )
         m = map_pattern.search(sec_content)
         if m:
             existing_val = m.group(1).strip().strip('"').strip("'")
-            existing_comment = ""
-            m_comm = re.search(r"#[ \t]*(.*)$", m.group(0))
-            if m_comm:
-                existing_comment = m_comm.group(1).strip()
+            existing_comment = (m.group(2) or "").strip()
 
             final_comment = comment if comment else existing_comment
             final_suffix = f" # {final_comment}" if final_comment else ""
@@ -394,16 +606,17 @@ def _add_map_item_in_memory(
 
             abs_start = content_start + m.start()
             abs_end = content_start + m.end()
-            if content[abs_start:abs_end] != new_line:
-                return content[:abs_start] + new_line + content[abs_end:], True
+            cr = "\r" if content.startswith("\r", abs_end - 1) else ""
+            if content[abs_start:abs_end] != new_line + cr:
+                return content[:abs_start] + new_line + cr + content[abs_end:], True
             return content, False
 
         insert_pos = _find_section_insert_pos(content, bounds)
         if insert_pos > 0 and content[insert_pos - 1] != "\n":
-            entry_line = "\n" + entry_line
+            entry_line = newline + entry_line
         return content[:insert_pos] + entry_line + content[insert_pos:], True
     else:
-        new_content = content.rstrip() + f"\n\n{section_name}:\n{entry_line}"
+        new_content = content.rstrip() + f"{newline}{newline}{section_name}:{newline}{entry_line}"
         return new_content, True
 
 def _add_dlc_batch_in_memory(
@@ -413,24 +626,29 @@ def _add_dlc_batch_in_memory(
     if not dlc_dict:
         return content, False
 
+    content = _normalize_flow_sections(content)
     parent_app_id = str(parent_app_id).strip()
     bounds = _get_section_bounds(content, "DlcData")
 
     if not bounds:
+        newline = _newline_style(content)
         lines = ["DlcData:", f"  {parent_app_id}:"]
         for did, dname in dlc_dict.items():
             did_str = _sanitize_id(did) or str(did).strip()
             cname = _sanitize_comment(dname or f"DLC {did_str}").replace('"', '\\"')
             lines.append(f'    {did_str}: "{cname}"')
-        new_entry = "\n".join(lines) + "\n"
-        new_content = content.rstrip() + "\n\n" + new_entry
+        new_entry = newline.join(lines) + newline
+        new_content = content.rstrip() + newline + newline + new_entry
         return new_content, True
 
     content, bounds = _expand_flow_section_if_needed(content, "DlcData", bounds)
     _, dlc_start, dlc_end = bounds
     dlc_section = content[dlc_start:dlc_end]
 
-    parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_app_id)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
+    parent_pattern = re.compile(
+        rf"^[ \t]+['\"]?{re.escape(parent_app_id)}['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+        re.MULTILINE,
+    )
     parent_match = parent_pattern.search(dlc_section)
 
     if not parent_match:
@@ -451,14 +669,18 @@ def _add_dlc_batch_in_memory(
         p_start += 1
 
     p_after = content[p_start:dlc_end]
-    next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+    next_parent = re.search(
+        r"^[ \t]+['\"]?[0-9A-Za-z_]+['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+        p_after,
+        re.MULTILINE,
+    )
     parent_end = (p_start + next_parent.start()) if next_parent else dlc_end
 
     parent_block = content[p_start:parent_end]
     new_dlc_lines = []
     for did, dname in dlc_dict.items():
         did_str = _sanitize_id(did) or str(did).strip()
-        check_pat = re.compile(rf'^[ \t]*{re.escape(did_str)}[ \t]*:[ \t]*"', re.MULTILINE)
+        check_pat = re.compile(rf'^[ \t]*[\"\']?{re.escape(did_str)}[\"\']?[ \t]*:[ \t]*[\"\']?', re.MULTILINE)
         if not check_pat.search(parent_block):
             cname = _sanitize_comment(dname or f"DLC {did_str}").replace('"', '\\"')
             new_dlc_lines.append(f'    {did_str}: "{cname}"')
@@ -618,7 +840,13 @@ class BatchConfigEditor:
         self.committed_successfully = True
 
     def __enter__(self):
-        self.content = _read_config_content(self.config_path)
+        self._lock_cm = config_write_lock(self.config_path)
+        self._lock_cm.__enter__()
+        try:
+            self.content = _read_config_content(self.config_path)
+        except BaseException:
+            self._lock_cm.__exit__(*sys.exc_info())
+            raise
         if self.content is None:
             self.content = ""
         self.has_changes = False
@@ -626,25 +854,52 @@ class BatchConfigEditor:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None:
-            self.committed_successfully = False
-            logger.warning(f"Batch config edit on {self.config_path} aborted due to: {exc_val}")
-            return False
-
-        if self.has_changes and self.content is not None:
-            if not _atomic_write(self.config_path, self.content):
-                logger.error(f"Failed to commit batch config changes to {self.config_path}")
+        try:
+            if exc_type is not None:
                 self.committed_successfully = False
+                logger.warning(f"Batch config edit on {self.config_path} aborted due to: {exc_val}")
                 return False
-            self.committed_successfully = True
-            logger.info(f"Committed batch config changes to {self.config_path}")
+
+            if self.has_changes and self.content is not None:
+                try:
+                    self.config_path.parent.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    logger.error(f"Could not create config directory for {self.config_path}: {e}")
+                    self.committed_successfully = False
+                    return False
+                if not _atomic_write(self.config_path, self.content):
+                    logger.error(f"Failed to commit batch config changes to {self.config_path}")
+                    self.committed_successfully = False
+                    return False
+                self.committed_successfully = True
+                logger.info(f"Committed batch config changes to {self.config_path}")
+            return True
+        finally:
+            self._lock_cm.__exit__(exc_type, exc_val, exc_tb)
+
+    def ensure_plugins(self) -> bool:
+        """Apply `Plugins: yes` to this edit instead of a separate write.
+
+        The old helper wrote the boolean first and the real edit second, so one
+        add cost two config writes and two SLSsteam watcher reloads. Returns
+        True when the in-memory content changed.
+        """
+        if self.content is None:
+            return False
+        from utils.yaml.yaml_values import set_yaml_boolean_content
+
+        new_content = set_yaml_boolean_content(self.content, "Plugins", True)
+        if new_content is None:
+            return False
+        self.content = new_content
+        self.has_changes = True
         return True
 
-    def add_app(self, app_id: Union[str, int], comment: str = "") -> bool:
+    def add_app(self, app_id: Union[str, int], comment: str = "") -> WriteOutcome:
         app_id_str = _sanitize_id(app_id)
         if not app_id_str:
             logger.warning(f"Invalid AppID provided: {app_id}")
-            return False
+            return WriteOutcome.REFUSED
         comment_clean = _sanitize_comment(comment)
         self.content, _ = _fix_additional_apps_indentation(self.content)
         new_content, changed = _add_list_item_in_memory(
@@ -653,15 +908,17 @@ class BatchConfigEditor:
         if changed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        if self.contains_app(app_id_str):
+            return WriteOutcome.ALREADY_PRESENT
+        return WriteOutcome.FAILED
 
-    def remove_app(self, app_id: Union[str, int]) -> bool:
+    def remove_app(self, app_id: Union[str, int]) -> WriteOutcome:
         app_id_str = _sanitize_id(app_id)
         if not app_id_str:
-            return False
+            return WriteOutcome.REFUSED
         pattern = re.compile(
-            rf"^[ \t]*-[ \t]*{re.escape(app_id_str)}[ \t]*(?:#[^\r\n]*)?$",
+            rf"^[ \t]*-[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*(?:#[^\r\n]*)?$",
             re.MULTILINE,
         )
         new_content, removed = _remove_entry_in_memory(
@@ -670,24 +927,24 @@ class BatchConfigEditor:
         if removed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        return WriteOutcome.NOT_PRESENT
 
     def add_depot(
         self,
         depot_id: Union[str, int],
         comment: str = "",
         app_id: Optional[Union[str, int]] = None,
-    ) -> bool:
+    ) -> WriteOutcome:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
             logger.warning(f"Invalid DepotID provided: {depot_id}")
-            return False
+            return WriteOutcome.REFUSED
 
         # Guard: never add a base game AppID into AdditionalDepots
         if app_id and depot_id_str == str(app_id).strip():
             logger.warning(f"Refusing to add base AppID '{depot_id_str}' to AdditionalDepots")
-            return False
+            return WriteOutcome.REFUSED
 
         # Guard: never add any registered base game AppID from plugin_library
         try:
@@ -695,7 +952,7 @@ class BatchConfigEditor:
             plib = load_plugin_library()
             if depot_id_str in plib and not plib[depot_id_str].get("dlc_only"):
                 logger.warning(f"Refusing to add registered base AppID '{depot_id_str}' to AdditionalDepots")
-                return False
+                return WriteOutcome.REFUSED
         except Exception:
             pass
 
@@ -739,7 +996,7 @@ class BatchConfigEditor:
                     logger.warning(
                         f"Refusing to add base AppID '{depot_id_str}' from AdditionalApps to AdditionalDepots"
                     )
-                    return False
+                    return WriteOutcome.REFUSED
 
         bounds_main = _get_section_bounds(self.content, "AppIds")
         if bounds_main:
@@ -752,7 +1009,7 @@ class BatchConfigEditor:
                 logger.warning(
                     f"Refusing to add AppID '{depot_id_str}' from AppIds to AdditionalDepots"
                 )
-                return False
+                return WriteOutcome.REFUSED
 
         if depot_id_str in SHARED_REDISTS:
             comment_clean = "Steamworks Shared"
@@ -765,27 +1022,29 @@ class BatchConfigEditor:
         if changed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        if self.contains_depot(depot_id_str):
+            return WriteOutcome.ALREADY_PRESENT
+        return WriteOutcome.FAILED
 
     def remove_depot(
         self,
         depot_id: Union[str, int],
         check_shared: bool = True,
         excluding_appid: Optional[Union[str, int]] = None,
-    ) -> bool:
+    ) -> WriteOutcome:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
-            return False
+            return WriteOutcome.REFUSED
         if check_shared and is_depot_shared_with_other_games(
             depot_id_str, excluding_appid=excluding_appid
         ):
             logger.info(
                 f"Preserving shared depot '{depot_id_str}' in AdditionalDepots (used by other games or redistributable)"
             )
-            return False
+            return WriteOutcome.REFUSED
         pattern = re.compile(
-            rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}[ \t]*(?:#[^\r\n]*)?$",
+            rf"^[ \t]*-[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*(?:#[^\r\n]*)?$",
             re.MULTILINE,
         )
         new_content, removed = _remove_entry_in_memory(
@@ -794,8 +1053,8 @@ class BatchConfigEditor:
         if removed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        return WriteOutcome.NOT_PRESENT
 
     def contains_depot(self, depot_id: Union[str, int]) -> bool:
         """True when the depot id is present in the AdditionalDepots section.
@@ -819,6 +1078,38 @@ class BatchConfigEditor:
                 re.MULTILINE,
             )
         )
+
+    def contains_app(self, app_id: Union[str, int]) -> bool:
+        """True when the app id is present in the AdditionalApps section."""
+        app_id_str = _sanitize_id(app_id)
+        if not app_id_str or not self.content:
+            return False
+        bounds = _get_section_bounds(self.content, "AdditionalApps")
+        if not bounds:
+            return False
+        section = self.content[bounds[1]:bounds[2]]
+        return bool(
+            re.search(
+                rf"^[ \t]*-[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*(?:#[^\r\n]*)?$",
+                section,
+                re.MULTILINE,
+            )
+        )
+
+    def _key_matches(self, depot_id_str: str, key_str: str) -> bool:
+        """True when DecryptionKeys already maps depot_id_str to exactly key_str."""
+        if not self.content:
+            return False
+        bounds = _get_section_bounds(self.content, "DecryptionKeys")
+        if not bounds:
+            return False
+        section = self.content[bounds[1]:bounds[2]]
+        match = re.search(
+            rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*['\"]?([0-9A-Fa-f]+)['\"]?",
+            section,
+            re.MULTILINE,
+        )
+        return bool(match and match.group(1).lower() == key_str.lower())
 
     def contains_key(self, depot_id: Union[str, int]) -> bool:
         """True when the depot id is present in the DecryptionKeys section."""
@@ -862,15 +1153,15 @@ class BatchConfigEditor:
         key: str,
         comment: str = "",
         app_id: Optional[Union[str, int]] = None,
-    ) -> bool:
+    ) -> WriteOutcome:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
             logger.warning(f"Invalid DepotID for key: {depot_id}")
-            return False
+            return WriteOutcome.REFUSED
         key_str = str(key).strip().lower()
         if not _is_valid_hex64(key_str):
             logger.warning(f"Invalid AES decryption key (not 64 hex chars) for depot {depot_id_str}")
-            return False
+            return WriteOutcome.REFUSED
 
         if depot_id_str in SHARED_REDISTS:
             comment_clean = "Steamworks Shared"
@@ -883,25 +1174,27 @@ class BatchConfigEditor:
         if changed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        if self._key_matches(depot_id_str, key_str):
+            return WriteOutcome.ALREADY_PRESENT
+        return WriteOutcome.FAILED
 
     def remove_key(
         self,
         depot_id: Union[str, int],
         check_shared: bool = True,
         excluding_appid: Optional[Union[str, int]] = None,
-    ) -> bool:
+    ) -> WriteOutcome:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
-            return False
+            return WriteOutcome.REFUSED
         if check_shared and is_depot_shared_with_other_games(
             depot_id_str, excluding_appid=excluding_appid
         ):
             logger.info(
                 f"Preserving decryption key for shared depot '{depot_id_str}' (used by other games or redistributable)"
             )
-            return False
+            return WriteOutcome.REFUSED
         pattern = re.compile(
             rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
             re.MULTILINE,
@@ -912,8 +1205,8 @@ class BatchConfigEditor:
         if removed:
             self.content = new_content
             self.has_changes = True
-            return True
-        return False
+            return WriteOutcome.CHANGED
+        return WriteOutcome.NOT_PRESENT
 
     def add_dlc(
         self,
@@ -955,7 +1248,10 @@ class BatchConfigEditor:
             return False
         _, dlc_start, dlc_end = bounds
         dlc_section = self.content[dlc_start:dlc_end]
-        parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_str)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
+        parent_pattern = re.compile(
+            rf"^[ \t]+['\"]?{re.escape(parent_str)}['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
         parent_match = parent_pattern.search(dlc_section)
         if not parent_match:
             return False
@@ -968,7 +1264,11 @@ class BatchConfigEditor:
             p_start += 1
 
         p_after = self.content[p_start:dlc_end]
-        next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+        next_parent = re.search(
+            r"^[ \t]+['\"]?[0-9A-Za-z_]+['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+            p_after,
+            re.MULTILINE,
+        )
         p_block_end = (p_start + next_parent.start()) if next_parent else dlc_end
 
         if dlc_id is None:
@@ -1107,10 +1407,26 @@ class BatchConfigEditor:
             return True
         return False
 
-    def remove_launch_option(self, app_id: Union[str, int]) -> bool:
+    def remove_launch_option(
+        self,
+        app_id: Union[str, int],
+        markers: Optional[Tuple[str, ...]] = None,
+    ) -> bool:
         app_id_str = _sanitize_id(app_id)
         if not app_id_str:
             return False
+        if markers:
+            bounds = _get_section_bounds(self.content, "LaunchOptions")
+            if not bounds:
+                return False
+            section = self.content[bounds[1]:bounds[2]]
+            match = re.search(
+                rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*([^\r\n]+)$",
+                section,
+                re.MULTILINE,
+            )
+            if not match or not any(marker in match.group(1) for marker in markers):
+                return False
         pattern = re.compile(
             rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
             re.MULTILINE,

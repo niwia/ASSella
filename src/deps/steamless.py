@@ -6,14 +6,14 @@ import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 try:
-    from Crypto.Cipher import AES
+    from Cryptodome.Cipher import AES
 except ImportError:
     try:
-        from Cryptodome.Cipher import AES
+        from Crypto.Cipher import AES
     except ImportError as e:
-        print(f'ERROR: pycryptodome not importable in this interpreter ({sys.executable}).')
+        print(f'ERROR: pycryptodomex / pycryptodome not importable in this interpreter ({sys.executable}).')
         print(f'       Underlying error: {e}')
-        print(f'       Install with: {sys.executable} -m pip install pycryptodome')
+        print(f'       Install with: {sys.executable} -m pip install pycryptodomex')
         sys.exit(1)
 try:
     from capstone import Cs, CS_ARCH_X86, CS_MODE_32, CS_MODE_64

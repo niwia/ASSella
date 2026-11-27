@@ -51,6 +51,7 @@ class ManualManifestDialog(QDialog):
         depots_dict: Optional[Dict[str, Any]] = None,
         default_depot_id: str = "",
         current_build_id: str = "",
+        target_build_id: Optional[str] = None,
         accent_color: str = "#4c8df5",
     ):
         super().__init__(parent)
@@ -59,6 +60,7 @@ class ManualManifestDialog(QDialog):
         self.depots_dict = dict(depots_dict or {})
         self.default_depot_id = str(default_depot_id or "").strip()
         self.current_build_id = str(current_build_id or "").strip()
+        self.target_build_id = str(target_build_id).strip() if target_build_id is not None else ""
         self.accent_color = accent_color
 
         self._settings = get_settings()
@@ -72,6 +74,7 @@ class ManualManifestDialog(QDialog):
         self._selected_build_id = ""
         self._selected_patch_depots: Dict[str, Any] = {}
         self._last_loaded_depot = ""
+        self._user_typed_build = False
 
         self.setWindowTitle("Manual Manifest Override")
         self.setFixedWidth(460)
@@ -202,6 +205,7 @@ class ManualManifestDialog(QDialog):
         self.manifest_input.setFixedHeight(30)
         self.manifest_input.setStyleSheet(input_style)
         self.manifest_input.setPlaceholderText("e.g. 4622465672933170056")
+        self.manifest_input.textChanged.connect(self._on_manifest_text_changed)
         mid_section.addWidget(self.manifest_input)
         layout.addLayout(mid_section)
 
@@ -216,6 +220,7 @@ class ManualManifestDialog(QDialog):
         self.build_input.setFixedHeight(30)
         self.build_input.setStyleSheet(input_style)
         self.build_input.setPlaceholderText("e.g. 55251 or Custom")
+        self.build_input.textEdited.connect(self._on_build_text_edited)
         bid_section.addWidget(self.build_input)
         layout.addLayout(bid_section)
 
@@ -224,6 +229,7 @@ class ManualManifestDialog(QDialog):
         # Initialize values from settings or props
         init_did = self._get_current_depot_id()
         self._last_loaded_depot = init_did
+        saved_mid = ""
         if self._settings and self.app_id and init_did:
             try:
                 saved_mid = str(self._settings.value(f"manual_manifest/{self.app_id}/{init_did}/manifest_id", "") or "").strip()
@@ -232,9 +238,19 @@ class ManualManifestDialog(QDialog):
             except Exception:
                 pass
 
-        init_bid = self.current_build_id or self._remembered_build_id
-        if init_bid:
-            self.build_input.setText(init_bid)
+        if self.target_build_id:
+            self.build_input.setText(self.target_build_id)
+            self._user_typed_build = True
+        else:
+            init_bid = self.current_build_id or self._remembered_build_id
+            parent_ambient_bid = getattr(self.parent(), "current_build_id", "") if self.parent() else ""
+            if init_bid and init_bid != parent_ambient_bid:
+                self.build_input.setText(init_bid)
+                self._user_typed_build = True
+            elif saved_mid and len(saved_mid) >= 6:
+                self.build_input.setText(f"M-{saved_mid[-6:]}")
+            else:
+                self.build_input.setPlaceholderText(f"e.g. {init_bid or '55251'} or M-XXXXXX")
 
         # Bottom Button Row
         btn_row = QHBoxLayout()
@@ -323,6 +339,17 @@ class ManualManifestDialog(QDialog):
                 self.manifest_input.clear()
         except Exception:
             pass
+
+    def _on_build_text_edited(self, text: str):
+        self._user_typed_build = bool(text.strip())
+
+    def _on_manifest_text_changed(self, text: str):
+        mid = text.strip()
+        if not self._user_typed_build:
+            if len(mid) >= 6:
+                self.build_input.setText(f"M-{mid[-6:]}")
+            else:
+                self.build_input.clear()
 
     def _on_apply_clicked(self):
         # Resolve depot ID (strictly pure digits)

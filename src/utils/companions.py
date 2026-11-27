@@ -1,14 +1,20 @@
 """Uran (Decky plugin) and Epsilon (browser bridge): find them, read and write their settings.
 
-Both companions work on their own and keep their own ``settings.json``;
-ASSella only manages them from Settings -> Companions:
+Both companions work on their own, but they are the same engine started two
+ways and they share one settings file per machine:
 
-* Uran: ``~/homebrew/plugins/Uran`` (Decky), settings in
+* Uran: ``~/homebrew/plugins/Uran`` (Decky); settings in
   ``~/homebrew/settings/Uran/settings.json``.
 * Epsilon: installed from a checkout (``~/epsilon`` by default) as the
   systemd --user units ``epsilon.socket`` / ``epsilon.service`` (+ the
-  ``epsilon-updater.timer``). Without Decky it keeps its settings in
-  ``~/.config/assella-decky/settings.json``. It answers on 127.0.0.1:1952.
+  ``epsilon-updater.timer``). It answers on 127.0.0.1:1952.
+
+When Decky has Uran installed, that file is the shared one and Epsilon uses it
+too. Otherwise Epsilon keeps its own under ``~/.config/assella-decky``. Older
+builds may still have a copy in the other location; reads merge the copies (the
+file saved most recently wins) and writes keep an existing copy in sync, so
+both companions and this dialog agree during an upgrade. The ``assella-decky``
+name is legacy but kept: it is also where Epsilon caches manifests and metadata.
 
 Writes keep every key ASSella does not know and replace the file
 atomically. Anything slow (systemctl, the HTTP status) is meant to be called
@@ -113,6 +119,10 @@ def have_systemd_user() -> bool:
 DECKY_URL = "https://decky.xyz"
 
 
+_DECKY_HOMES_CACHE: Optional[tuple] = None
+_DECKY_HOMES_TTL = 30.0
+
+
 def _decky_homes() -> list:
     """Decky's homebrew folders, most likely first.
 
@@ -121,12 +131,29 @@ def _decky_homes() -> list:
     (SteamOS, Bazzite, ChimeraOS, Arch/Fedora/Ubuntu installs). Steam itself
     may be native or Flatpak: Decky's folder is the same either way.
     """
+    global _DECKY_HOMES_CACHE
+    import time
+
+    now = time.monotonic()
+    home_str = str(_home())
+    env = os.environ.get("DECKY_HOME") or ""
+    cached = _DECKY_HOMES_CACHE
+    if (
+        cached is not None
+        and (now - cached[0]) < _DECKY_HOMES_TTL
+        and cached[1] == home_str
+        and cached[2] == env
+    ):
+        return list(cached[3])
+
     found = []
     for unit in (
         Path("/etc/systemd/system/plugin_loader.service"),
         Path("/usr/lib/systemd/system/plugin_loader.service"),
         Path("/lib/systemd/system/plugin_loader.service"),
     ):
+        if not unit.is_file():
+            continue
         try:
             text = unit.read_text(encoding="utf-8", errors="ignore")
         except OSError as _silent_err:
@@ -134,7 +161,6 @@ def _decky_homes() -> list:
             continue
         for m in re.finditer(r"(/[^\s\"'=]*?/homebrew)(?:/|\b)", text):
             found.append(Path(m.group(1)))
-    env = os.environ.get("DECKY_HOME")
     if env:
         found.append(Path(env))
     found.append(_home() / "homebrew")
@@ -143,6 +169,7 @@ def _decky_homes() -> list:
         if str(p) not in seen:
             seen.add(str(p))
             out.append(p)
+    _DECKY_HOMES_CACHE = (now, home_str, env, list(out))
     return out
 
 
@@ -245,6 +272,10 @@ def set_uran_setting(key: str, value: Any) -> bool:
 
 EPSILON_INSTALL_URL = "https://raw.githubusercontent.com/niwia/Uran/main/install_epsilon.sh"
 EPSILON_GUIDE_URL = "https://assella.pages.dev/epsilon"
+# The AT0-M web console. The token travels in the fragment, which browsers
+# never send to the web host, so the page can store it locally on first load.
+EPSILON_CONSOLE_URL = "https://assella.pages.dev/at0m"
+CONSOLE_TOKEN_KEY = "epsilon_console_token"
 
 
 def _systemd_user_dirs() -> list:
@@ -259,7 +290,56 @@ def _systemd_user_dir() -> Path:
 
 
 def epsilon_settings_path() -> Path:
+    """Epsilon's settings file: the one Uran shares when Decky has it installed."""
+    return companion_settings_path()
+
+
+def _legacy_epsilon_settings_path() -> Path:
+    """Epsilon's own legacy file, still read so an upgrade keeps its values."""
     return _config_home() / "assella-decky" / "settings.json"
+
+
+def companion_settings_path() -> Path:
+    """The one settings file Uran and Epsilon share on this machine.
+
+    Uran and Epsilon resolve this identically (``paths.companion_settings_paths``
+    in the Uran repo), so a toggle written here is the toggle the Decky panel
+    and the bridge both read.
+    """
+    if _uran_dir(decky_home()) is not None:
+        return uran_settings_path()
+    return _legacy_epsilon_settings_path()
+
+
+def companion_settings_layers() -> list:
+    """The shared settings file, then any older copy still on disk."""
+    shared = companion_settings_path()
+    legacy = _legacy_epsilon_settings_path()
+    return [shared] if shared == legacy else [shared, legacy]
+
+
+def _companion_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def read_companion_settings() -> Dict[str, Any]:
+    """Merge the settings copies; the file saved most recently wins."""
+    merged: Dict[str, Any] = {}
+    for path in sorted(companion_settings_layers(), key=_companion_mtime):
+        merged.update(read_json(path))
+    return merged
+
+
+def update_companion_settings(changes: Dict[str, Any]) -> bool:
+    """Write to the shared file and to any older copy still on disk."""
+    ok = update_json(epsilon_settings_path(), changes)
+    for path in companion_settings_layers()[1:]:
+        if path.exists():
+            ok = update_json(path, changes) or ok
+    return ok
 
 
 def epsilon_root() -> Optional[Path]:
@@ -277,24 +357,89 @@ def epsilon_root() -> Optional[Path]:
     return default if (default / "epsilon" / "daemon.py").is_file() else None
 
 
+def epsilon_version(root: Optional[Path]) -> str:
+    """Epsilon's own version: ``epsilon/VERSION``, else ``plugin.json``.
+
+    Uran and Epsilon ship from one repository but are released separately, so
+    the Decky plugin keeps the plugin manifest and the bridge has its own file.
+    Old installs that predate the split fall back to the manifest.
+    """
+    if root:
+        try:
+            lines = (root / "epsilon" / "VERSION").read_text(encoding="utf-8").strip().splitlines()
+            version = lines[0].strip() if lines else ""
+            if re.fullmatch(r"\d+(\.\d+)*", version):
+                return version
+        except (OSError, IndexError, UnicodeDecodeError) as e:
+            logger.debug(f"[Companions] Could not read epsilon VERSION file: {e}")
+    meta = read_json(root / "plugin.json") if root else {}
+    return str(meta.get("version") or "")
+
+
+def epsilon_console_token() -> str:
+    """The token Epsilon will accept ("" until it runs).
+
+    Newest copy wins, which is how the bridge resolves it too: ASSella may
+    rotate the token into either file and the running service must follow
+    without a restart.
+    """
+    best, best_mtime = "", -1.0
+    for path in companion_settings_layers():
+        token = str(read_json(path).get(CONSOLE_TOKEN_KEY) or "").strip()
+        if not token:
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        if mtime > best_mtime:
+            best, best_mtime = token, mtime
+    return best
+
+
+def epsilon_console_get(path: str, timeout: float = 3.0) -> Dict[str, Any]:
+    """Token-gated ``/v1`` read from Epsilon (the console token is the key)."""
+    token = str(read_json(epsilon_settings_path()).get(CONSOLE_TOKEN_KEY) or "")
+    if not token:
+        return {}
+    req = urllib.request.Request(
+        f"{EPSILON_URL}{path}", headers={"Authorization": f"Bearer {token}"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        return data if isinstance(data, dict) else {}
+    except Exception as e:  # noqa: BLE001 - a missing bridge is a normal state
+        logger.debug("[companions] %s failed: %s", path, e)
+        return {}
+
+
+def rotate_console_token() -> str:
+    """Mint a new console token. Epsilon picks it up on the next request."""
+    token = "at0m_" + os.urandom(32).hex()
+    update_companion_settings({CONSOLE_TOKEN_KEY: token})
+    return token
+
+
 def epsilon_info() -> Dict[str, Any]:
     """Local facts only (fast)."""
     root = epsilon_root()
-    meta = read_json(root / "plugin.json") if root else {}
+    stored = read_companion_settings()
     settings = dict(SHARED_DEFAULTS)
-    settings.update(read_json(epsilon_settings_path()))
+    settings.update(stored)
     return {
         "installed": root is not None or (_systemd_user_dir() / "epsilon.socket").is_file(),
         "units_installed": (_systemd_user_dir() / "epsilon.socket").is_file(),
         "root": str(root) if root else "",
-        "version": str(meta.get("version") or ""),
+        "version": epsilon_version(root),
         "settings_path": str(epsilon_settings_path()),
         "settings": settings,
+        "console_token": epsilon_console_token(),
     }
 
 
 def set_epsilon_setting(key: str, value: Any) -> bool:
-    return update_json(epsilon_settings_path(), {key: value})
+    return update_companion_settings({key: value})
 
 
 def _systemctl(*args: str, timeout: float = 8.0) -> subprocess.CompletedProcess:
@@ -448,3 +593,105 @@ def key_state(companion_key: str, assella_key: str) -> str:
     if not c:
         return "none"
     return "same" if c == (assella_key or "").strip() else "own"
+
+
+# ---------------------------------------------------------------- Phone / LAN Access (epsilon.socket)
+
+def get_lan_ip() -> str:
+    """Return this machine's local LAN IPv4 address (zero packets sent)."""
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("1.1.1.1", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def _lan_dropin_path() -> Path:
+    return _systemd_user_dir() / "epsilon.socket.d" / "lan.conf"
+
+
+def is_epsilon_lan_enabled() -> bool:
+    """True when epsilon_console_lan is enabled in shared settings or lan.conf exists."""
+    if bool(read_companion_settings().get("epsilon_console_lan", False)):
+        return True
+    return _lan_dropin_path().exists()
+
+
+def epsilon_lan_url(token: str = "") -> str:
+    ip = get_lan_ip()
+    base = f"http://{ip}:1952/"
+    return f"{base}#k={token}" if token else base
+
+
+def set_epsilon_lan_enabled(enabled: bool) -> tuple[bool, str]:
+    """Toggle Epsilon LAN binding (0.0.0.0:1952) via shared settings + systemd drop-in."""
+    update_companion_settings({"epsilon_console_lan": bool(enabled)})
+    dropin = _lan_dropin_path()
+    try:
+        if enabled:
+            dropin.parent.mkdir(parents=True, exist_ok=True)
+            dropin.write_text("[Socket]\nListenStream=\nListenStream=0.0.0.0:1952\n", encoding="utf-8")
+        elif dropin.exists():
+            dropin.unlink()
+    except OSError as e:
+        return False, f"Failed to update {dropin}: {e}"
+
+    if not have_systemd_user():
+        return True, "Saved setting (systemd user not detected; restart Epsilon manually)."
+
+    try:
+        _systemctl("daemon-reload")
+        r = _systemctl("restart", "epsilon.socket")
+        if r.returncode != 0:
+            return False, (r.stderr or r.stdout or "Failed to restart epsilon.socket").strip()
+        return True, (
+            f"Phone / LAN access enabled at {epsilon_lan_url()}"
+            if enabled
+            else "Phone / LAN access disabled (bound to 127.0.0.1:1952 only)."
+        )
+    except Exception as e:
+        return False, str(e)
+
+
+def create_pairing_invite(ttl_sec: int = 600) -> tuple[bool, str, str]:
+    """Create a 10-minute one-time pairing invite in shared settings and return (ok, url, err)."""
+    import time
+
+    if not is_epsilon_lan_enabled():
+        ok, msg = set_epsilon_lan_enabled(True)
+        if not ok:
+            return False, "", msg
+
+    now = time.time()
+    stored = read_companion_settings()
+    invites = stored.get("pairing_invites", [])
+    if not isinstance(invites, list):
+        invites = []
+    invites = [i for i in invites if isinstance(i, dict) and float(i.get("expires_at") or 0) > now]
+    code = os.urandom(16).hex()
+    invites.append({"code": code, "expires_at": int(now + ttl_sec)})
+    if not update_companion_settings({"pairing_invites": invites}):
+        return False, "", "Failed to write pairing invite to settings.json."
+    return True, f"http://{get_lan_ip()}:1952/#pair={code}", ""
+
+
+def list_paired_devices() -> list:
+    """Return paired phone/device records from shared settings."""
+    raw = read_companion_settings().get("paired_devices", [])
+    if not isinstance(raw, list):
+        return []
+    return [d for d in raw if isinstance(d, dict) and d.get("id")]
+
+
+def revoke_paired_device(device_id: str) -> bool:
+    """Remove a paired device by id so its token is immediately invalidated."""
+    devices = list_paired_devices()
+    kept = [d for d in devices if str(d.get("id")) != str(device_id)]
+    if len(kept) == len(devices):
+        return False
+    return update_companion_settings({"paired_devices": kept})

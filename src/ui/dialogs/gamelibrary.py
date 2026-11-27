@@ -139,8 +139,8 @@ class GameLibraryDialog(
             from ui.dialogs.dialog_raiser import DialogRaiser
             DialogRaiser(self.parent(), self)
 
-        # Initial Load
-        self._refresh_game_list()
+        # Initial Load: defer to next event tick so dialog window paints instantly
+        QTimer.singleShot(0, self._refresh_game_list)
 
         if show_details_for_appid:
             QTimer.singleShot(0, lambda: self._show_details_for_appid(show_details_for_appid))
@@ -198,6 +198,66 @@ class GameLibraryDialog(
                 border-radius: 4px; 
             }}
             
+            QLabel[cardRole="title"] {{
+                color: #FFFFFF;
+                font-size: 12pt;
+                font-weight: bold;
+            }}
+            QLabel[cardRole="size"] {{
+                color: rgba(255, 255, 255, 0.65);
+                font-size: 12px;
+            }}
+            QLabel[cardRole="manifest"] {{
+                color: rgba(255, 255, 255, 0.45);
+                font-size: 12px;
+                font-style: italic;
+            }}
+            QLabel[cardRole="cover"] {{
+                border-top-left-radius: 11px;
+                border-bottom-left-radius: 11px;
+                border-top-right-radius: 0px;
+                border-bottom-right-radius: 0px;
+                background-color: rgba(255, 255, 255, 0.02);
+                color: {self.accent_color};
+            }}
+            
+            QLabel[badgeRole="proton"] {{
+                border-radius: 4px;
+                padding: 1px 6px;
+                font-size: 9px;
+                font-weight: bold;
+                letter-spacing: 0.5px;
+            }}
+            QLabel[badgeRole="proton"][protonTier="platinum"] {{
+                color: #CFD8DC;
+                background-color: rgba(207, 216, 220, 0.18);
+                border: 1px solid rgba(236, 239, 241, 0.35);
+            }}
+            QLabel[badgeRole="proton"][protonTier="gold"] {{
+                color: #FFE082;
+                background-color: rgba(255, 193, 7, 0.15);
+                border: 1px solid rgba(255, 224, 130, 0.30);
+            }}
+            QLabel[badgeRole="proton"][protonTier="silver"] {{
+                color: #B0BEC5;
+                background-color: rgba(144, 164, 174, 0.15);
+                border: 1px solid rgba(176, 190, 197, 0.30);
+            }}
+            QLabel[badgeRole="proton"][protonTier="bronze"] {{
+                color: #FFAB91;
+                background-color: rgba(255, 112, 67, 0.15);
+                border: 1px solid rgba(255, 171, 145, 0.30);
+            }}
+            QLabel[badgeRole="proton"][protonTier="borked"] {{
+                color: #EF9A9A;
+                background-color: rgba(239, 83, 80, 0.18);
+                border: 1px solid rgba(239, 154, 154, 0.35);
+            }}
+            QLabel[badgeRole="proton"][protonTier="native"] {{
+                color: #A5D6A7;
+                background-color: rgba(76, 175, 80, 0.15);
+                border: 1px solid rgba(165, 214, 167, 0.30);
+            }}
         """
         )
 
@@ -404,6 +464,9 @@ class GameLibraryDialog(
 
     def _connect_signals(self) -> None:
         """Connect GameManager and local signals."""
+        from core.ratings import subscribe_ratings
+        subscribe_ratings(self._on_rating_updated)
+
         if not self.game_manager:
             return
 
@@ -540,9 +603,44 @@ class GameLibraryDialog(
 
         self._show_game_details_dialog(game_data)
 
+    def _on_rating_updated(self, appid: str = "*") -> None:
+        """Refresh rating badge for a specific appid (or all items if '*')."""
+        if getattr(self, "_closing", False) or not hasattr(self, "games_list"):
+            return
+
+        if appid and appid != "*":
+            entry = self._items_by_appid.get(str(appid))
+            if entry:
+                widget = entry[1] if isinstance(entry, tuple) else self.games_list.itemWidget(entry)
+                if widget and hasattr(widget, "update_proton_badge"):
+                    try:
+                        widget.update_proton_badge()
+                    except Exception as e:
+                        logger.debug(f"[GameLibrary] Could not update proton badge for {appid}: {e}")
+                return
+
+        # Fallback for bulk updates ("*") or if _items_by_appid wasn't populated for this item
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            if not item:
+                continue
+            widget = self.games_list.itemWidget(item)
+            if not widget:
+                continue
+            if appid in ("*", None) or str(getattr(widget, "appid", "")) == str(appid):
+                try:
+                    if hasattr(widget, "update_denuvo_badge"):
+                        widget.update_denuvo_badge()
+                    if hasattr(widget, "update_proton_badge"):
+                        widget.update_proton_badge()
+                except Exception as e:
+                    logger.debug(f"[GameLibrary] Could not update badges for item {i}: {e}")
+
     def closeEvent(self, event) -> None:
         """Cleanup resources on close."""
         self._closing = True
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
         self._load_generation = getattr(self, "_load_generation", 0) + 1
         for fetcher in list(self._active_fetchers.values()):
             try:

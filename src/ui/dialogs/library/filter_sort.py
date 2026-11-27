@@ -21,8 +21,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-INITIAL_CHUNK_SIZE = 25
-SUBSEQUENT_CHUNK_SIZE = 25
+INITIAL_CHUNK_SIZE = 8
+SUBSEQUENT_CHUNK_SIZE = 16
 
 
 def game_is_dlc_only(game: dict) -> bool:
@@ -235,8 +235,10 @@ class LibraryFilterSortMixin:
         self._items_by_appid.clear()
         self._manifest_mtimes.clear()
         self._pinned_cache = {}
+        self._branch_cache = {}
+        self._dlc_only_cache = {}
 
-        # Quick in-memory scan of pinned games to avoid per-game disk/ACF latency
+        # Pre-warm settings in one single allKeys pass to avoid thousands of per-card queries
         if self.settings:
             try:
                 for k in self.settings.allKeys():
@@ -245,8 +247,25 @@ class LibraryFilterSortMixin:
                             appid = k[len("pin_build/"):]
                             bid = self.settings.value(f"installed_buildid/{appid}", "", type=str)
                             self._pinned_cache[appid] = bid
+                    elif k.startswith("installed_branch/"):
+                        appid = k[len("installed_branch/"):]
+                        val = self.settings.value(k, "public", type=str)
+                        if val and val != "public":
+                            self._branch_cache[appid] = val
+                    elif k.startswith("dlc_only_mode/"):
+                        appid = k[len("dlc_only_mode/"):]
+                        if self.settings.value(k, False, type=bool):
+                            self._dlc_only_cache[appid] = True
             except Exception as e:
-                logger.warning(f"Failed to populate pinned cache: {e}")
+                logger.warning(f"Failed to populate settings caches: {e}")
+
+        # Pre-warm workshop keys in a single pass across DB, workshop_keys.txt, and config.yaml
+        try:
+            from utils.workshop_helpers import build_prewarmed_workshop_keys
+            self._prewarmed_ws_keys = build_prewarmed_workshop_keys()
+        except Exception as e:
+            logger.debug(f"Failed to prewarm workshop keys: {e}")
+            self._prewarmed_ws_keys = None
 
         # Pre-scan manifests directory for mtimes
         try:
@@ -323,9 +342,11 @@ class LibraryFilterSortMixin:
                 if g.get("is_accela_install") or g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"):
                     managed_appids.add(aid)
         managed_appids.update(additional_apps)
+        plugin_lib = {}
         try:
-            from utils.plugin_games import load_plugin_library
-            for p_aid in load_plugin_library().keys():
+            from utils.plugin_games import get_all_plugin_games
+            plugin_lib = get_all_plugin_games(active_only=True) or {}
+            for p_aid in plugin_lib.keys():
                 managed_appids.add(str(p_aid).strip())
         except Exception as _silent_err:
             logger.debug("[Library] Could not read plugin_library in filter_sort: %s", _silent_err)
@@ -382,23 +403,38 @@ class LibraryFilterSortMixin:
                     steam_unmanaged.append(prepared)
                     seen_steam_aids.add(aid)
 
-        # Update tab counts on the bar
+        # AT0-M games that are registered but not on disk yet (added / queued in Steam).
+        try:
+            from utils.atom_pending import get_pending_atom_games
+            installed_aids = {str(g.get("appid", "")).strip() for g in all_manager_games}
+            pending_atom = get_pending_atom_games(installed_aids, plugin_lib=plugin_lib)
+        except Exception as e:
+            logger.debug(f"[Library] Pending AT0-M games unavailable: {e}")
+            pending_atom = []
+        self._pending_atom_games = pending_atom
+
+        # ASSella games that are in AdditionalApps but not on disk yet.
+        try:
+            from utils.assella_pending import get_pending_assella_games
+            installed_aids = {str(g.get("appid", "")).strip() for g in all_manager_games}
+            pending_assella = get_pending_assella_games(
+                installed_aids,
+                cfg_path=cfg_path,
+                plugin_lib=plugin_lib,
+                dlc_only_cache=self._dlc_only_cache,
+            )
+        except Exception as e:
+            logger.debug(f"[Library] Pending ASSella games unavailable: {e}")
+            pending_assella = []
+        self._pending_assella_games = pending_assella
+
         accela_total = sum(
             1
             for g in all_manager_games
             if g.get("is_accela_install")
             and not game_is_dlc_only(g)
             and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
-        )
-        # AT0-M games that are registered but not on disk yet (added / queued in Steam).
-        try:
-            from utils.atom_pending import get_pending_atom_games
-            installed_aids = {str(g.get("appid", "")).strip() for g in all_manager_games}
-            pending_atom = get_pending_atom_games(installed_aids)
-        except Exception as e:
-            logger.debug(f"[Library] Pending AT0-M games unavailable: {e}")
-            pending_atom = []
-        self._pending_atom_games = pending_atom
+        ) + len(pending_assella)
         atom_total = sum(
             1
             for g in all_manager_games
@@ -427,7 +463,7 @@ class LibraryFilterSortMixin:
                 if g.get("is_accela_install")
                 and not game_is_dlc_only(g)
                 and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
-            ]
+            ] + list(pending_assella)
         
         games = self._sort_games(games)
 
@@ -465,7 +501,7 @@ class LibraryFilterSortMixin:
 
         if remaining_games:
             QTimer.singleShot(
-                0,
+                5,
                 lambda: self._process_next_game_chunk(remaining_games, current_gen, active_tab),
             )
         else:
@@ -510,7 +546,7 @@ class LibraryFilterSortMixin:
             if query:
                 self._apply_search_filter()
             QTimer.singleShot(
-                0,
+                5,
                 lambda: self._process_next_game_chunk(rest, gen, active_tab),
             )
         else:

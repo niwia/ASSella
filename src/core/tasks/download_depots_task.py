@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 import hashlib
 import random
 import re
@@ -52,6 +53,9 @@ class DownloadDepotsTask(QObject):
         self.percentage_regex = re.compile(r"(\d{1,3}(?:\.\d{1,2})?)%")
         self.last_percentage = -1
         self.process: Optional[subprocess.Popen] = None
+        # Set once the task has emitted completed/error, so a stray return path
+        # can be caught in run()'s finally instead of leaving the queue stalled.
+        self._terminal_signal_emitted = False
 
         self.total_download_size_for_this_job = 0
         self.actual_download_bytes_for_this_job = 0
@@ -63,6 +67,8 @@ class DownloadDepotsTask(QObject):
         self._last_log_time = 0
         self._log_buffer = []
         self.temp_file_list = None
+        self.temp_file_lists = []
+        self.download_dir = ""
         self._last_speed_calc_time = 0.0
         self._last_downloaded_bytes = 0.0
         self._smooth_speed_bps = 0.0
@@ -72,14 +78,40 @@ class DownloadDepotsTask(QObject):
         self._current_depot_error_reason = ""
         self._current_depot_zero_downloaded = False
         self._current_depot_errors = 0
+        self._current_depot_network_error = ""
         self._auto_enabled = False
         self._auto_cap = 8
         self._auto_best_key = "auto_tune_best"
+        self._kuroko_manager = None
+        self._proxy_info_tag = None
+
+    def _emit_completed(self):
+        """Emit the terminal 'task ended' signal exactly once."""
+        if self._terminal_signal_emitted:
+            return
+        self._terminal_signal_emitted = True
+        self.completed.emit()
+
+    def _emit_error(self, payload):
+        """Emit the terminal error signal exactly once."""
+        if self._terminal_signal_emitted:
+            return
+        self._terminal_signal_emitted = True
+        self.error.emit(payload)
 
     @property
     def is_running_flag(self) -> bool:
         """Property to access the private running state safely."""
         return self._is_running
+
+    @property
+    def _wireproxy_manager(self):
+        """Backward-compatibility alias for _kuroko_manager."""
+        return self._kuroko_manager
+
+    @_wireproxy_manager.setter
+    def _wireproxy_manager(self, value):
+        self._kuroko_manager = value
 
     def run(
         self, game_data: Dict[str, Any], selected_depots: List[str], dest_path: str
@@ -88,6 +120,10 @@ class DownloadDepotsTask(QObject):
         Main execution method to download selected depots.
         """
         logger.info(f"Download task starting for {len(selected_depots)} depots.")
+        self.game_data = game_data
+        self.dest_path = dest_path
+        self._terminal_signal_emitted = False
+        self._temp_files_cleaned = False
         current_cmd: Optional[List[str]] = None
 
         try:
@@ -98,11 +134,46 @@ class DownloadDepotsTask(QObject):
                     "ERROR: .NET 9 runtime is required and could not be installed automatically."
                 )
                 logger.critical(".NET 9 runtime not available")
-                self.error.emit((RuntimeError, ".NET 9 runtime not available", None))
+                self._emit_error((RuntimeError, ".NET 9 runtime not available", None))
+                return
+
+            settings = get_settings()
+            proxy_url = None
+            failover_from = None
+            while self._is_running:
+                try:
+                    proxy_url = self._setup_stealth_proxy(settings, failover_from=failover_from)
+                    break
+                except Exception as e:
+                    logger.warning(f"[DownloadDepotsTask] Stealth proxy setup failed: {e}")
+                    if not self._is_running:
+                        self._emit_completed()
+                        return
+                    from utils.kuroko import prompt_stealth_fallback
+                    user_action = prompt_stealth_fallback(str(e))
+                    if user_action == "retry":
+                        self.progress.emit("Retrying stealth connection (reconnecting/rotating)...")
+                        failover_from = getattr(getattr(self, "_kuroko_manager", None), "endpoint_id", None) or "active"
+                        self._cleanup_stealth_proxy()
+                        continue
+                    elif user_action == "direct":
+                        self.progress.emit("[Warning] Stealth connection failed. Continuing with direct (non-stealth) connection per user request.")
+                        proxy_url = None
+                        break
+                    else:
+                        self._is_running = False
+                        self.progress.emit("Download cancelled due to stealth connection failure.")
+                        logger.info(f"[DownloadDepotsTask] User cancelled download on stealth failure: {e}")
+                        self._emit_error((InterruptedError, "Download cancelled due to stealth connection failure.", None))
+                        return
+
+            if not self._is_running:
+                logger.info("[DownloadDepotsTask] Download task stopped during stealth setup.")
+                self._emit_completed()
                 return
 
             commands, skipped_depots, depot_sizes = self._prepare_downloads(
-                game_data, selected_depots, dest_path
+                game_data, selected_depots, dest_path, proxy_url=proxy_url
             )
 
             if not commands:
@@ -113,12 +184,12 @@ class DownloadDepotsTask(QObject):
                     )
                     logger.error(f"[DownloadDepotsTask] {err_msg}")
                     self.progress.emit(f"ERROR: {err_msg}")
-                    self.error.emit((RuntimeError, err_msg, None))
+                    self._emit_error((RuntimeError, err_msg, None))
                 else:
                     self.progress.emit(
                         "No valid download commands to execute. Task finished."
                     )
-                    self.completed.emit()
+                    self._emit_completed()
                 return
 
             total_depots = len(commands)
@@ -133,8 +204,6 @@ class DownloadDepotsTask(QObject):
 
             # Track sidecar writes across all depots — determines DD_DELTA vs DD_FULL
             _sidecar_written_count = 0
-            failed_depots = []
-
             for i, current_cmd in enumerate(commands):
                 if not self._is_running:
                     logger.info("Download task stopping before next depot.")
@@ -150,15 +219,6 @@ class DownloadDepotsTask(QObject):
                     f"--- Starting download for depot {depot_id} "
                     f"({i + 1}/{total_depots}) [Size: {self.current_depot_size} bytes] ---"
                 )
-                self.last_percentage = -1
-                self._current_depot_key_denied = False
-                self._current_depot_error_reason = ""
-                self._current_depot_zero_downloaded = False
-                self._current_depot_downloaded_bytes = 0
-                self._current_depot_uncompressed_bytes = 0
-                self._current_depot_errors = 0
-                self._dl_phase_start = 0.0
-                self._dl_phase_end = 0.0
                 depot_start_time = time.time()
 
                 # Determine creation flags for Windows to hide the console window
@@ -166,111 +226,127 @@ class DownloadDepotsTask(QObject):
                 if sys.platform == "win32":
                     creation_flags = subprocess.CREATE_NO_WINDOW
 
-                # Use binary mode to handle \r correctly
-                self.process = subprocess.Popen(
-                    current_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=False,  # Binary mode
-                    creationflags=creation_flags,
-                    env=get_dotnet_env(),
-                )
-
-                # Read output directly in this thread
-                self._read_process_output()
-
-                # Close the stdout pipe now that the reader loop has exited.
-                # The process is either finished or about to be killed — releasing
-                # the read end of the pipe here frees the OS file descriptor
-                # immediately rather than waiting for GC.
-                if self.process and self.process.stdout:
-                    try:
-                        self.process.stdout.close()
-                    except OSError:
-                        pass
-
-                # Flush any remaining logs
-                self._flush_log_buffer()
-
+                return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                 if not self._is_running:
-                    if self.process and self.process.poll() is None:
-                        self.process.terminate()
                     logger.info("Download task stopping because stop() was called.")
-                    self.completed.emit()
+                    self._emit_completed()
                     return
 
-                return_code = 0
-                if self.process:
-                    return_code = self.process.poll()
-                    self.process = None
-
-                # Automatic LanCache fallback: if LanCache was used and failed, retry directly
+                # 1. Automatic LanCache fallback: if LanCache was used and failed, retry directly
                 if return_code != 0 and "-use-lancache" in current_cmd and self._is_running:
                     fallback_msg = (
-                        f"⚠️ LanCache download issue encountered for depot {depot_id} (exit code {return_code}). "
+                        f"LanCache download issue encountered for depot {depot_id} (exit code {return_code}). "
                         "Automatically falling back to direct connection without LanCache..."
                     )
                     self.progress.emit(fallback_msg)
                     logger.warning(fallback_msg)
 
                     fallback_cmd = [arg for arg in current_cmd if arg != "-use-lancache"]
-                    self.last_percentage = -1
-                    self._is_validating = False
-                    self._lancache_error_detected = False
-                    self._current_depot_downloaded_bytes = 0
-                    self._current_depot_uncompressed_bytes = 0
-
-                    self.process = subprocess.Popen(
-                        fallback_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=False,
-                        creationflags=creation_flags,
-                        env=get_dotnet_env(),
-                    )
-                    self._read_process_output()
-
-                    if self.process and self.process.stdout:
-                        try:
-                            self.process.stdout.close()
-                        except OSError:
-                            pass
-
-                    self._flush_log_buffer()
-
+                    current_cmd = fallback_cmd
+                    commands[i] = current_cmd
+                    return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                     if not self._is_running:
-                        if self.process and self.process.poll() is None:
-                            self.process.terminate()
                         logger.info("Download task stopping because stop() was called.")
-                        self.completed.emit()
+                        self._emit_completed()
                         return
 
-                    if self.process:
-                        return_code = self.process.poll()
-                        self.process = None
-
-                # Check if DepotDownloader failed with key authorization error or 0 bytes downloaded
-                if return_code == 0 and (self._current_depot_key_denied or self._current_depot_zero_downloaded):
-                    return_code = 1
-                    if not self._current_depot_error_reason:
-                        self._current_depot_error_reason = "No valid decryption key (AccessDenied) or 0 bytes downloaded"
-                    logger.error(
-                        f"[DownloadDepotsTask] Depot {depot_id} failed download: {self._current_depot_error_reason}"
+                # 2. Check for mid-flight stealth proxy or network connection failure
+                if return_code != 0 and not self._current_depot_key_denied and self._is_running:
+                    is_stealth_active = bool(self._kuroko_manager or "-proxy" in current_cmd)
+                    is_stealth_dropped = is_stealth_active and (
+                        bool(self._current_depot_network_error)
+                        or (self._kuroko_manager and not self._kuroko_manager.is_running)
                     )
 
-                if return_code != 0 and self._is_running:
-                    if self._current_depot_key_denied:
-                        error_msg = (
-                            f"Download aborted: No valid decryption key for depot {depot_id}. "
-                            f"{self._current_depot_error_reason or 'AccessDenied from Steam'}"
-                        )
-                        self.progress.emit(f"ERROR: {error_msg}")
-                        logger.error(f"[DownloadDepotsTask] {error_msg}")
-                        self._cleanup_temp_files()
-                        self.error.emit((RuntimeError, error_msg, None))
-                        return
+                    if is_stealth_dropped:
+                        net_err = self._current_depot_network_error or "Stealth connection dropped or timed out mid-download."
+                        logger.warning(f"[DownloadDepotsTask] Mid-flight stealth error on depot {depot_id}: {net_err}")
 
-                    # Attempt smart recovery via wudrm / Steam CDN with fallbacks
+                        # 2a. Attempt automatic pool rotation failover if rotation is enabled
+                        rotation_on = settings.value("stealth_rotation_enabled", False, type=bool)
+                        failed_over = False
+                        if rotation_on:
+                            self.progress.emit(f"Stealth connection interrupted on depot {depot_id}. Attempting pool failover...")
+                            prev_id = getattr(self._kuroko_manager, "endpoint_id", None)
+                            self._cleanup_stealth_proxy()
+                            try:
+                                new_url = self._setup_stealth_proxy(settings, failover_from=prev_id)
+                                active_url = self._kuroko_manager.proxy_url if self._kuroko_manager else new_url
+                                if active_url:
+                                    for c in commands[i:]:
+                                        if "-proxy" in c:
+                                            p_idx = c.index("-proxy")
+                                            c[p_idx + 1] = active_url
+                                        else:
+                                            c.extend(["-proxy", active_url])
+                                    current_cmd = commands[i]
+                                    self.progress.emit(f"Failed over to new stealth endpoint: {active_url}. Resuming depot {depot_id}...")
+                                    return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
+                                    if not self._is_running:
+                                        logger.info("Download task stopping because stop() was called.")
+                                        self._emit_completed()
+                                        return
+                                    if return_code == 0:
+                                        failed_over = True
+                            except Exception as failover_err:
+                                logger.warning(f"[DownloadDepotsTask] Stealth pool failover failed: {failover_err}")
+
+                        # 2b. If rotation failed or is disabled, prompt user with modal fallback
+                        if not failed_over and return_code != 0:
+                            if not self._is_running:
+                                logger.info("Download task stopping because stop() was called.")
+                                self._emit_completed()
+                                return
+                            from utils.kuroko import prompt_stealth_fallback
+                            user_action = prompt_stealth_fallback(net_err)
+                            if user_action == "retry":
+                                self.progress.emit(f"Stealth dropped mid-download. Reconnecting stealth proxy for depot {depot_id}...")
+                                prev_id = getattr(getattr(self, "_kuroko_manager", None), "endpoint_id", None) or "active"
+                                self._cleanup_stealth_proxy()
+                                try:
+                                    new_proxy_url = self._setup_stealth_proxy(settings, failover_from=prev_id)
+                                    active_url = self._kuroko_manager.proxy_url if self._kuroko_manager else new_proxy_url
+                                    if active_url:
+                                        for c in commands[i:]:
+                                            if "-proxy" in c:
+                                                p_idx = c.index("-proxy")
+                                                c[p_idx + 1] = active_url
+                                            else:
+                                                c.extend(["-proxy", active_url])
+                                        current_cmd = commands[i]
+                                        return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
+                                        if not self._is_running:
+                                            logger.info("Download task stopping because stop() was called.")
+                                            self._emit_completed()
+                                            return
+                                except Exception as retry_err:
+                                    logger.warning(f"[DownloadDepotsTask] Stealth retry failed: {retry_err}")
+                            elif user_action == "direct":
+                                self.progress.emit(f"Stealth dropped mid-download. Proceeding directly (non-stealth) for depot {depot_id}...")
+                                self._cleanup_stealth_proxy()
+                                for c in commands[i:]:
+                                    while "-proxy" in c:
+                                        p_idx = c.index("-proxy")
+                                        if p_idx + 1 < len(c):
+                                            del c[p_idx:p_idx + 2]
+                                        else:
+                                            del c[p_idx]
+                                current_cmd = commands[i]
+                                return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
+                                if not self._is_running:
+                                    logger.info("Download task stopping because stop() was called.")
+                                    self._emit_completed()
+                                    return
+                            else:
+                                self._is_running = False
+                                self.progress.emit("Download cancelled due to stealth connection failure.")
+                                logger.info(f"[DownloadDepotsTask] Download cancelled by user after stealth drop: {net_err}")
+                                self._cleanup_temp_files()
+                                self._emit_error((InterruptedError, "Download cancelled due to stealth connection failure.", None))
+                                return
+
+                # 3. Attempt smart recovery via wudrm / Steam CDN with fallbacks
+                if return_code != 0 and not self._current_depot_key_denied and self._is_running:
                     try:
                         manifest_idx = current_cmd.index("-manifest")
                         cur_manifest_id = current_cmd[manifest_idx + 1]
@@ -283,7 +359,7 @@ class DownloadDepotsTask(QObject):
                     recovered_manifest = False
                     if cur_manifest_id and cur_manifest_file_path:
                         rec_msg = (
-                            f"⚠️ DepotDownloader failed for depot {depot_id} (exit code {return_code}). "
+                            f"DepotDownloader failed for depot {depot_id} (exit code {return_code}). "
                             f"Suspecting corrupted/poisoned manifest. Attempting fresh recovery via wudrm (Steam CDN)..."
                         )
                         self.progress.emit(rec_msg)
@@ -332,198 +408,168 @@ class DownloadDepotsTask(QObject):
                             logger.error(f"[DownloadDepotsTask] Error during wudrm manifest recovery: {_rec_e}")
 
                     if recovered_manifest and self._is_running:
-                        self.last_percentage = -1
-                        self._is_validating = False
-                        self._current_depot_downloaded_bytes = 0
-                        self._current_depot_uncompressed_bytes = 0
                         retry_cmd = [arg for arg in current_cmd if arg != "-use-lancache"]
-                        self.process = subprocess.Popen(
-                            retry_cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=False,
-                            creationflags=creation_flags,
-                            env=get_dotnet_env(),
-                        )
-                        self._read_process_output()
-
-                        if self.process and self.process.stdout:
-                            try:
-                                self.process.stdout.close()
-                            except OSError:
-                                pass
-
-                        self._flush_log_buffer()
-
+                        return_code = self._execute_depot_cmd(retry_cmd, creation_flags, depot_id)
                         if not self._is_running:
-                            if self.process and self.process.poll() is None:
-                                self.process.terminate()
                             logger.info("Download task stopping because stop() was called.")
-                            self.completed.emit()
+                            self._emit_completed()
                             return
 
-                        if self.process:
-                            return_code = self.process.poll()
-                            self.process = None
-
-                        if return_code == 0 and (self._current_depot_key_denied or self._current_depot_zero_downloaded):
-                            return_code = 1
-                            if not self._current_depot_error_reason:
-                                self._current_depot_error_reason = "No valid decryption key (AccessDenied) or 0 bytes downloaded"
-
-                    if return_code != 0:
-                        if self._current_depot_key_denied:
-                            error_msg = (
-                                f"Download aborted: No valid decryption key for depot {depot_id}. "
-                                f"{self._current_depot_error_reason or 'AccessDenied from Steam'}"
-                            )
-                        elif self._current_depot_zero_downloaded and self.current_depot_size > 0:
-                            error_msg = (
-                                f"Download aborted: 0 bytes downloaded for depot {depot_id} "
-                                f"(expected {self.current_depot_size} bytes)."
-                            )
-                        else:
-                            error_msg = (
-                                f"Poisoned manifest files: Depot {depot_id} (Manifest {cur_manifest_id or 'unknown'}) failed verification "
-                                f"and could not be recovered via wudrm or Steam CDN. Aborting."
-                            )
-                        self.progress.emit(f"ERROR: {error_msg}")
-                        logger.error(f"[DownloadDepotsTask] {error_msg}")
-                        self._cleanup_temp_files()
-                        self.error.emit((RuntimeError, error_msg, None))
-                        return
-                else:
-                    self.completed_so_far_for_this_job += self.current_depot_size
-                    self.actual_download_bytes_for_this_job += self._current_depot_downloaded_bytes
-                    self.actual_uncompressed_bytes_for_this_job += self._current_depot_uncompressed_bytes
-                    # Auto-tune: learn from this depot, adjust the rest (if enabled).
-                    # Validation-only depots (no wire bytes) hold N without
-                    # training: local checksum throughput must never become
-                    # the network baseline.
-                    if self._auto_enabled:
-                        try:
-                            from utils import auto_tune as _auto_tune
-                            used_n = _auto_tune.get_cmd_concurrency(current_cmd, self._auto_cap)
-                            wire_bytes = self._current_depot_downloaded_bytes
-                            t0 = getattr(self, "_dl_phase_start", 0.0) or depot_start_time
-                            t1 = getattr(self, "_dl_phase_end", 0.0) or time.time()
-                            dl_secs = max(0.0, t1 - t0)
-                            if not _auto_tune.should_learn(wire_bytes, dl_secs):
-                                logger.debug(
-                                    f"[DownloadDepotsTask] Auto-tune: depot {depot_id} "
-                                    f"moved {wire_bytes} wire bytes in {dl_secs:.1f}s — too small to learn, holding N={used_n}"
-                                )
-                                self.progress.emit(
-                                    f"Auto-tune: depot {depot_id} too small to measure, holding at "
-                                    f"{used_n} (cap {self._auto_cap})."
-                                )
-                            else:
-                                # Real network speed: bytes that crossed the wire during
-                                # the download phase only (reused/validated bytes and the
-                                # planning phase are not network work).
-                                speed_bps = wire_bytes / dl_secs
-                                next_n = _auto_tune.record_result(
-                                    get_settings(),
-                                    self._auto_best_key,
-                                    used_n,
-                                    float(speed_bps),
-                                    self._auto_cap,
-                                    self._current_depot_errors,
-                                    dest_path=getattr(self, "download_dir", ""),
-                                )
-                                for _later_cmd in commands[i + 1:]:
-                                    _auto_tune.set_cmd_concurrency(_later_cmd, next_n)
-                                self.progress.emit(
-                                    f"Auto-tune: depot {depot_id} @ {_auto_tune.format_speed(speed_bps)} "
-                                    f"with {used_n} chunks → next: {next_n} (cap {self._auto_cap})."
-                                )
-                                logger.info(
-                                    f"[DownloadDepotsTask] Auto-tune: depot {depot_id} "
-                                    f"{speed_bps:.0f} B/s N={used_n} errors={self._current_depot_errors} → N={next_n}"
-                                )
-                        except Exception as _at_err:
-                            logger.debug(f"[DownloadDepotsTask] Auto-tune step failed: {_at_err}")
-                    self._current_depot_downloaded_bytes = 0
-                    self._current_depot_uncompressed_bytes = 0
-                    self._last_speed_calc_time = 0.0
-                    self._smooth_speed_bps = 0.0
-                    # Copy manifest and create .sha sidecar in .DepotDownloader to enable future delta updates
-                    try:
-                        # Safely extract manifest_id and manifest_file_path via flag names
-                        manifest_idx = current_cmd.index("-manifest")
-                        manifest_id = current_cmd[manifest_idx + 1]
-                        mf_idx = current_cmd.index("-manifestfile")
-                        manifest_file_path = current_cmd[mf_idx + 1]
-
-                        dest_depot_downloader = os.path.join(self.download_dir, ".DepotDownloader")
-                        os.makedirs(dest_depot_downloader, exist_ok=True)
-
-                        dest_manifest_path = os.path.join(dest_depot_downloader, f"{depot_id}_{manifest_id}.manifest")
-
-                        if os.path.exists(manifest_file_path):
-                            try:
-                                from utils.manifest_resolver import sanitize_manifest_file
-                                sanitize_manifest_file(manifest_file_path)
-                            except Exception:
-                                pass
-                            shutil.copy2(manifest_file_path, dest_manifest_path)
-
-                            # Calculate SHA1 hash of the manifest file
-                            sha1 = hashlib.sha1()
-                            with open(dest_manifest_path, "rb") as f:
-                                while chunk := f.read(8192):
-                                    sha1.update(chunk)
-
-                            # Write the raw bytes of the SHA1 hash to the .sha file (as expected by DDM's Util.LoadManifestFromFile)
-                            with open(dest_manifest_path + ".sha", "wb") as f:
-                                f.write(sha1.digest())
-
-                            _sidecar_written_count += 1
-                            logger.info(f"Successfully copied manifest and created SHA sidecar for depot {depot_id} to enable delta patching.")
-
-                            try:
-                                from utils.manifest_resolver import restore_depot_symlinks
-                                restored_symlinks = restore_depot_symlinks(dest_manifest_path, self.download_dir)
-                                if restored_symlinks:
-                                    logger.info(f"Restored {len(restored_symlinks)} symlinks for depot {depot_id}")
-                            except Exception as e:
-                                logger.debug(f"Failed restoring symlinks for depot {depot_id}: {e}")
-                        else:
-                            logger.warning(f"Manifest file not found at {manifest_file_path}, skipping delta manifest setup.")
-                    except Exception as e:
-                        logger.warning(f"Failed to copy manifest for depot {depot_id}: {e}", exc_info=True)
-
-            if skipped_depots:
-                self.progress.emit(
-                    f"Skipped {len(skipped_depots)} depots due to missing manifests: "
-                    f"{', '.join(skipped_depots)}"
-                )
-                if len(skipped_depots) == total_depots:
-                    error_msg = "Download aborted: all depots were skipped due to missing manifests."
-                    self.progress.emit(f"ERROR: {error_msg}")
-                    logger.error(error_msg)
-                    self._cleanup_temp_files()
-                    self.error.emit((RuntimeError, error_msg, None))
+                if not self._is_running:
+                    logger.info("Download task stopping because stop() was called.")
+                    self._emit_completed()
                     return
 
-            if failed_depots:
-                err_summary = ", ".join(f"depot {d} (code {c})" for d, c in failed_depots)
-                error_msg = f"DepotDownloader failed for {len(failed_depots)} depot(s): {err_summary}"
-                self.progress.emit(f"ERROR: {error_msg}")
-                logger.error(error_msg)
-                self._cleanup_temp_files()
-                self.error.emit((RuntimeError, error_msg, None))
+                # 4. Final failure check: if all recovery attempts failed, abort
+                if return_code != 0:
+                    if self._current_depot_key_denied:
+                        error_msg = (
+                            f"Download aborted: No valid decryption key for depot {depot_id}. "
+                            f"{self._current_depot_error_reason or 'AccessDenied from Steam'}"
+                        )
+                    elif self._current_depot_zero_downloaded and self.current_depot_size > 0:
+                        error_msg = (
+                            f"Download aborted: 0 bytes downloaded for depot {depot_id} "
+                            f"(expected {self.current_depot_size} bytes)."
+                        )
+                    else:
+                        try:
+                            manifest_idx = current_cmd.index("-manifest")
+                            cur_manifest_id = current_cmd[manifest_idx + 1]
+                        except (ValueError, IndexError):
+                            cur_manifest_id = "unknown"
+                        error_msg = (
+                            f"Poisoned manifest files: Depot {depot_id} (Manifest {cur_manifest_id}) failed verification "
+                            f"and could not be recovered via wudrm or Steam CDN. Aborting."
+                        )
+                    self.progress.emit(f"ERROR: {error_msg}")
+                    logger.error(f"[DownloadDepotsTask] {error_msg}")
+                    self._cleanup_temp_files()
+                    self._emit_error((RuntimeError, error_msg, None))
+                    return
+
+                # 5. Success accounting and post-depot artifacts
+                self.completed_so_far_for_this_job += self.current_depot_size
+                self.actual_download_bytes_for_this_job += self._current_depot_downloaded_bytes
+                self.actual_uncompressed_bytes_for_this_job += self._current_depot_uncompressed_bytes
+                # Auto-tune: learn from this depot, adjust the rest (if enabled).
+                # Validation-only depots (no wire bytes) hold N without
+                # training: local checksum throughput must never become
+                # the network baseline.
+                if self._auto_enabled:
+                    try:
+                        from utils import auto_tune as _auto_tune
+                        used_n = _auto_tune.get_cmd_concurrency(current_cmd, self._auto_cap)
+                        wire_bytes = self._current_depot_downloaded_bytes
+                        t0 = getattr(self, "_dl_phase_start", 0.0) or depot_start_time
+                        t1 = getattr(self, "_dl_phase_end", 0.0) or time.time()
+                        dl_secs = max(0.0, t1 - t0)
+                        if not _auto_tune.should_learn(wire_bytes, dl_secs):
+                            logger.debug(
+                                f"[DownloadDepotsTask] Auto-tune: depot {depot_id} "
+                                f"moved {wire_bytes} wire bytes in {dl_secs:.1f}s — too small to learn, holding N={used_n}"
+                            )
+                            self.progress.emit(
+                                f"Auto-tune: depot {depot_id} too small to measure, holding at "
+                                f"{used_n} (cap {self._auto_cap})."
+                            )
+                        else:
+                            # Real network speed: bytes that crossed the wire during
+                            # the download phase only (reused/validated bytes and the
+                            # planning phase are not network work).
+                            speed_bps = wire_bytes / dl_secs
+                            next_n = _auto_tune.record_result(
+                                get_settings(),
+                                self._auto_best_key,
+                                used_n,
+                                float(speed_bps),
+                                self._auto_cap,
+                                self._current_depot_errors,
+                                dest_path=getattr(self, "download_dir", ""),
+                            )
+                            for _later_cmd in commands[i + 1:]:
+                                _auto_tune.set_cmd_concurrency(_later_cmd, next_n)
+                            self.progress.emit(
+                                f"Auto-tune: depot {depot_id} @ {_auto_tune.format_speed(speed_bps)} "
+                                f"with {used_n} chunks → next: {next_n} (cap {self._auto_cap})."
+                            )
+                            logger.info(
+                                f"[DownloadDepotsTask] Auto-tune: depot {depot_id} "
+                                f"{speed_bps:.0f} B/s N={used_n} errors={self._current_depot_errors} → N={next_n}"
+                            )
+                    except Exception as _at_err:
+                        logger.debug(f"[DownloadDepotsTask] Auto-tune step failed: {_at_err}")
+                self._current_depot_downloaded_bytes = 0
+                self._current_depot_uncompressed_bytes = 0
+                self._last_speed_calc_time = 0.0
+                self._smooth_speed_bps = 0.0
+                # Copy manifest and create .sha sidecar in .DepotDownloader to enable future delta updates
+                try:
+                    # Safely extract manifest_id and manifest_file_path via flag names
+                    manifest_idx = current_cmd.index("-manifest")
+                    manifest_id = current_cmd[manifest_idx + 1]
+                    mf_idx = current_cmd.index("-manifestfile")
+                    manifest_file_path = current_cmd[mf_idx + 1]
+
+                    dest_depot_downloader = os.path.join(self.download_dir, ".DepotDownloader")
+                    os.makedirs(dest_depot_downloader, exist_ok=True)
+
+                    dest_manifest_path = os.path.join(dest_depot_downloader, f"{depot_id}_{manifest_id}.manifest")
+
+                    if os.path.exists(manifest_file_path):
+                        try:
+                            from utils.manifest_resolver import sanitize_manifest_file
+                            sanitize_manifest_file(manifest_file_path)
+                        except Exception:
+                            pass
+                        shutil.copy2(manifest_file_path, dest_manifest_path)
+
+                        # Calculate SHA1 hash of the manifest file
+                        sha1 = hashlib.sha1()
+                        with open(dest_manifest_path, "rb") as f:
+                            while chunk := f.read(8192):
+                                sha1.update(chunk)
+
+                        # Write the raw bytes of the SHA1 hash to the .sha file (as expected by DDM's Util.LoadManifestFromFile)
+                        with open(dest_manifest_path + ".sha", "wb") as f:
+                            f.write(sha1.digest())
+
+                        _sidecar_written_count += 1
+                        logger.info(f"Successfully copied manifest and created SHA sidecar for depot {depot_id} to enable delta patching.")
+
+                        try:
+                            from utils.manifest_resolver import restore_depot_symlinks
+                            restored_symlinks = restore_depot_symlinks(dest_manifest_path, self.download_dir)
+                            if restored_symlinks:
+                                logger.info(f"Restored {len(restored_symlinks)} symlinks for depot {depot_id}")
+                        except Exception as e:
+                            logger.debug(f"Failed restoring symlinks for depot {depot_id}: {e}")
+                    else:
+                        logger.warning(f"Manifest file not found at {manifest_file_path}, skipping delta manifest setup.")
+                except Exception as e:
+                    logger.warning(f"Failed to copy manifest for depot {depot_id}: {e}", exc_info=True)
+
+            if skipped_depots:
+                # Never finalise an install with missing depots: that would write
+                # an ACF/buildid for content which was never downloaded.
+                err_msg = (
+                    f"Download incomplete: {len(skipped_depots)} depot(s) were skipped due to "
+                    f"missing or invalid manifests: {', '.join(skipped_depots)}"
+                )
+                logger.error(f"[DownloadDepotsTask] {err_msg}")
+                self.progress.emit(f"ERROR: {err_msg}")
+                self._emit_error((RuntimeError, err_msg, None))
                 return
 
             if not self._is_running:
                 logger.info("Download task stopped before cleanup.")
-                self.completed.emit()
+                self._emit_completed()
                 return
 
             self._copy_manifests_to_steam_depotcache()
             self._cleanup_temp_files()
 
-            self.completed.emit()
+            self._emit_completed()
 
         except FileNotFoundError:
             binary = "executable"
@@ -536,15 +582,136 @@ class DownloadDepotsTask(QObject):
             )
             self.progress.emit(error_msg)
             logger.critical(f"'{binary}' not found.")
-            self.error.emit((FileNotFoundError, f"'{binary}' not found", None))
+            self._emit_error((FileNotFoundError, f"'{binary}' not found", None))
             raise
 
         except (OSError, subprocess.SubprocessError) as e:
             self.progress.emit(f"An unexpected error occurred during download: {e}")
             logger.error(f"Download subprocess failed: {e}", exc_info=True)
             self.process = None
-            self.error.emit((type(e), str(e), None))
+            self._emit_error((type(e), str(e), None))
             raise
+        except Exception as e:
+            self.progress.emit(f"An unexpected error occurred during download: {e}")
+            logger.error(f"Download task failed: {e}", exc_info=True)
+            self.process = None
+            self._emit_error((type(e), str(e), None))
+            raise
+        finally:
+            self._cleanup_stealth_proxy()
+            # Plaintext depot keys and manifests live in the temp dir; remove
+            # them on every exit path, not only on success.
+            self._cleanup_temp_files()
+            # Safety net: no return path may leave the job queue waiting for a
+            # terminal signal that never comes.
+            if not self._terminal_signal_emitted:
+                if self._is_running:
+                    logger.error(
+                        "[DownloadDepotsTask] Task ended without reporting a result; emitting error."
+                    )
+                    self._emit_error(
+                        (RuntimeError, "Download task ended without reporting a result", None)
+                    )
+                else:
+                    self._emit_completed()
+
+    def _execute_depot_cmd(
+        self, cmd: List[str], creation_flags: int, depot_id: str = ""
+    ) -> int:
+        """Executes a DepotDownloader command for a single depot attempt.
+
+        Resets per-attempt failure flags, spawns the process, processes stdout,
+        flushes log buffers, and verifies the exit code against key authorization
+        errors and empty download states.
+        """
+        self.last_percentage = -1
+        self._is_validating = False
+        self._lancache_error_detected = False
+        self._current_depot_key_denied = False
+        self._current_depot_error_reason = ""
+        self._current_depot_zero_downloaded = False
+        self._current_depot_network_error = ""
+        self._current_depot_downloaded_bytes = 0
+        self._current_depot_uncompressed_bytes = 0
+        self._current_depot_errors = 0
+        self._dl_phase_start = 0.0
+        self._dl_phase_end = 0.0
+
+        if not self._is_running:
+            return -1
+
+        self.process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,  # never block on an interactive prompt
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=False,  # Binary mode
+            creationflags=creation_flags,
+            env=get_dotnet_env(),
+        )
+
+        self._read_process_output()
+
+        if self.process and self.process.stdout:
+            try:
+                self.process.stdout.close()
+            except OSError as pipe_err:
+                logger.debug(f"[DownloadDepotsTask] Pipe close error: {pipe_err}")
+
+        self._flush_log_buffer()
+
+        if not self._is_running:
+            if self.process and self.process.poll() is None:
+                try:
+                    self.process.terminate()
+                except Exception as term_err:
+                    logger.debug(f"[DownloadDepotsTask] Terminate error: {term_err}")
+            self.process = None
+            return -1
+
+        # If the process handle disappeared (e.g. toggle_pause cleared it after a
+        # psutil race) the downloader never finished — never report success.
+        return_code = -1
+        if self.process:
+            try:
+                return_code = self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    f"[DownloadDepotsTask] Process for depot {depot_id or 'unknown'} did not exit within 5s after EOF, terminating."
+                )
+                try:
+                    self.process.terminate()
+                    return_code = self.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        f"[DownloadDepotsTask] Process for depot {depot_id or 'unknown'} did not exit after SIGTERM, killing."
+                    )
+                    try:
+                        self.process.kill()
+                        return_code = self.process.wait(timeout=2)
+                    except Exception as kill_err:
+                        logger.debug(f"[DownloadDepotsTask] Kill error: {kill_err}")
+                        return_code = -1
+                except Exception as wait_err:
+                    logger.debug(f"[DownloadDepotsTask] Teardown wait error: {wait_err}")
+                    return_code = -1
+            self.process = None
+
+        if return_code == 0 and (
+            self._current_depot_key_denied
+            or (self._current_depot_zero_downloaded and self.current_depot_size > 0)
+        ):
+            return_code = 1
+            if not self._current_depot_error_reason:
+                self._current_depot_error_reason = (
+                    "No valid decryption key (AccessDenied) or 0 bytes downloaded"
+                )
+            logger.error(
+                f"[DownloadDepotsTask] Depot {depot_id or 'unknown'} failed download: {self._current_depot_error_reason}"
+            )
+
+        return return_code
+
     def _read_process_output(self):
         """Reads process output in chunks, splitting on \\r and \\n for progress updates."""
         if not self.process or not self.process.stdout:
@@ -600,6 +767,14 @@ class DownloadDepotsTask(QObject):
         falls back to 'needs download' state (blue Install button).
         """
         try:
+            from utils.game_modes import is_standalone_game
+            if getattr(self, "game_data", None) and (
+                self.game_data.get("is_standalone")
+                or is_standalone_game(
+                    {**self.game_data, "install_path": getattr(self, "dest_path", "")}
+                )
+            ):
+                return
             from utils.slssteam_integration import _experimental_mode_enabled
             if not _experimental_mode_enabled():
                 return
@@ -639,6 +814,9 @@ class DownloadDepotsTask(QObject):
 
     def _cleanup_temp_files(self):
         """Cleans up temporary files created during the download process."""
+        if getattr(self, "_temp_files_cleaned", False):
+            return
+        self._temp_files_cleaned = True
         self.progress.emit("--- Cleaning up temporary files ---")
         temp_dir = tempfile.gettempdir()
         items_to_clean = {
@@ -658,13 +836,23 @@ class DownloadDepotsTask(QObject):
                 except OSError as e:
                     self.progress.emit(f"Error removing temp item '{name}': {e}")
 
-        if self.temp_file_list and os.path.exists(self.temp_file_list):
-            try:
-                os.remove(self.temp_file_list)
-                self.progress.emit("Removed temporary selective filelist.")
-                self.temp_file_list = None
-            except OSError as e:
-                self.progress.emit(f"Error removing selective filelist temp file: {e}")
+        for fl_path in getattr(self, "temp_file_lists", []):
+            if fl_path and os.path.exists(fl_path):
+                try:
+                    os.remove(fl_path)
+                    self.progress.emit(f"Removed temporary selective filelist '{os.path.basename(fl_path)}'.")
+                except OSError as e:
+                    self.progress.emit(f"Error removing selective filelist temp file '{os.path.basename(fl_path)}': {e}")
+        self.temp_file_lists = []
+
+        if self.temp_file_list:
+            if os.path.exists(self.temp_file_list):
+                try:
+                    os.remove(self.temp_file_list)
+                    self.progress.emit("Removed temporary selective filelist.")
+                except OSError as e:
+                    self.progress.emit(f"Error removing selective filelist temp file: {e}")
+            self.temp_file_list = None
 
     def _flush_log_buffer(self):
         """Emits any buffered log lines."""
@@ -685,6 +873,10 @@ class DownloadDepotsTask(QObject):
         if not line:
             return
 
+        # Tag depot lines with stealth proxy details without adding extra lines
+        if line.startswith("Downloading depot ") and getattr(self, "_proxy_info_tag", None):
+            line = f"{line} {self._proxy_info_tag}"
+
         # Add to buffer
         self._log_buffer.append(line)
 
@@ -697,6 +889,10 @@ class DownloadDepotsTask(QObject):
         if "no valid depot key" in lower_line or ("depot key" in lower_line and "accessdenied" in lower_line) or "result: accessdenied" in lower_line:
             self._current_depot_key_denied = True
             self._current_depot_error_reason = line
+        else:
+            from utils.kuroko import is_network_or_proxy_error
+            if is_network_or_proxy_error(line):
+                self._current_depot_network_error = line
         # Count chunk-level trouble for the auto-tune controller (back off fast).
         if (
             "failed to download chunk" in lower_line
@@ -757,6 +953,7 @@ class DownloadDepotsTask(QObject):
                     if total_percentage != self.last_percentage:
                         self.progress_percentage.emit(total_percentage)
                         self.last_percentage = total_percentage
+                        self._current_depot_network_error = ""
 
                     # Real network chunk downloading phase
                     if self._last_speed_calc_time == 0.0:
@@ -813,6 +1010,7 @@ class DownloadDepotsTask(QObject):
                     if int_percentage != self.last_percentage:
                         self.progress_percentage.emit(int_percentage)
                         self.last_percentage = int_percentage
+                        self._current_depot_network_error = ""
 
                     if self._last_speed_calc_time == 0.0:
                         self._last_speed_calc_time = current_time
@@ -850,7 +1048,11 @@ class DownloadDepotsTask(QObject):
             self._flush_log_buffer()
 
     def _prepare_downloads(
-        self, game_data: Dict[str, Any], selected_depots: List[str], dest_path: str
+        self,
+        game_data: Dict[str, Any],
+        selected_depots: List[str],
+        dest_path: str,
+        proxy_url: Optional[str] = None,
     ) -> Tuple[List[List[str]], List[str], List[int]]:
         """
         Prepares the list of commands, identifies skipped depots, and gathers sizes.
@@ -863,13 +1065,14 @@ class DownloadDepotsTask(QObject):
         appid_str = str(game_data.get("appid", ""))
         cached_dkm_keys = None
 
-        with open(keys_path, "w") as f:
-            # Depot decryption keys in a world-readable /tmp file. Create it
-            # owner-only from the start rather than widening then narrowing.
+        # Depot decryption keys in /tmp: create owner-only (0o600) atomically from the start
+        fd = os.open(keys_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        if hasattr(os, "fchmod"):
             try:
-                os.chmod(keys_path, 0o600)
-            except OSError:
-                pass
+                os.fchmod(fd, 0o600)
+            except OSError as fchmod_err:
+                logger.debug(f"[DownloadDepotsTask] fchmod error: {fchmod_err}")
+        with open(fd, "w", encoding="utf-8") as f:
             for depot_id in selected_depots:
                 depots_map = game_data.get("depots", {})
                 depot_info = depots_map.get(str(depot_id))
@@ -934,12 +1137,10 @@ class DownloadDepotsTask(QObject):
                         f"Warning: No decryption key found for depot {depot_id}. Download may fail or be skipped."
                     )
 
-        from utils.steam_manifest import get_install_folder_name
-        install_folder_name = get_install_folder_name(game_data)
-
-        download_dir = os.path.join(
-            dest_path, "steamapps", "common", install_folder_name
-        )
+        from utils.game_modes import resolve_install_layout
+        is_standalone, download_dir = resolve_install_layout(dest_path, game_data)
+        if is_standalone:
+            game_data["is_standalone"] = True
         self.download_dir = download_dir
         os.makedirs(download_dir, exist_ok=True)
         self.progress.emit(f"Download destination set to: {download_dir}")
@@ -988,13 +1189,16 @@ class DownloadDepotsTask(QObject):
 
         for depot_id in selected_depots:
             depot_id_str = str(depot_id)
-            manifest_id = game_data.get("manifests", {}).get(depot_id_str)
+            # 1. Primary: check explicit manifest_overrides
+            manifest_id = (game_data.get("manifest_overrides") or {}).get(depot_id_str)
+            if not manifest_id and depot_id_str.isdigit():
+                manifest_id = (game_data.get("manifest_overrides") or {}).get(int(depot_id_str))
+
+            # 2. Check game_data manifests
+            if not manifest_id:
+                manifest_id = game_data.get("manifests", {}).get(depot_id_str)
             if not manifest_id and depot_id_str.isdigit():
                 manifest_id = game_data.get("manifests", {}).get(int(depot_id_str))
-
-            # Fallback 1: check metadata manifest_overrides
-            if not manifest_id:
-                manifest_id = (game_data.get("manifest_overrides") or {}).get(depot_id_str)
 
             # Fallback 2: check if any {depot_id}_*.manifest exists on disk (manifest_dir, base manifests, depotcache)
             if not manifest_id:
@@ -1168,20 +1372,24 @@ class DownloadDepotsTask(QObject):
             if target_branch and target_branch != "public":
                 cmd_args.extend(["-branch", str(target_branch)])
 
-            # 1. LanCache support (configurable via settings; falls back to direct if LanCache fails)
+            # 1. LanCache support (only if stealth proxy is not active)
             use_lancache = settings.value("use_lancache", True, type=bool)
-            if use_lancache:
+            if use_lancache and not proxy_url:
                 cmd_args.append("-use-lancache")
 
-            # 2. Adaptive CDN latency probe support (default enabled)
-            if settings.value("probe_cdn", True, type=bool):
+            # 2. Stealth proxy support (-proxy <url>)
+            if proxy_url:
+                cmd_args.extend(["-proxy", str(proxy_url)])
+
+            # 3. Adaptive CDN latency probe support (only if stealth proxy is not active)
+            if settings.value("probe_cdn", True, type=bool) and not proxy_url:
                 cmd_args.append("-probe-cdn")
 
-            # 3. LoginID session isolation (randomized 32-bit integer)
+            # 4. LoginID session isolation (randomized 32-bit integer)
             login_id = random.randint(1, 2147483647)
             cmd_args.extend(["-loginid", str(login_id)])
 
-            # 3. Selective files list support (-filelist)
+            # 5. Selective files list support (-filelist)
             selected_files = game_data.get("selected_files_list")
             if selected_files:
                 # Write filelist to temp file
@@ -1192,6 +1400,9 @@ class DownloadDepotsTask(QObject):
                             # Normalize paths to use forward slashes for DDM
                             fl.write(file_path.replace("\\", "/") + "\n")
                     self.temp_file_list = fl_path
+                    if not hasattr(self, "temp_file_lists") or self.temp_file_lists is None:
+                        self.temp_file_lists = []
+                    self.temp_file_lists.append(fl_path)
                     cmd_args.extend(["-filelist", fl_path])
                     self.progress.emit(f"Using selective filelist: {len(selected_files)} file(s) checked")
                 except OSError as e:
@@ -1222,10 +1433,67 @@ class DownloadDepotsTask(QObject):
 
         return commands, skipped_depots, depot_sizes
 
+    def _setup_stealth_proxy(
+        self, settings, failover_from: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Configure userspace stealth proxy (Kuroko / custom SOCKS5) if enabled in settings.
+        Returns the proxy URL to pass to DepotDownloader (-proxy <url>), or None if disabled.
+        Fails closed (raises RuntimeError) if proxy is enabled but fails to initialize.
+        """
+        from utils.kuroko import resolve_stealth_proxy_url
+
+        self._proxy_info_tag = None
+        proxy_url, manager = resolve_stealth_proxy_url(settings, failover_from=failover_from)
+        if manager is not None:
+            self._kuroko_manager = manager
+            endpoint_id = getattr(manager, "endpoint_id", None)
+            if endpoint_id:
+                if endpoint_id == "warp":
+                    mode_display = "WARP"
+                elif endpoint_id.startswith("wg:"):
+                    prof_name = Path(endpoint_id[3:]).stem
+                    mode_display = f"WireGuard ({prof_name})"
+                elif endpoint_id.startswith("custom"):
+                    mode_display = "Custom"
+                else:
+                    mode_display = endpoint_id.capitalize()
+            else:
+                mode = settings.value("stealth_proxy_mode", "warp", type=str).strip().lower()
+                mode_display = "WARP" if mode == "warp" else ("WireGuard" if mode == "wireguard" else mode.capitalize())
+            endpoint = manager.proxy_url.split("://")[-1]
+            self._proxy_info_tag = f"[via Stealth: {mode_display} ({endpoint})]"
+            self.progress.emit(f"Stealth proxy active: {mode_display} ({manager.proxy_url})")
+            logger.info(f"[DownloadDepotsTask] Stealth proxy active: mode={mode_display}, endpoint={manager.proxy_url}")
+        elif proxy_url:
+            endpoint = proxy_url.split("://")[-1]
+            self._proxy_info_tag = f"[via Stealth: Proxy ({endpoint})]"
+            self.progress.emit(f"Routing download through custom proxy: {proxy_url}")
+            logger.info(f"[DownloadDepotsTask] Custom proxy active: {proxy_url}")
+        return proxy_url
+
+    def _cleanup_stealth_proxy(self):
+        """Shut down userspace Kuroko proxy if it was started by this download task."""
+        self._proxy_info_tag = None
+        manager, self._kuroko_manager = self._kuroko_manager, None
+        if manager is not None:
+            try:
+                manager.stop()
+                logger.info("[DownloadDepotsTask] Kuroko stealth proxy stopped.")
+            except Exception as e:
+                logger.debug(f"[DownloadDepotsTask] Error stopping Kuroko proxy: {e}")
+
     def stop(self):
         """Signals the task to stop."""
         logger.debug("Stop signal received by download task.")
         self._is_running = False
+        # Terminate dotnet first so it exits cleanly before its SOCKS5 socket disappears
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.terminate()
+            except Exception as e:
+                logger.debug(f"[DownloadDepotsTask] Error terminating process in stop(): {e}")
+        self._cleanup_stealth_proxy()
 
     def toggle_pause(self, pause: bool):
         """
@@ -1262,7 +1530,9 @@ class DownloadDepotsTask(QObject):
             logger.error(
                 f"Main process {self.process.pid} not found. Cannot pause/resume."
             )
-            self.process = None
+            # Do not clear the handle here: the worker thread still owns it and
+            # needs it to reap the child and read the remaining stdout. Clearing
+            # it from another thread raced the reader and could report success.
         except psutil.Error as e:
             logger.error(f"An error occurred while {target_action} process: {e}")
             raise

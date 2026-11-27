@@ -102,6 +102,7 @@ class Worker(QObject):
 
 class TaskRunner(QObject):
     _active_runners = []
+    _retiring_threads = set()
     _shutdown_hooked = False
     cleanup_complete = pyqtSignal()
 
@@ -111,6 +112,10 @@ class TaskRunner(QObject):
         self.worker = None
         self.destroyed.connect(self._on_destroyed)
 
+    def is_running(self) -> bool:
+        """Return True if the runner currently has an active thread running."""
+        return self._thread is not None and self._thread.isRunning()
+
     def run(self, target_func, *args, on_finished=None, on_error=None, on_completed=None, **kwargs):
         self._ensure_shutdown_hook()
 
@@ -118,7 +123,10 @@ class TaskRunner(QObject):
         if self._thread is not None and self._thread.isRunning():
             self.stop(wait_ms=300, terminate_on_timeout=False)
 
-        new_thread = QThread(self)
+        # Allocate QThread independently (no QObject parent) so that if TaskRunner
+        # is dereferenced or deleted while the worker finishes, QObject::deleteChildren
+        # cannot destroy a running QThread and trigger Qt qFatal/SIGABRT.
+        new_thread = QThread()
         new_worker = Worker(target_func, *args, **kwargs)
         self._thread = new_thread
         self.worker = new_worker
@@ -158,8 +166,6 @@ class TaskRunner(QObject):
         self._request_task_stop()
         worker = self.worker
         thread = self._thread
-        self._thread = None
-        self.worker = None
 
         if worker is not None:
             try:
@@ -175,20 +181,39 @@ class TaskRunner(QObject):
             except (TypeError, RuntimeError):
                 pass
 
+        if thread is not None:
+            try:
+                thread.setParent(None)
+            except Exception as e:
+                logger.debug(f"Could not detach thread parent: {e}")
+
         if thread is not None and thread.isRunning():
+            TaskRunner._retiring_threads.add(thread)
+            try:
+                def _on_retired_finished(t=thread):
+                    TaskRunner._retiring_threads.discard(t)
+                thread.finished.connect(_on_retired_finished)
+            except (RuntimeError, Exception) as e:
+                logger.debug(f"Could not connect retired thread finished: {e}")
             try:
                 thread.quit()
                 if wait_ms is None:
                     wait_ms = 2000
-                if wait_ms > 0 and not thread.wait(wait_ms):
-                    logger.debug("Thread did not finish in time during stop(), letting it exit in background.")
-                    if terminate_on_timeout:
-                        logger.warning("Forcibly terminating thread on explicit request.")
-                        thread.terminate()
-                        thread.wait(500)
-            except (RuntimeError, Exception):
-                # Thread may have already been deleted by Qt
-                logger.debug("Thread was already deleted during stop()")
+                if wait_ms > 0:
+                    if thread.wait(wait_ms):
+                        TaskRunner._retiring_threads.discard(thread)
+                    else:
+                        logger.debug("Thread did not finish in time during stop(), letting it exit in background.")
+                # Note: When wait_ms <= 0 or wait timed out, the thread safely runs to completion
+                # in the background while retained in _retiring_threads, avoiding thread.terminate()
+                # which causes SIGABRT / C++ heap corruption on exit.
+            except (RuntimeError, Exception) as e:
+                logger.debug(f"Error during thread wait/quit in stop(): {e}")
+        # Only drop our references once the thread has actually stopped. If it
+        # is still running it stays reachable and will be cleaned up by the
+        # finished->cleanup connection; nulling early would orphan the QThread.
+        if thread is None or not thread.isRunning():
+            self._cleanup()
         if self in TaskRunner._active_runners:
             TaskRunner._active_runners.remove(self)
 
@@ -219,18 +244,26 @@ class TaskRunner(QObject):
 
     def _on_destroyed(self, _obj=None):
         try:
-            self.stop(wait_ms=500, terminate_on_timeout=True)
-        except RuntimeError:
-            pass
+            self.stop(wait_ms=500, terminate_on_timeout=False)
+        except RuntimeError as e:
+            logger.debug(f"TaskRunner._on_destroyed ignored error: {e}")
 
     @classmethod
     def stop_all_active(cls):
         runners = list(cls._active_runners)
         for runner in runners:
             try:
-                runner.stop(wait_ms=500, terminate_on_timeout=True)
+                runner.stop(wait_ms=500, terminate_on_timeout=False)
             except RuntimeError as e:
                 logger.debug(f"Failed to stop TaskRunner during shutdown: {e}")
+        # Also wait (bounded) on threads that were retired earlier. Destroying a
+        # QThread while it is still running aborts the process at exit.
+        for thread in list(cls._retiring_threads):
+            try:
+                if thread.wait(1000):
+                    cls._retiring_threads.discard(thread)
+            except RuntimeError:
+                cls._retiring_threads.discard(thread)
 
     @classmethod
     def _ensure_shutdown_hook(cls):

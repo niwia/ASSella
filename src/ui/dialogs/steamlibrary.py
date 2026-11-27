@@ -75,9 +75,15 @@ class SteamLibraryDialog(QDialog):
         accent_color: Optional[str] = None,
     ):
         super().__init__(parent)
-        self.library_paths = list(library_paths) if library_paths else []
-        self.selected_path: Optional[str] = None
         self.settings = get_settings()
+        self.library_paths = list(library_paths) if library_paths else []
+        from utils.paths import is_valid_download_directory
+        cur_def = self.settings.value("default_download_directory", "", type=str)
+        if cur_def and is_valid_download_directory(cur_def):
+            real_def = os.path.realpath(cur_def)
+            if real_def not in [os.path.realpath(x) for x in self.library_paths]:
+                self.library_paths.append(real_def)
+        self.selected_path: Optional[str] = None
 
         if not accent_color:
             self.accent_color = self.settings.value("accent_color", "#6c5ce7", type=str)
@@ -95,6 +101,7 @@ class SteamLibraryDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         self.card_widgets = []
+        self._selected_is_standalone = False
         self._init_ui()
 
     def _init_ui(self):
@@ -215,6 +222,62 @@ class SteamLibraryDialog(QDialog):
 
         body_lay.addWidget(scroll)
 
+        # Custom folder button (hidden in AT0-M mode)
+        self.add_custom_btn = QPushButton("+ Select Custom Folder...")
+        self.add_custom_btn.setFixedHeight(30)
+        self.add_custom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_custom_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.85);
+                border: 1px dashed rgba(255, 255, 255, 0.2);
+                border-radius: 6px;
+                font-size: 8.5pt;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.1);
+                color: #FFFFFF;
+                border-color: rgba(255, 255, 255, 0.4);
+            }
+        """)
+
+        def _on_add_custom():
+            from ui.dialogs.themed_file_dialog import ThemedFileDialog
+            from utils.paths import is_valid_download_directory
+            from core.steam_helpers import is_path_in_steam_library
+
+            chosen = ThemedFileDialog.getExistingDirectory(self, "Select Custom Folder / Steam Library")
+            if not chosen:
+                return
+            real_p = os.path.realpath(os.path.expanduser(chosen))
+            if not is_valid_download_directory(real_p):
+                ThemedMessageBox.warning(
+                    self,
+                    "Invalid Location",
+                    "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
+                )
+                return
+
+            is_standalone = not is_path_in_steam_library(real_p)
+
+            # Check if already present in card widgets
+            for item in self.card_widgets:
+                if os.path.realpath(item["path"]) == real_p:
+                    item["radio"].setChecked(True)
+                    self._update_all_card_styles()
+                    return
+
+            card = self._create_storage_card(real_p, is_default=True, is_standalone=is_standalone)
+            list_lay.insertWidget(list_lay.count() - 1, card)
+            if real_p not in self.library_paths:
+                self.library_paths.append(real_p)
+            scroll.setFixedHeight(min(len(self.card_widgets) * 64 + 10, 220))
+            self._update_all_card_styles()
+
+        self.add_custom_btn.clicked.connect(_on_add_custom)
+        body_lay.addWidget(self.add_custom_btn)
+
         # Remember my choice Checkbox
         self.remember_chk = QCheckBox("Remember my choice")
         self.remember_chk.setChecked(False)
@@ -232,26 +295,7 @@ class SteamLibraryDialog(QDialog):
                 border: none;
                 outline: none;
             }
-            QCheckBox::indicator {
-                width: 15px;
-                height: 15px;
-                border: none;
-                border-radius: 3px;
-                background: rgba(255, 255, 255, 0.12);
-                outline: none;
-            }
-            QCheckBox::indicator:hover {
-                background: rgba(255, 255, 255, 0.22);
-            }
-            QCheckBox::indicator:checked {
-                background: %s;
-                border: none;
-            }
-            QCheckBox::indicator:focus {
-                border: none;
-                outline: none;
-            }
-        """ % self.accent_color)
+        """)
         body_lay.addWidget(self.remember_chk)
 
         # Bottom row: Cancel / Proceed (big buttons filling bottom width)
@@ -316,7 +360,7 @@ class SteamLibraryDialog(QDialog):
         body_lay.addLayout(bot_layout)
         self._update_all_card_styles()
 
-    def _create_storage_card(self, path: str, is_default: bool) -> QFrame:
+    def _create_storage_card(self, path: str, is_default: bool, is_standalone: bool = False) -> QFrame:
         """Create a large borderless card tab for a storage location."""
         card = QFrame()
         card.setFixedHeight(56)
@@ -331,7 +375,11 @@ class SteamLibraryDialog(QDialog):
         text_vbox.setContentsMargins(0, 0, 0, 0)
         text_vbox.setSpacing(2)
 
-        friendly_title = _get_storage_friendly_name(path)
+        if is_standalone:
+            folder_name = os.path.basename(path) or "Custom Folder"
+            friendly_title = f"{folder_name} (Standalone Folder)"
+        else:
+            friendly_title = _get_storage_friendly_name(path)
         title_lbl = QLabel(friendly_title)
         title_lbl.setStyleSheet("font-size: 9.5pt; font-weight: bold; color: #FFFFFF; border: none; background: transparent;")
         text_vbox.addWidget(title_lbl)
@@ -379,6 +427,7 @@ class SteamLibraryDialog(QDialog):
             "frame": card,
             "radio": radio,
             "path": path,
+            "is_standalone": is_standalone,
         }
         self.card_widgets.append(card_info)
 
@@ -443,14 +492,18 @@ class SteamLibraryDialog(QDialog):
 
     def accept(self) -> None:
         """Handle Proceed button click."""
+        selected_card = None
         for item in self.card_widgets:
             if item["radio"].isChecked():
                 self.selected_path = item["path"]
+                selected_card = item
                 break
 
         if not self.selected_path:
             ThemedMessageBox.warning(self, "No Selection", "Please select a Steam library folder.")
             return
+
+        self._selected_is_standalone = bool(selected_card and selected_card.get("is_standalone"))
 
         if self.should_remember() and self.selected_path:
             from utils.library_choice import remember_library
@@ -458,8 +511,20 @@ class SteamLibraryDialog(QDialog):
             remember_library(self.selected_path, self.settings)
             logger.info(f"[SteamLibraryDialog] Remembered default storage library: {self.selected_path}")
 
-        logger.info(f"User selected Steam library: {self.selected_path}")
+        if self.selected_path and not self._selected_is_standalone:
+            try:
+                from core.steam_helpers import ensure_steam_library, is_path_in_steam_library
+                if is_path_in_steam_library(self.selected_path):
+                    ensure_steam_library(self.selected_path)
+            except Exception as e:
+                logger.warning(f"[SteamLibraryDialog] Failed to register library in Steam config: {e}")
+
+        logger.info(f"User selected Steam library: {self.selected_path} (standalone={self._selected_is_standalone})")
         super().accept()
+
+    def is_standalone_selected(self) -> bool:
+        """Return True if the selected card was a standalone custom folder."""
+        return bool(getattr(self, "_selected_is_standalone", False))
 
     def get_selected_path(self) -> Optional[str]:
         """Return the selected library path."""

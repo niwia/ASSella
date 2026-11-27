@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -11,6 +12,11 @@ from utils.branch_helpers import resolve_branch_manifest_gid
 from utils.helpers import get_base_path
 from utils.lua_parsing import iter_live_matches
 from utils.settings import get_settings
+from core.tasks.depot_reconcile import (
+    installed_manifest_id,
+    reconcile_saved_depots,
+    write_depot_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +172,7 @@ class ManifestCheckTask(QObject):
                 depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
                 if depot_file.exists():
                     try:
-                        content = depot_file.read_text().strip()
+                        content = depot_file.read_text(encoding="utf-8", errors="replace").strip()
                         for line in content.splitlines():
                             line = line.strip()
                             if not line or ":" not in line:
@@ -189,7 +195,7 @@ class ManifestCheckTask(QObject):
                     lua_file = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
                     if lua_file.exists():
                         try:
-                            for m in iter_live_matches(lua_file.read_text(), r"addappid\(\s*(\d+)"):
+                            for m in iter_live_matches(lua_file.read_text(encoding="utf-8", errors="ignore"), r"addappid\(\s*(\d+)"):
                                 additional_appids.add(m.group(1))
                         except Exception as e:
                             logger.error(f"Error parsing cached LUA for DLC appids ({appid}): {e}")
@@ -523,9 +529,14 @@ class ManifestCheckTask(QObject):
             logger.info(f"[UpdateCheck {appid}] Game build is pinned. Ignoring updates. Status: up_to_date.")
             return "up_to_date"
 
+        # Standalone custom-folder games bypass: files are not managed via Steam manifests or ACF
+        from utils.game_modes import is_accela_managed, is_atom_managed, is_standalone_game
+        if is_standalone_game(game_data):
+            logger.info(f"[UpdateCheck {appid}] Standalone custom-folder game. Updates are not managed via Steam manifests. Status: standalone.")
+            return "standalone"
+
         # AT0-M / Vapor / Plugin games bypass: Steam manages file and manifest updates natively.
         # ASSella only checks for the addition of new depots, which is handled exclusively by At0mUpdateChecker.
-        from utils.game_modes import is_accela_managed, is_atom_managed
         is_accela = is_accela_managed(game_data)
         is_atom = (not is_accela) and (
             is_atom_managed(game_data)
@@ -566,6 +577,19 @@ class ManifestCheckTask(QObject):
         if not saved_depots:
             logger.info(f"[UpdateCheck {appid}] Cannot determine status: Local depot file ({depot_file}) is missing/empty and could not be recovered")
             return "cannot_determine"
+
+        # Reconcile the depot file against what is actually installed, so a depot
+        # from an older selection or a pre-update manifest id cannot be compared
+        # against Steam forever.
+        saved_depots, depot_file_needs_sync = reconcile_saved_depots(
+            saved_depots, game_data.get("install_path")
+        )
+        if depot_file_needs_sync and depot_file:
+            try:
+                write_depot_file(depot_file, saved_depots)
+                logger.info(f"[UpdateCheck {appid}] Synchronized depot file with active selection and manifests: {list(saved_depots.keys())}")
+            except OSError as sync_err:
+                logger.debug(f"[UpdateCheck {appid}] Could not sync updated depot file: {sync_err}")
 
         # Compare manifest IDs for each saved depot
         try:
@@ -747,7 +771,7 @@ class ManifestCheckTask(QObject):
                                         f"(age={lua_age/86400:.1f}d > {_LUA_CACHE_MAX_AGE_SECONDS/86400:.0f}d limit)"
                                     )
                                 else:
-                                    lua_text = lua_file.read_text()
+                                    lua_text = lua_file.read_text(encoding="utf-8", errors="ignore")
                                     pattern = r"setManifestid\(\s*" + re.escape(saved_depot_id) + r'\s*,\s*"([^"]+)"'
                                     m = re.search(pattern, lua_text)
                                     if m:
@@ -827,7 +851,6 @@ class ManifestCheckTask(QObject):
                     meta_json_path = Path(install_path) / ".DepotDownloader" / "metadata.json"
                     if meta_json_path.exists():
                         try:
-                            import json
                             m_dict = json.loads(meta_json_path.read_text(encoding="utf-8"))
                             if str(m_dict.get("buildid")) != str(branch_buildid):
                                 m_dict["buildid"] = str(branch_buildid)
@@ -877,7 +900,7 @@ class ManifestCheckTask(QObject):
         lua_file = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
         if lua_file.exists():
             try:
-                lua_text = lua_file.read_text()
+                lua_text = lua_file.read_text(encoding="utf-8", errors="ignore")
                 pattern = r"setManifestid\(\s*" + re.escape(depot_id) + r'\s*,\s*"([^"]+)"'
                 m = re.search(pattern, lua_text)
                 if m:
@@ -891,32 +914,7 @@ class ManifestCheckTask(QObject):
 
     @staticmethod
     def _get_installed_depot_manifest(depot_id: str, game_data: dict) -> str:
-        install_path = game_data.get("install_path")
-        if not install_path or not os.path.exists(install_path):
-            return None
-
-        ddm_dir = os.path.join(install_path, ".DepotDownloader")
-        if not os.path.exists(ddm_dir):
-            return None
-
-        try:
-            candidates = [
-                fname for fname in os.listdir(ddm_dir)
-                if fname.startswith(f"{depot_id}_") and fname.endswith(".manifest")
-            ]
-            # Sort newest-first so we always use the most recently written manifest
-            candidates.sort(
-                key=lambda f: os.path.getmtime(os.path.join(ddm_dir, f)),
-                reverse=True,
-            )
-            for fname in candidates:
-                base = fname[:-9]  # strip ".manifest"
-                parts = base.split("_", 1)
-                if len(parts) == 2:
-                    return parts[1]
-        except Exception:
-            pass
-        return None
+        return installed_manifest_id(game_data.get("install_path"), str(depot_id))
 
     @staticmethod
     def _check_dlc_only_update(appid, selected_depot_ids, batched_results, game_data):
@@ -1015,6 +1013,23 @@ class ManifestCheckTask(QObject):
                                     recovered[str(did)] = mid
                 except Exception as e:
                     logger.debug(f"[UpdateCheck {appid}] Error recovering depots from ACF: {e}")
+
+        # Filter recovered depots with metadata.json if present
+        if recovered and install_path:
+            meta_json = Path(install_path) / ".DepotDownloader" / "metadata.json"
+            if meta_json.exists():
+                try:
+                    mdata = json.loads(meta_json.read_text(encoding="utf-8"))
+                    sel_list = mdata.get("selected_depots_list")
+                    if isinstance(sel_list, list) and sel_list:
+                        sel_set = {str(d) for d in sel_list}
+                        filtered_recovered = {
+                            did: mid for did, mid in recovered.items() if did in sel_set
+                        }
+                        if filtered_recovered:
+                            recovered = filtered_recovered
+                except Exception as meta_err:
+                    logger.debug(f"[UpdateCheck {appid}] Could not filter recovered depots with metadata.json: {meta_err}")
 
         # If recovered, write out the .depot file so subsequent checks are fast
         if recovered:

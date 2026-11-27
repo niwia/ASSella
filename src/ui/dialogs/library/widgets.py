@@ -1,9 +1,10 @@
 import logging
 import math
 from pathlib import Path
+from typing import Optional
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QPixmap, QPainter, QBrush, QLinearGradient, QColor, QFontMetrics, QImage
+from PyQt6.QtGui import QColor, QFontMetrics, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -16,31 +17,50 @@ from PyQt6.QtWidgets import (
 logger = logging.getLogger(__name__)
 
 
-def format_game_display_name(game_data: dict) -> str:
+def format_game_display_name(
+    game_data: dict,
+    branch_cache: Optional[dict] = None,
+    dlc_cache: Optional[dict] = None,
+) -> str:
     """Return the display name for a game, with branch suffix for non-public branches."""
     name = game_data.get("game_name", "Unknown")
     appid = str(game_data.get("appid", ""))
     parts = [name]
     if appid and appid not in ("0", "N/A", "unknown"):
-        from utils.dlc_helpers import is_dlc_only_mode
-        if is_dlc_only_mode(appid):
+        if dlc_cache is not None:
+            is_dlc = bool(dlc_cache.get(appid))
+        else:
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc = is_dlc_only_mode(appid)
+        if is_dlc:
             parts.append("[DLC MODE]")
         is_vm = bool(
             game_data.get("is_atom")
             or game_data.get("is_vapor")
             or game_data.get("is_plugin_game")
             or game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-            or game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
+            or game_data.get("source") in ("Vapor", "at0-m", "AT0-M", "plugin_native")
         )
         if not is_vm:
-            from utils.settings import get_settings
-            branch = get_settings().value(f"installed_branch/{appid}", "public", type=str)
+            if branch_cache is not None:
+                branch = branch_cache.get(appid, "public")
+            else:
+                from utils.settings import get_settings
+                branch = get_settings().value(f"installed_branch/{appid}", "public", type=str)
             if branch and branch != "public":
                 parts.append(f"({branch})")
     return " ".join(parts)
 
 
 DLC_MODE_SUFFIX = " [DLC MODE]"
+
+
+def _library_check_icon_path(accent_hex: str) -> str:
+    from utils.color_utils import get_best_foreground_color
+    from utils.paths import Paths
+    fg = get_best_foreground_color(accent_hex)
+    is_light = fg.lower() in ("#000000", "#121214", "#1e1e24")
+    return str(Paths.icon("check_dark.svg" if is_light else "check_white.svg"))
 
 
 def split_dlc_mode(display_name: str) -> tuple:
@@ -187,6 +207,30 @@ class GameItemWidget(QWidget):
         self._init_ui(size_str)
         if game_data.get("atom_pending"):
             self._apply_pending()
+        elif game_data.get("assella_pending"):
+            self._apply_assella_pending()
+
+    def _apply_assella_pending(self) -> None:
+        """ASSella game that is registered in AdditionalApps but not downloaded."""
+        lbl = getattr(self, "status_label", None)
+        if lbl is not None:
+            lbl.setText("Not downloaded")
+            lbl.setVisible(True)
+            lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            color = self.accent_color or "#a1c9fd"
+            lbl.setStyleSheet(
+                f"color: {color}; background-color: rgba(255,255,255,0.06); border: 1px solid {color};"
+                " border-radius: 10px; padding: 3px 10px; font-size: 11px; font-weight: bold;"
+            )
+            lbl.setToolTip("In SLSsteam AdditionalApps; no game files on disk yet.")
+        ml = getattr(self, "manifest_label", None)
+        if ml is not None:
+            ml.setText("Not downloaded yet")
+            ml.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
+        for attr in ("pinned_build_label", "workshop_badge"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setVisible(False)
 
     def _apply_pending(self) -> None:
         """AT0-M game that is registered but not downloaded: say so instead of a status."""
@@ -208,7 +252,7 @@ class GameItemWidget(QWidget):
         if ml is not None:
             ml.setText("Not downloaded yet")
             ml.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
-        for attr in ("pinned_build_label",):
+        for attr in ("pinned_build_label", "workshop_badge"):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setVisible(False)
@@ -217,7 +261,7 @@ class GameItemWidget(QWidget):
         """Initialize the UI components."""
         layout = QHBoxLayout(self)
         layout.setContentsMargins(1, 1, 16, 1)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
 
         # Check setting
         applist_2_0_enabled = self.applist_2_0_enabled
@@ -232,21 +276,17 @@ class GameItemWidget(QWidget):
 
         # --- Image Section ---
         self.image_label = QLabel()
-        self.image_label.setFixedSize(220, 128)  # Fits perfectly in 130px card height minus borders
+        self.image_label.setFixedSize(260, 128)  # Matches 460x215 header aspect in 130px row height
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         name = self.game_data.get("game_name", "Unknown")
-        display_name = format_game_display_name(self.game_data)
-        self.image_label.setText(name[:2].upper())
-
-        self.image_label.setStyleSheet(
-            f"border-top-left-radius: 11px; "
-            f"border-bottom-left-radius: 11px; "
-            f"border-top-right-radius: 0px; "
-            f"border-bottom-right-radius: 0px; "
-            f"background-color: rgba(255, 255, 255, 0.02); "
-            f"color: {self.accent_color}; "
+        display_name = format_game_display_name(
+            self.game_data,
+            branch_cache=getattr(self.parent_dialog, "_branch_cache", None),
+            dlc_cache=getattr(self.parent_dialog, "_dlc_only_cache", None),
         )
+        self.image_label.setText(name[:2].upper())
+        self.image_label.setProperty("cardRole", "cover")
         layout.addWidget(self.image_label)
 
         # --- Checkbox Overlay (new style) ---
@@ -255,6 +295,7 @@ class GameItemWidget(QWidget):
             self.checkbox.setChecked(self._is_selected)
             self.checkbox.move(10, 10)
             self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            chk_icon = _library_check_icon_path(self.accent_color)
             self.checkbox.setStyleSheet(
                 f"""
                 QCheckBox::indicator {{
@@ -267,6 +308,7 @@ class GameItemWidget(QWidget):
                 QCheckBox::indicator:checked {{
                     background-color: {self.accent_color};
                     border-color: {self.accent_color};
+                    image: url("{chk_icon}");
                 }}
                 """
             )
@@ -283,7 +325,7 @@ class GameItemWidget(QWidget):
         font.setPointSize(12)
         font.setBold(True)
         self.name_label.setFont(font)
-        self.name_label.setStyleSheet("color: #FFFFFF; font-size: 12pt; font-weight: bold;")
+        self.name_label.setProperty("cardRole", "title")
 
         name_row = QHBoxLayout()
         name_row.setContentsMargins(0, 0, 0, 0)
@@ -294,7 +336,7 @@ class GameItemWidget(QWidget):
 
         # Size
         size_label = QLabel(f"Size: {size_str}")
-        size_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px;")
+        size_label.setProperty("cardRole", "size")
         info_layout.addWidget(size_label)
 
         # Check if this item belongs to the Steam (Beta) tab
@@ -306,6 +348,7 @@ class GameItemWidget(QWidget):
 
         # Manifest cache status (skip entirely for Steam tab)
         self.manifest_label = QLabel()
+        self.manifest_label.setProperty("cardRole", "manifest")
         if not is_steam_tab:
             info_layout.addWidget(self.manifest_label)
             self.update_manifest_label()
@@ -336,18 +379,54 @@ class GameItemWidget(QWidget):
         self.proton_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.proton_badge.hide()
 
+        self.workshop_badge = QLabel()
+        self.workshop_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.workshop_badge.hide()
+
         if not is_steam_tab:
             # Update status badge
+            from utils.game_modes import is_standalone_game
+            is_standalone = is_standalone_game(self.game_data)
             update_status = self.game_data.get("update_status", "cannot_determine")
-            is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
-            is_at0m_game = not is_accela and bool(
-                self.game_data.get("is_atom")
-                or self.game_data.get("is_vapor")
-                or self.game_data.get("is_plugin_game")
-                or self.game_data.get("source") == "at0-m"
+            if is_standalone:
+                if update_status != "update_available":
+                    update_status = "standalone"
+                is_accela = False
+                is_at0m_game = False
+            else:
+                is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
+                is_at0m_game = not is_accela and bool(
+                    self.game_data.get("is_atom")
+                    or self.game_data.get("is_vapor")
+                    or self.game_data.get("is_plugin_game")
+                    or self.game_data.get("source") in ("at0-m", "AT0-M", "Vapor", "plugin_native")
+                    or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+                )
+                if not is_at0m_game and not is_accela:
+                    try:
+                        from utils.plugin_games import is_plugin_game
+                        is_at0m_game = is_plugin_game(self.game_data.get("appid", ""))
+                    except Exception as e:
+                        logger.debug(f"[GameItemWidget] is_plugin_game check: {e}")
+
+                if is_at0m_game and update_status not in ("update_available", "key_pending"):
+                    update_status = "at0m"
+
+            from utils.workshop_helpers import is_workshop_key_missing
+            ws_key_missing = is_at0m_game and is_workshop_key_missing(
+                str(self.game_data.get("appid", "")),
+                game_data=self.game_data,
+                prewarmed_keys=getattr(self.parent_dialog, "_prewarmed_ws_keys", None),
             )
-            if is_at0m_game and update_status not in ("update_available", "key_pending"):
-                update_status = "at0m"
+            amber_badge_style = (
+                "color: #FFB74D; "
+                "background-color: rgba(255, 183, 77, 0.15); "
+                "border-radius: 10px; "
+                "padding: 3px 10px; "
+                "font-size: 11px; "
+                "font-weight: bold;"
+            )
+            ws_missing_tooltip = "Steam Workshop is supported, but the root AppKey is missing. Workshop downloads via Steam require this key."
 
             is_at0m = update_status in ("vapor", "at0m", "at0-m")
             if self._dlc_mode_applied() and update_status not in ("update_available", "key_pending"):
@@ -360,29 +439,48 @@ class GameItemWidget(QWidget):
                     f"font-size: 11px; "
                     f"font-weight: bold;"
                 )
+                self.workshop_badge.hide()
             elif is_at0m:
-                self.status_label.setText("[AT0-M]")
-                self.status_label.setStyleSheet(
-                    "color: #CE93D8; "
-                    "background: transparent; "
-                    "font-size: 11px; "
-                    "font-weight: bold; "
-                    "padding: 2px 2px;"
-                )
+                if ws_key_missing:
+                    self.status_label.setText("No workshop key")
+                    self.status_label.setStyleSheet(amber_badge_style)
+                    self.status_label.setToolTip(ws_missing_tooltip)
+                else:
+                    self.status_label.setText("[AT0-M]")
+                    self.status_label.setStyleSheet(
+                        "color: #CE93D8; "
+                        "background: transparent; "
+                        "font-size: 11px; "
+                        "font-weight: bold; "
+                        "padding: 2px 2px;"
+                    )
+                self.workshop_badge.hide()
             else:
                 status_map = {
                     "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
                     "key_pending": ("Keys Pending", "#FFB74D", "rgba(255, 183, 77, 0.15)"),
                     "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
                     "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+                    "standalone": ("Standalone install", "#90A4AE", "rgba(144, 164, 174, 0.15)"),
                 }
                 text, color, bg_color = status_map.get(
                     update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
                 )
                 if is_at0m_game and update_status == "update_available":
                     text = "AT0-M: Keys Ready"
+                    self.workshop_badge.hide()
                 elif is_at0m_game and update_status == "key_pending":
                     text = "AT0-M: Awaiting Hubcap Key"
+                    if ws_key_missing:
+                        self.workshop_badge.setText("No workshop key")
+                        self.workshop_badge.setStyleSheet(amber_badge_style)
+                        self.workshop_badge.setToolTip(ws_missing_tooltip)
+                        self.workshop_badge.show()
+                    else:
+                        self.workshop_badge.hide()
+                else:
+                    self.workshop_badge.hide()
+
                 self.status_label.setText(text)
                 self.status_label.setStyleSheet(
                     f"color: {color}; "
@@ -393,6 +491,7 @@ class GameItemWidget(QWidget):
                     f"font-weight: bold;"
                 )
             right_col.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignRight)
+            right_col.addWidget(self.workshop_badge, 0, Qt.AlignmentFlag.AlignRight)
 
             # Pinned build label directly below the update status badge
             right_col.addWidget(self.pinned_build_label, 0, Qt.AlignmentFlag.AlignRight)
@@ -431,19 +530,18 @@ class GameItemWidget(QWidget):
         """Update the manifest status label in-place."""
         if not hasattr(self, "manifest_label") or not self.manifest_label:
             return
-        if self.game_data.get("atom_pending"):
+        if self.game_data.get("atom_pending") or self.game_data.get("assella_pending"):
             return
 
         appid = self.game_data.get("appid", "0")
 
         if not appid or appid in ("0", "N/A", "unknown"):
             self.manifest_label.setText("Manifest: N/A")
-            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
             return
 
         last_updated = None
         if self.parent_dialog and hasattr(self.parent_dialog, "_manifest_mtimes"):
-            last_updated = self.parent_dialog._manifest_mtimes.get(appid)
+            last_updated = self.parent_dialog._manifest_mtimes.get(str(appid))
 
         if last_updated is None:
             try:
@@ -460,7 +558,6 @@ class GameItemWidget(QWidget):
 
         if not last_updated:
             self.manifest_label.setText("Manifest: Not Found")
-            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
         else:
             import time
             age_seconds = time.time() - last_updated
@@ -524,37 +621,100 @@ class GameItemWidget(QWidget):
     def update_status(self, update_status: str) -> None:
         """Update update and manifest status labels in-place."""
         if self.game_data.get("atom_pending"):
+            if hasattr(self, "workshop_badge"):
+                self.workshop_badge.hide()
             self._apply_pending()
             return
-        is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
-        is_at0m_game = not is_accela and bool(
-            self.game_data.get("is_atom")
-            or self.game_data.get("is_vapor")
-            or self.game_data.get("is_plugin_game")
-            or self.game_data.get("source") == "at0-m"
-        )
-        if is_at0m_game and update_status not in ("update_available", "key_pending"):
-            update_status = "at0m"
+        if self.game_data.get("assella_pending"):
+            if hasattr(self, "workshop_badge"):
+                self.workshop_badge.hide()
+            self._apply_assella_pending()
+            return
+        from utils.game_modes import is_standalone_game
+        is_standalone = is_standalone_game(self.game_data)
+        if is_standalone:
+            if update_status != "update_available":
+                update_status = "standalone"
+            is_accela = False
+            is_at0m_game = False
+        else:
+            is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
+            is_at0m_game = not is_accela and bool(
+                self.game_data.get("is_atom")
+                or self.game_data.get("is_vapor")
+                or self.game_data.get("is_plugin_game")
+                or self.game_data.get("source") in ("at0-m", "AT0-M", "Vapor", "plugin_native")
+                or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            )
+            if not is_at0m_game and not is_accela:
+                try:
+                    from utils.plugin_games import is_plugin_game
+                    is_at0m_game = is_plugin_game(self.game_data.get("appid", ""))
+                except Exception as e:
+                    logger.debug(f"[GameItemWidget] is_plugin_game check: {e}")
+
+            if is_at0m_game and update_status not in ("update_available", "key_pending"):
+                update_status = "at0m"
 
         self.game_data["update_status"] = update_status
+
+        from utils.workshop_helpers import is_workshop_key_missing
+        ws_key_missing = is_at0m_game and is_workshop_key_missing(
+            str(self.game_data.get("appid", "")),
+            game_data=self.game_data,
+            prewarmed_keys=getattr(self.parent_dialog, "_prewarmed_ws_keys", None),
+        )
+        amber_badge_style = (
+            "color: #FFB74D; "
+            "background-color: rgba(255, 183, 77, 0.15); "
+            "border-radius: 10px; "
+            "padding: 3px 10px; "
+            "font-size: 11px; "
+            "font-weight: bold;"
+        )
+        ws_missing_tooltip = "Steam Workshop is supported, but the root AppKey is missing. Workshop downloads via Steam require this key."
+
         is_at0m = update_status in ("vapor", "at0m", "at0-m")
-        if is_at0m:
+        if self._dlc_mode_applied() and update_status not in ("update_available", "key_pending"):
             if hasattr(self, "status_label") and self.status_label:
-                self.status_label.setText("[AT0-M]")
+                self.status_label.setText("[DLC Only]")
                 self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
                 self.status_label.setStyleSheet(
-                    "color: #CE93D8; "
-                    "background: transparent; "
-                    "font-size: 11px; "
-                    "font-weight: bold; "
-                    "padding: 2px 2px;"
+                    f"color: {self.accent_color}; "
+                    f"background-color: rgba(161, 201, 253, 0.15); "
+                    f"border-radius: 10px; "
+                    f"padding: 3px 10px; "
+                    f"font-size: 11px; "
+                    f"font-weight: bold;"
                 )
+            if hasattr(self, "workshop_badge"):
+                self.workshop_badge.hide()
+        elif is_at0m:
+            if hasattr(self, "status_label") and self.status_label:
+                if ws_key_missing:
+                    self.status_label.setText("No workshop key")
+                    self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+                    self.status_label.setStyleSheet(amber_badge_style)
+                    self.status_label.setToolTip(ws_missing_tooltip)
+                else:
+                    self.status_label.setText("[AT0-M]")
+                    self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+                    self.status_label.setStyleSheet(
+                        "color: #CE93D8; "
+                        "background: transparent; "
+                        "font-size: 11px; "
+                        "font-weight: bold; "
+                        "padding: 2px 2px;"
+                    )
+            if hasattr(self, "workshop_badge"):
+                self.workshop_badge.hide()
         else:
             status_map = {
                 "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
                 "key_pending": ("Keys Pending", "#FFB74D", "rgba(255, 183, 77, 0.15)"),
                 "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
                 "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+                "standalone": ("Standalone install", "#90A4AE", "rgba(144, 164, 174, 0.15)"),
             }
 
             text, color, bg_color = status_map.get(
@@ -562,8 +722,21 @@ class GameItemWidget(QWidget):
             )
             if is_at0m_game and update_status == "update_available":
                 text = "AT0-M: Keys Ready"
+                if hasattr(self, "workshop_badge"):
+                    self.workshop_badge.hide()
             elif is_at0m_game and update_status == "key_pending":
                 text = "AT0-M: Awaiting Hubcap Key"
+                if hasattr(self, "workshop_badge"):
+                    if ws_key_missing:
+                        self.workshop_badge.setText("No workshop key")
+                        self.workshop_badge.setStyleSheet(amber_badge_style)
+                        self.workshop_badge.setToolTip(ws_missing_tooltip)
+                        self.workshop_badge.show()
+                    else:
+                        self.workshop_badge.hide()
+            else:
+                if hasattr(self, "workshop_badge"):
+                    self.workshop_badge.hide()
 
             if hasattr(self, "status_label") and self.status_label:
                 self.status_label.setText(text)
@@ -653,48 +826,26 @@ class GameItemWidget(QWidget):
         except ImportError:
             tier = None
 
-        if not tier:
-            # Currently loading asynchronously on the backend
-            self.proton_badge.setText("FETCHING...")
-            self.proton_badge.setStyleSheet(
-                "color: #B0BEC5; "
-                "background-color: rgba(255, 255, 255, 0.08); "
-                "border: 1px solid rgba(255, 255, 255, 0.20); "
-                "border-radius: 4px; "
-                "padding: 1px 6px; "
-                "font-size: 9px; "
-                "font-weight: bold; "
-                "letter-spacing: 0.5px;"
-            )
-            self.proton_badge.show()
-            return
-
-        if tier == "unknown":
+        if not tier or tier == "unknown":
             self.proton_badge.hide()
             return
 
-        _tier_map = {
-            "platinum": ("PLATINUM", "#CFD8DC", "rgba(207, 216, 220, 0.18)", "rgba(236, 239, 241, 0.35)"),
-            "gold":     ("GOLD",     "#FFE082", "rgba(255, 193, 7, 0.15)",   "rgba(255, 224, 130, 0.30)"),
-            "silver":   ("SILVER",   "#B0BEC5", "rgba(144, 164, 174, 0.15)", "rgba(176, 190, 197, 0.30)"),
-            "bronze":   ("BRONZE",   "#FFAB91", "rgba(255, 112, 67, 0.15)",  "rgba(255, 171, 145, 0.30)"),
-            "borked":   ("BORKED",   "#EF9A9A", "rgba(239, 83, 80, 0.18)",   "rgba(239, 154, 154, 0.35)"),
-            "native":   ("NATIVE",   "#A5D6A7", "rgba(76, 175, 80, 0.15)",   "rgba(165, 214, 167, 0.30)"),
+        _tier_text_map = {
+            "platinum": "PLATINUM",
+            "gold":     "GOLD",
+            "silver":   "SILVER",
+            "bronze":   "BRONZE",
+            "borked":   "BORKED",
+            "native":   "NATIVE",
         }
 
-        if tier in _tier_map:
-            text, color, bg_color, border_color = _tier_map[tier]
+        text = _tier_text_map.get(tier)
+        if text:
             self.proton_badge.setText(text)
-            self.proton_badge.setStyleSheet(
-                f"color: {color}; "
-                f"background-color: {bg_color}; "
-                f"border: 1px solid {border_color}; "
-                f"border-radius: 4px; "
-                f"padding: 1px 6px; "
-                f"font-size: 9px; "
-                f"font-weight: bold; "
-                f"letter-spacing: 0.5px;"
-            )
+            self.proton_badge.setProperty("badgeRole", "proton")
+            self.proton_badge.setProperty("protonTier", tier)
+            self.proton_badge.style().unpolish(self.proton_badge)
+            self.proton_badge.style().polish(self.proton_badge)
             self.proton_badge.show()
         else:
             self.proton_badge.hide()
@@ -706,6 +857,9 @@ class GameItemWidget(QWidget):
         appid = str(self.game_data.get("appid", "") or "")
         if not appid:
             return False
+        dlc_cache = getattr(self.parent_dialog, "_dlc_only_cache", None)
+        if dlc_cache is not None:
+            return bool(dlc_cache.get(appid))
         try:
             from utils.dlc_helpers import is_dlc_only_mode
             return bool(is_dlc_only_mode(appid))
@@ -714,41 +868,37 @@ class GameItemWidget(QWidget):
             return False
 
     def set_image(self, pixmap: QPixmap) -> None:
-        """Sets the image on the label, scaling it nicely with right-fade blend."""
+        """Scale left header artwork and fade cleanly to the right with an S-curve mask."""
         if not pixmap or pixmap.isNull():
             return
 
-        target_size = self.image_label.size()
-        scaled = pixmap.scaled(
-            target_size,
-            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+        from ui.widgets.artwork_fade import build_faded_artwork
 
+        target_size = self.image_label.size()
+        source = pixmap
         if self._is_steam_tab and not self._dlc_mode_applied():
             # A Steam game that is not tracked in DLC mode is a catalogue
             # entry, not managed content: keep its artwork muted.
-            scaled = QPixmap.fromImage(
-                scaled.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
+            source = QPixmap.fromImage(
+                pixmap.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
             )
 
-        cropped_faded = QPixmap(target_size)
-        cropped_faded.fill(Qt.GlobalColor.transparent)
-
-        painter = QPainter(cropped_faded)
-        dx = (target_size.width() - scaled.width()) // 2
-        dy = (target_size.height() - scaled.height()) // 2
-        painter.drawPixmap(dx, dy, scaled)
-
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-        gradient = QLinearGradient(0, 0, target_size.width(), 0)
-        gradient.setColorAt(0.0, QColor(0, 0, 0, 255))
-        gradient.setColorAt(0.5, QColor(0, 0, 0, 255))
-        gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
-
-        painter.fillRect(cropped_faded.rect(), QBrush(gradient))
-        painter.end()
-
+        cropped_faded = build_faded_artwork(
+            source,
+            target_size,
+            direction="fade_out_right",
+            fade_start=0.28,
+            fade_end=0.98,
+            start_alpha=255,
+            end_alpha=0,
+            edge_alpha=215,
+            edge_span=0.12,
+            corner_radius=11.0,
+            round_corners="left",
+        )
+        # Clear placeholder tint once real artwork is loaded so the faded tail
+        # dissolves seamlessly into the row background without a rectangular seam.
+        self.image_label.setStyleSheet("background-color: transparent; border: none;")
         self.image_label.setPixmap(cropped_faded)
 
     def set_selected(self, selected: bool) -> None:
@@ -830,6 +980,7 @@ class GameTileWidget(GameItemWidget):
         self.checkbox.setChecked(self._is_selected)
         self.checkbox.move(8, 8)
         self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        chk_icon = _library_check_icon_path(self.accent_color)
         self.checkbox.setStyleSheet(
             f"""
             QCheckBox::indicator {{
@@ -842,6 +993,7 @@ class GameTileWidget(GameItemWidget):
             QCheckBox::indicator:checked {{
                 background-color: {self.accent_color};
                 border: 2px solid #000000;
+                image: url("{chk_icon}");
             }}
             """
         )
@@ -901,9 +1053,20 @@ class GameTileWidget(GameItemWidget):
             )
             badges_row.addWidget(self.dlc_mode_badge)
 
+        status_col = QVBoxLayout()
+        status_col.setContentsMargins(0, 0, 0, 0)
+        status_col.setSpacing(2)
+
         self.status_label = QLabel()
         self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        badges_row.addWidget(self.status_label)
+        status_col.addWidget(self.status_label)
+
+        self.workshop_badge = QLabel()
+        self.workshop_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.workshop_badge.hide()
+        status_col.addWidget(self.workshop_badge)
+
+        badges_row.addLayout(status_col)
 
         self.pinned_build_label = QLabel()
         self.pinned_build_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -933,6 +1096,8 @@ class GameTileWidget(GameItemWidget):
 
         layout.addLayout(info_layout)
         self.update_pinned_label()
+        if not self._is_steam_tab:
+            self.update_status(self.game_data.get("update_status", "cannot_determine"))
 
     def set_image(self, pixmap: QPixmap) -> None:
         """Sets the image on the label with rounded corners."""
@@ -1006,6 +1171,7 @@ class GameCompactWidget(GameItemWidget):
         self.checkbox = QCheckBox()
         self.checkbox.setChecked(self._is_selected)
         self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        chk_icon = _library_check_icon_path(self.accent_color)
         self.checkbox.setStyleSheet(
             f"""
             QCheckBox::indicator {{
@@ -1018,6 +1184,7 @@ class GameCompactWidget(GameItemWidget):
             QCheckBox::indicator:checked {{
                 background-color: {self.accent_color};
                 border: 2px solid #000000;
+                image: url("{chk_icon}");
             }}
             """
         )
@@ -1051,6 +1218,11 @@ class GameCompactWidget(GameItemWidget):
         self.status_label = QLabel()
         self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.status_label)
+
+        self.workshop_badge = QLabel()
+        self.workshop_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.workshop_badge.hide()
+        layout.addWidget(self.workshop_badge)
 
         self.pinned_build_label = QLabel()
         self.pinned_build_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -1087,6 +1259,8 @@ class GameCompactWidget(GameItemWidget):
         layout.addWidget(self.size_label)
 
         self.update_pinned_label()
+        if not self._is_steam_tab:
+            self.update_status(self.game_data.get("update_status", "cannot_determine"))
 
     def set_image(self, pixmap: QPixmap) -> None:
         """Compact text view does not display images."""

@@ -516,17 +516,8 @@ def save_style_settings(dialog) -> bool:
         dialog.settings.setValue("simplify_denuvo_status", simplify)
 
         if old_simplify is None or simplify != old_simplify:
-            from ui.dialogs.gamelibrary import GameItemWidget
-            from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
-            from ui.dialogs.fetchmanifest import SearchItemWidget
-            for w in QApplication.instance().allWidgets():
-                if isinstance(w, GameItemWidget):
-                    w.update_denuvo_badge()
-                    w.update_proton_badge()
-                elif isinstance(w, GameDetailsDialogV2):
-                    w.update_title()
-                elif isinstance(w, SearchItemWidget):
-                    w.update_ratings()
+            from core.ratings import notify_rating_updated
+            notify_rating_updated("*")
 
     orig_accent = getattr(dialog, "_original_accent_color", None)
     orig_bg = getattr(dialog, "_original_background_color", None)

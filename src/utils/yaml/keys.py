@@ -17,8 +17,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from utils.yaml.constants import SHARED_REDISTS
-from utils.yaml.core import _get_section_bounds, _read_config_content, batch_config_edit, get_user_config_path
-from utils.yaml.plugins import ensure_plugins_enabled
+from utils.yaml.core import (
+    WriteOutcome,
+    _get_section_bounds,
+    _read_config_content,
+    batch_config_edit,
+    get_user_config_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,17 +35,17 @@ def add_decryption_keys_batch(
     """Add or update multiple depot AES decryption keys in DecryptionKeys in a single atomic write."""
     if not keys:
         return True
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
-        any_added = False
+        editor.ensure_plugins()
+        any_changed = False
         if isinstance(keys, dict):
             for depot_id, val in keys.items():
                 if isinstance(val, (tuple, list)) and len(val) >= 2:
                     k, comm = val[0], val[1]
                 else:
                     k, comm = str(val), ""
-                if editor.add_key(depot_id, k, comment=comm):
-                    any_added = True
+                if editor.add_key(depot_id, k, comment=comm) is WriteOutcome.CHANGED:
+                    any_changed = True
         elif isinstance(keys, (list, tuple)):
             for item in keys:
                 if len(item) == 3:
@@ -50,9 +55,9 @@ def add_decryption_keys_batch(
                     comm = ""
                 else:
                     continue
-                if editor.add_key(did, k, comment=comm):
-                    any_added = True
-    return any_added
+                if editor.add_key(did, k, comment=comm) is WriteOutcome.CHANGED:
+                    any_changed = True
+    return any_changed and editor.committed_successfully
 
 def get_decryption_keys(config_path: Path) -> Dict[str, str]:
     """Get mapping of {depot_id: key} currently in DecryptionKeys section."""
@@ -75,10 +80,10 @@ def get_decryption_keys(config_path: Path) -> Dict[str, str]:
 
 def add_decryption_key(config_path: Path, depot_id: Union[str, int], key: str, comment: str = "") -> bool:
     """Add or update a depot AES decryption key in DecryptionKeys section in SLSsteam config.yaml."""
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
+        editor.ensure_plugins()
         res = editor.add_key(depot_id, key, comment)
-    return res and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully
 
 def remove_decryption_key(
     config_path: Path,
@@ -89,10 +94,10 @@ def remove_decryption_key(
     """Remove a depot key from DecryptionKeys section in SLSsteam config.yaml.
     If check_shared is True, skips removal if the depot is shared with another game or is a common redistributable.
     """
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
+        editor.ensure_plugins()
         res = editor.remove_key(depot_id, check_shared=check_shared, excluding_appid=excluding_appid)
-    return res and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully
 
 def has_game_decryption_keys(
     appid: Union[str, int], game_data: Optional[Dict[str, Any]] = None
@@ -129,17 +134,18 @@ def has_game_decryption_keys(
         return True
 
     # 2. Collect known depots for this game
+    from utils.depot_utils import extract_depot_ids
     game_depots: Set[str] = set()
     gd = game_data or {}
     if gd.get("depots"):
-        game_depots.update(str(d).strip() for d in gd["depots"].keys())
+        game_depots.update(extract_depot_ids(gd["depots"]))
 
     try:
         from managers.depot_key_manager import DepotKeyManager
         dkm = DepotKeyManager.get_instance()
         local_keys = dkm.get_keys_for_app(appid_str)
         if local_keys:
-            game_depots.update(str(d).strip() for d in local_keys.keys())
+            game_depots.update(extract_depot_ids(local_keys))
     except Exception:
         pass
 
@@ -147,8 +153,8 @@ def has_game_decryption_keys(
         from utils.plugin_games import load_plugin_library
         lib = load_plugin_library()
         if appid_str in lib:
-            game_depots.update(str(d).strip() for d in lib[appid_str].get("depots", []))
-            game_depots.update(str(d).strip() for d in lib[appid_str].get("keys", {}).keys())
+            game_depots.update(extract_depot_ids(lib[appid_str].get("depots")))
+            game_depots.update(extract_depot_ids(lib[appid_str].get("keys")))
     except Exception:
         pass
 

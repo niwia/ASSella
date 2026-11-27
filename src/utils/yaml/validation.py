@@ -26,10 +26,49 @@ def _validate_yaml_content(content: str) -> bool:
     """Validate YAML syntax and ensure no duplicate top-level keys exist."""
     try:
         import yaml
-        yaml.safe_load(content)
+        data = yaml.safe_load(content)
     except Exception as e:
         logger.error(f"YAML validation failed: {e}")
         return False
+
+    if isinstance(data, dict):
+        # safe_load resolves a duplicated key to the last occurrence. The
+        # line scanner below only sees column-0 keys, so without this a
+        # duplicate nested key (or an indented top-level-looking line) would
+        # pass the write gate.
+        counts: dict = {}
+        loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+        def _count_pairs(node):
+            """Collect duplicated mapping keys at every nesting level.
+
+            Key nodes are compared by their raw scalar text: constructing the
+            node needs a resolver pass that is not available while composing,
+            and raw text is the right identity for duplicate detection anyway
+            (`731` and `"731"` are the same key to YAML).
+            """
+            if isinstance(node, yaml.MappingNode):
+                seen_here = set()
+                for key_node, value_node in node.value:
+                    k = getattr(key_node, "value", repr(key_node))
+                    k = (getattr(key_node, "tag", ""), str(k))
+                    if k in seen_here:
+                        counts[str(k[1])] = counts.get(str(k[1]), 1) + 1
+                    seen_here.add(k)
+                    _count_pairs(value_node)
+            elif isinstance(node, yaml.SequenceNode):
+                for child in node.value:
+                    _count_pairs(child)
+
+        try:
+            for doc in yaml.compose_all(content, Loader=loader):
+                _count_pairs(doc)
+        except Exception as e:
+            logger.debug(f"YAML duplicate-key scan skipped: {e}")
+            counts = {}
+        if counts:
+            logger.error(f"Duplicate YAML keys detected: {', '.join(sorted(counts))}")
+            return False
 
     # Check for duplicate top-level keys at column 0 (safe_load silently allows duplicate keys)
     top_keys = re.findall(r"^['\"]?([A-Za-z0-9_]+)['\"]?(?=[ \t]*:)", content, re.MULTILINE)

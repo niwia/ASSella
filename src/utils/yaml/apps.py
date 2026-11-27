@@ -17,10 +17,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from utils.yaml.constants import SHARED_REDISTS
-from utils.yaml.core import _atomic_write, _get_section_bounds, _read_config_content, batch_config_edit, get_user_config_path
+from utils.yaml.core import (
+    WriteOutcome,
+    _atomic_write,
+    _get_section_bounds,
+    _read_config_content,
+    batch_config_edit,
+    get_user_config_path,
+)
 from utils.yaml.dlc import get_dlc_data
 from utils.yaml.keys import get_decryption_keys
-from utils.yaml.plugins import ensure_plugins_enabled
 from utils.yaml.validation import _sanitize_comment, _sanitize_id
 
 logger = logging.getLogger(__name__)
@@ -71,13 +77,13 @@ def add_additional_apps_batch(
     """Add multiple AppIDs to AdditionalApps in SLSsteam config.yaml in a single atomic write."""
     if not apps:
         return True
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
-        any_added = False
+        editor.ensure_plugins()
+        any_changed = False
         for app_id, comment in apps:
-            if editor.add_app(app_id, comment):
-                any_added = True
-    return any_added
+            if editor.add_app(app_id, comment) is WriteOutcome.CHANGED:
+                any_changed = True
+    return any_changed and editor.committed_successfully
 
 def add_additional_depots_batch(
     config_path: Path, depots: List[Tuple[Union[str, int], str]]
@@ -85,93 +91,134 @@ def add_additional_depots_batch(
     """Add multiple DepotIDs to AdditionalDepots in SLSsteam config.yaml in a single atomic write."""
     if not depots:
         return True
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
-        any_added = False
+        editor.ensure_plugins()
+        any_changed = False
         for depot_id, comment in depots:
-            if editor.add_depot(depot_id, comment):
-                any_added = True
-    return any_added
+            if editor.add_depot(depot_id, comment) is WriteOutcome.CHANGED:
+                any_changed = True
+    return any_changed and editor.committed_successfully
 
 def add_additional_app(config_path: Path, app_id: Union[str, int], comment: str = "") -> bool:
     """Add an AppID to the AdditionalApps list in SLSsteam config.yaml."""
-    ensure_plugins_enabled(config_path)
     if not config_path.exists():
         app_id_clean = _sanitize_id(app_id)
         if not app_id_clean:
             return False
         return _init_config_with_app(config_path, app_id_clean, _sanitize_comment(comment))
     with batch_config_edit(config_path) as editor:
+        editor.ensure_plugins()
         res = editor.add_app(app_id, comment)
-    return res and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully
+
+def add_additional_app_outcome(
+    config_path: Path, app_id: Union[str, int], comment: str = ""
+) -> WriteOutcome:
+    """Like add_additional_app but says *why* nothing changed.
+
+    Callers that report results to the user need to tell an app that was
+    already configured (ALREADY_PRESENT) from one a guard refused (REFUSED)
+    or a write that did not stick (FAILED).
+    """
+    if not config_path.exists():
+        app_id_clean = _sanitize_id(app_id)
+        if not app_id_clean:
+            return WriteOutcome.REFUSED
+        if _init_config_with_app(config_path, app_id_clean, _sanitize_comment(comment)):
+            return WriteOutcome.CHANGED
+        return WriteOutcome.FAILED
+    with batch_config_edit(config_path) as editor:
+        editor.ensure_plugins()
+        res = editor.add_app(app_id, comment)
+        committed = editor.committed_successfully
+    if not committed:
+        return WriteOutcome.FAILED
+    return res
 
 def remove_additional_app(config_path: Path, app_id: Union[str, int]) -> bool:
     """Remove an AppID from the AdditionalApps list."""
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
+        editor.ensure_plugins()
         res = editor.remove_app(app_id)
-    return res and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully
 
 def replace_additional_app(config_path: Path, old_app_id: Union[str, int], new_app_id: Union[str, int], new_comment: str = "") -> bool:
     """Replace an existing AppID in AdditionalApps with a new AppID and optional comment.
     Also migrates any DlcData or FakeAppIds entries if present.
     """
-    content = _read_config_content(config_path)
-    if not content:
-        return False
-
     old_aid_str = _sanitize_id(old_app_id)
     new_aid_str = _sanitize_id(new_app_id)
     if not old_aid_str or not new_aid_str:
         return False
 
-    bounds = _get_section_bounds(content, "AdditionalApps")
-    if not bounds:
+    with batch_config_edit(config_path) as editor:
+        content = editor.content
+        if not content:
+            return False
+
+        bounds = _get_section_bounds(content, "AdditionalApps")
+        if not bounds:
+            return False
+
+        _, content_start, section_end = bounds
+        sec_content = content[content_start:section_end]
+        pattern = re.compile(
+            rf"^[ \t]*-[ \t]*['\"]?{re.escape(old_aid_str)}['\"]?[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        match = pattern.search(sec_content)
+        if not match:
+            logger.warning(f"AppID '{old_aid_str}' not found in AdditionalApps section of {config_path}")
+            return False
+
+        # If new_comment not explicitly provided, preserve existing comment if any
+        if not new_comment:
+            m_comm = re.search(
+                rf"^[ \t]*-[ \t]*['\"]?{re.escape(old_aid_str)}['\"]?[ \t]*#[ \t]*(.+)$",
+                sec_content,
+                re.MULTILINE,
+            )
+            if m_comm:
+                new_comment = m_comm.group(1).strip()
+
+        new_comment = _sanitize_comment(new_comment)
+        replacement_line = f"  - {new_aid_str} # {new_comment}" if new_comment else f"  - {new_aid_str}"
+        new_sec_content = pattern.sub(replacement_line, sec_content, count=1)
+        updated_content = content[:content_start] + new_sec_content + content[section_end:]
+
+        # Migrate DlcData section key if present
+        dlc_bounds = _get_section_bounds(updated_content, "DlcData")
+        if dlc_bounds:
+            _, d_start, d_end = dlc_bounds
+            d_sec = updated_content[d_start:d_end]
+            d_pat = re.compile(
+                rf"^[ \t]+['\"]?{re.escape(old_aid_str)}['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+                re.MULTILINE,
+            )
+            if d_pat.search(d_sec):
+                new_d_sec = d_pat.sub(f"  {new_aid_str}:", d_sec, count=1)
+                updated_content = updated_content[:d_start] + new_d_sec + updated_content[d_end:]
+
+        # Migrate FakeAppIds section key if present
+        fake_bounds = _get_section_bounds(updated_content, "FakeAppIds")
+        if fake_bounds:
+            _, f_start, f_end = fake_bounds
+            f_sec = updated_content[f_start:f_end]
+            f_pat = re.compile(
+                rf"^([ \t]*['\"]?){re.escape(old_aid_str)}(['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?)$",
+                re.MULTILINE,
+            )
+            if f_pat.search(f_sec):
+                new_f_sec = f_pat.sub(rf"\g<1>{new_aid_str}\g<2>", f_sec, count=1)
+                updated_content = updated_content[:f_start] + new_f_sec + updated_content[f_end:]
+
+        editor.content = updated_content
+        editor.has_changes = True
+
+    if not editor.committed_successfully:
         return False
-
-    _, content_start, section_end = bounds
-    sec_content = content[content_start:section_end]
-    pattern = re.compile(rf"^[ \t]*-[ \t]*{re.escape(old_aid_str)}[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
-    match = pattern.search(sec_content)
-    if not match:
-        logger.warning(f"AppID '{old_aid_str}' not found in AdditionalApps section of {config_path}")
-        return False
-
-    # If new_comment not explicitly provided, preserve existing comment if any
-    if not new_comment:
-        m_comm = re.search(rf"^[ \t]*-[ \t]*{re.escape(old_aid_str)}[ \t]*#[ \t]*(.+)$", sec_content, re.MULTILINE)
-        if m_comm:
-            new_comment = m_comm.group(1).strip()
-
-    new_comment = _sanitize_comment(new_comment)
-    replacement_line = f"  - {new_aid_str} # {new_comment}" if new_comment else f"  - {new_aid_str}"
-    new_sec_content = pattern.sub(replacement_line, sec_content, count=1)
-    updated_content = content[:content_start] + new_sec_content + content[section_end:]
-
-    # Migrate DlcData section key if present
-    dlc_bounds = _get_section_bounds(updated_content, "DlcData")
-    if dlc_bounds:
-        _, d_start, d_end = dlc_bounds
-        d_sec = updated_content[d_start:d_end]
-        d_pat = re.compile(rf"^[ \t]+{re.escape(old_aid_str)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
-        if d_pat.search(d_sec):
-            new_d_sec = d_pat.sub(f"  {new_aid_str}:", d_sec, count=1)
-            updated_content = updated_content[:d_start] + new_d_sec + updated_content[d_end:]
-
-    # Migrate FakeAppIds section key if present
-    fake_bounds = _get_section_bounds(updated_content, "FakeAppIds")
-    if fake_bounds:
-        _, f_start, f_end = fake_bounds
-        f_sec = updated_content[f_start:f_end]
-        f_pat = re.compile(rf"^([ \t]*['\"]?){re.escape(old_aid_str)}(['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?)$", re.MULTILINE)
-        if f_pat.search(f_sec):
-            new_f_sec = f_pat.sub(rf"\g<1>{new_aid_str}\g<2>", f_sec, count=1)
-            updated_content = updated_content[:f_start] + new_f_sec + updated_content[f_end:]
-
-    if _atomic_write(config_path, updated_content):
-        logger.info(f"Successfully replaced AppID '{old_aid_str}' with '{new_aid_str}' in {config_path}")
-        return True
-    return False
+    logger.info(f"Successfully replaced AppID '{old_aid_str}' with '{new_aid_str}' in {config_path}")
+    return True
 
 def get_additional_apps(config_path: Path) -> List[str]:
     """Get list of AppIDs currently in AdditionalApps section."""
@@ -185,7 +232,7 @@ def get_additional_apps(config_path: Path) -> List[str]:
     sec = content[content_start:section_end]
     results = []
     for line in sec.splitlines():
-        m = re.match(r"^[ \t]*-[ \t]*([0-9]+)", line)
+        m = re.match(r"^[ \t]*-[ \t]*['\"]?([0-9]+)", line)
         if m:
             results.append(m.group(1))
     return results
@@ -202,7 +249,7 @@ def get_additional_depots(config_path: Path) -> List[str]:
     sec = content[content_start:section_end]
     results = []
     for line in sec.splitlines():
-        m = re.match(r"^[ \t]*-[ \t]*([0-9]+)", line)
+        m = re.match(r"^[ \t]*-[ \t]*['\"]?([0-9]+)", line)
         if m:
             results.append(m.group(1))
     return results
@@ -246,21 +293,23 @@ def has_game_config_entries(
 
     # 2. Check dlc_data batch block in config.yaml
     try:
-        dlc_data = get_dlc_data(cfg_path)
-        if appid_str in dlc_data:
+        # get_dlc_data requires the parent appid and returns that parent's DLC
+        # map, so a non-empty result means this app has a DlcData block.
+        if get_dlc_data(cfg_path, appid_str):
             return True
     except Exception:
         pass
 
     # 3. Check AdditionalApps
+    from utils.depot_utils import extract_depot_ids
     try:
         live_apps = get_additional_apps(cfg_path)
         if appid_str in live_apps:
             return True
         gd = game_data or {}
         gd_dlcs = gd.get("dlcs") or {}
-        for dlc_id in gd_dlcs.keys():
-            if str(dlc_id).strip() in live_apps:
+        for dlc_id in extract_depot_ids(gd_dlcs):
+            if dlc_id in live_apps:
                 return True
     except Exception:
         pass
@@ -269,14 +318,14 @@ def has_game_config_entries(
     game_depots: Set[str] = set()
     gd = game_data or {}
     if gd.get("depots"):
-        game_depots.update(str(d).strip() for d in gd["depots"].keys())
+        game_depots.update(extract_depot_ids(gd["depots"]))
 
     try:
         from managers.depot_key_manager import DepotKeyManager
         dkm = DepotKeyManager.get_instance()
         local_keys = dkm.get_keys_for_app(appid_str)
         if local_keys:
-            game_depots.update(str(d).strip() for d in local_keys.keys())
+            game_depots.update(extract_depot_ids(local_keys))
     except Exception:
         pass
 
@@ -336,10 +385,10 @@ def add_additional_depot(
     app_id: Optional[Union[str, int]] = None,
 ) -> bool:
     """Add a DepotID to the AdditionalDepots list in SLSsteam config.yaml."""
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
+        editor.ensure_plugins()
         res = editor.add_depot(depot_id, comment, app_id=app_id)
-    return res and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully
 
 def remove_additional_depot(
     config_path: Path,
@@ -350,7 +399,7 @@ def remove_additional_depot(
     """Remove a DepotID from the AdditionalDepots list in SLSsteam config.yaml.
     If check_shared is True, skips removal if the depot is shared with another game or is a common redistributable.
     """
-    ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
+        editor.ensure_plugins()
         res = editor.remove_depot(depot_id, check_shared=check_shared, excluding_appid=excluding_appid)
-    return res and editor.committed_successfully
+    return res is WriteOutcome.CHANGED and editor.committed_successfully

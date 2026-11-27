@@ -30,6 +30,7 @@ manifests/
 morrenus_manifests/
 hubcap_manifests/
 *.db
+.test_custom_work/
 
 # ── Workshop keys (personal) ────────────────────────────────────────────────
 workshop_keys.txt
@@ -40,7 +41,8 @@ gifs/
 # ── Local scratch space ─────────────────────────────────────────────────────
 # scripts/ is intentionally TRACKED — the pre-release checker and test suite
 # are the gate against shipping a broken build, so they belong in history.
-# Only throwaway experiments go in scratch/.
+# Only throwaway experiments go in scratch/
+.commandcode/
 scratch/
 
 # ── Plugin distribution & R2 publishing ──────────────────────────────────────
@@ -58,6 +60,7 @@ src/deps/Goldberg/
 src/deps/Steamless/
 src/deps/SLScheevo/
 src/deps/schema-grabber/
+src/deps/wireproxy
 
 # ── OS junk ─────────────────────────────────────────────────────────────────
 .DS_Store

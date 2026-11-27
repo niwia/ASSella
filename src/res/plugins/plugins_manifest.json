@@ -1,18 +1,18 @@
 {
   "manifest_version": 2,
-  "serial": 20261110130206,
-  "updated_at": "2026-11-10T13:02:06Z",
+  "serial": 20261115193247,
+  "updated_at": "2026-11-15T19:32:47Z",
   "default_interceptor": "spacebunny.lua",
   "plugins": {
     "spacebunny.lua": {
       "name": "SpaceBunny",
       "filename": "spacebunny.lua",
-      "version": "1.8.5",
-      "role": "mrc-provider",
+      "version": "2.0.5",
+      "role": "download-interceptor",
       "category": "interceptor",
       "description": "Download interceptor: injects depots and decryption keys and resolves manifest request codes from several providers with circuit breakers.",
-      "sha256": "b3ee2941c1f6d4c6ef9495bb6727531598787bc855cc547342f235396af8d590",
-      "size_bytes": 64882,
+      "sha256": "0376922f29f0ad467d4643f859145af77b3c95cf2ef06d58a949c134a98f2452",
+      "size_bytes": 39715,
       "required": true,
       "deployable": true,
       "is_default": true
@@ -20,12 +20,12 @@
     "styx.lua": {
       "name": "Styx",
       "filename": "styx.lua",
-      "version": "2.4",
+      "version": "2.5",
       "role": "ticket-splicer",
       "category": "companion",
       "description": "Ownership ticket splicer so apps added through AdditionalApps pass SteamStub DRM checks.",
-      "sha256": "0be8867233bf9d15d12b1924c14b904600e1c8e2fc7748616e6e45dea785ce70",
-      "size_bytes": 23654,
+      "sha256": "d85ed2a268461e7ff2e5ccfd44d26fd792526a37e2d38086afad7abcaec63fbc",
+      "size_bytes": 33884,
       "required": true,
       "deployable": true
     },

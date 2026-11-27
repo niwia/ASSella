@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading  # noqa: TC003
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -164,10 +165,16 @@ def _names(appids: Set[str]) -> Dict[str, str]:
     return names
 
 
-def list_cached_games() -> List[Tuple[str, str]]:
+def list_cached_games(cancel_token: Optional[threading.Event] = None) -> List[Tuple[str, str]]:
     """[(appid, name)] of every game with cached info, sorted by name."""
+    if cancel_token and cancel_token.is_set():
+        return []
     ids = _cached_appids()
+    if cancel_token and cancel_token.is_set():
+        return []
     names = _names(ids)
+    if cancel_token and cancel_token.is_set():
+        return []
     rows = [(a, names.get(a) or f"App {a}") for a in ids]
     rows.sort(key=lambda r: (r[1].casefold(), int(r[0])))
     return rows

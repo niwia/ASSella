@@ -11,15 +11,25 @@ fi
 #                      ASSella Installer
 # ==============================================================================
 
-# Terminal Colors & Styling (respect NO_COLOR and non-interactive TTYs)
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[1;33m'
-    BLUE='\033[0;34m'
-    CYAN='\033[0;36m'
-    BOLD='\033[1m'
-    NC='\033[0m'
+# Terminal Colors & Styling (respect NO_COLOR, TERM=dumb, and non-interactive TTYs)
+ESC=$'\033'
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+    RED="${ESC}[38;2;224;108;117m"
+    GREEN="${ESC}[38;2;145;200;155m"
+    YELLOW="${ESC}[38;2;229;192;123m"
+    BLUE="${ESC}[38;2;77;154;191m"
+    CYAN="${ESC}[38;2;136;192;208m"
+    BOLD="${ESC}[1m"
+    DIM="${ESC}[2m"
+    NC="${ESC}[0m"
+    RESET="${ESC}[0m"
+    PEACH="${ESC}[38;2;244;200;171m"
+    CORAL="${ESC}[38;2;240;144;130m"
+    GOLD="${ESC}[38;2;241;190;88m"
+    PURE_WHITE="${ESC}[38;2;220;224;232m"
+    SLS_ORANGE="${ESC}[38;2;226;152;104m"
+    STEAM_BLUE="${ESC}[38;2;130;188;228m"
+    FLATPAK_BLUE="${ESC}[38;2;114;166;218m"
 else
     RED=''
     GREEN=''
@@ -27,7 +37,16 @@ else
     BLUE=''
     CYAN=''
     BOLD=''
+    DIM=''
     NC=''
+    RESET=''
+    PEACH=''
+    CORAL=''
+    GOLD=''
+    PURE_WHITE=''
+    SLS_ORANGE=''
+    STEAM_BLUE=''
+    FLATPAK_BLUE=''
 fi
 
 INSTALL_DESTINATION="$HOME/.local/share/ACCELA"
@@ -87,11 +106,30 @@ IS_CACHYOS=false
 INTERACTIVE=false
 TMP_DIR=""
 SKIP_CHECKSUM=false
+NO_ANIM=false
+UI_PROGRESS_MODE=false
+ORIG_STTY=""
+TTY_READER_PID=""
+JS_READER_PID=""
+UI_PROG_PID=""
+UI_FIFO=""
 DESKTOP_TMP=""
 ICON_TMP=""
 SVG_ICON_TMP=""
 
 cleanup() {
+    [ -n "${UI_PROG_PID:-}" ] && kill "$UI_PROG_PID" 2>/dev/null || true
+    [ -n "${TTY_READER_PID:-}" ] && kill "$TTY_READER_PID" 2>/dev/null || true
+    [ -n "${JS_READER_PID:-}" ] && kill "$JS_READER_PID" 2>/dev/null || true
+    [ -n "${UI_FIFO:-}" ] && rm -f "$UI_FIFO" 2>/dev/null || true
+    if [ -n "${ORIG_STTY:-}" ] && [ -e /dev/tty ]; then
+        stty "$ORIG_STTY" </dev/tty 2>/dev/null || true
+        ORIG_STTY=""
+    fi
+    if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+        printf '%s%s' "${RESET:-}" "${ESC}[?25h" 2>/dev/null || true
+    fi
+
     if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
         rm -rf "$TMP_DIR" 2>/dev/null || true
     fi
@@ -110,7 +148,8 @@ cleanup() {
         rm -f "$SCALABLE_ICON_DIR/.assella.svg.tmp."* 2>/dev/null || true
     fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
 
 declare -A PKG_FUSE_CMD=(
     [arch]="sudo pacman -S --needed fuse2"
@@ -237,7 +276,7 @@ detect_distro() {
         IS_STEAM_DECK=true
     fi
 
-    if [[ "$DISTRO_ID" == "nixos" ]]; then
+    if [[ "$DISTRO_ID" == "nixos" ]] || [[ -f /etc/NIXOS ]] || [[ -f /run/current-system/nixos-version ]]; then
         IS_NIXOS=true
     fi
 
@@ -276,14 +315,27 @@ detect_distro_family() {
 
 check_fuse_status() {
     FUSE_INSTALLED=false
+    local arch="x86_64"
+    if [ -n "${ASSELLA_ARCH:-}" ]; then
+        arch="$ASSELLA_ARCH"
+    elif command -v uname &>/dev/null; then
+        arch=$(uname -m 2>/dev/null || echo "x86_64")
+    fi
+    if [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
+        # ARM64 AppImage is built with static FUSE3 runtime
+        FUSE_INSTALLED=true
+        return 0
+    fi
+
     if command -v ldconfig &>/dev/null; then
-        if ldconfig -p 2>/dev/null | grep -q "libfuse.so.2"; then
+        if ldconfig -p 2>/dev/null | grep -E -q "libfuse\.so\.2|libfuse3\.so\.3"; then
             FUSE_INSTALLED=true
+            return 0
         fi
     fi
 
     if [ "$FUSE_INSTALLED" = false ]; then
-        if [ -f /usr/lib/libfuse.so.2 ] || [ -f /lib/libfuse.so.2 ] || [ -f /usr/lib64/libfuse.so.2 ] || [ -f /lib64/libfuse.so.2 ] || [ -f /lib/x86_64-linux-gnu/libfuse.so.2 ]; then
+        if [ -f /usr/lib/libfuse.so.2 ] || [ -f /lib/libfuse.so.2 ] || [ -f /usr/lib64/libfuse.so.2 ] || [ -f /lib64/libfuse.so.2 ] || [ -f /lib/x86_64-linux-gnu/libfuse.so.2 ] || [ -f /usr/lib/libfuse3.so.3 ] || [ -f /usr/lib64/libfuse3.so.3 ] || [ -f /lib64/libfuse3.so.3 ] || [ -f /lib/x86_64-linux-gnu/libfuse3.so.3 ]; then
             FUSE_INSTALLED=true
         fi
     fi
@@ -345,7 +397,13 @@ detect_steam_paths() {
 check_headcrab_status() {
     HEADCRAB_INSTALLED=false
     detect_steam_paths
-    if [ -f "$SLS_CONFIG_FILE" ] || [ -d "$SLS_CONFIG_DIR" ] || [ -d "/tmp/SLSsteam" ]; then
+    local native_so="$HOME/.local/share/SLSsteam/SLSsteam.so"
+    local flatpak_so="$HOME/.var/app/com.valvesoftware.Steam/.local/share/SLSsteam/SLSsteam.so"
+    if [ -f "$native_so" ] || [ -f "$flatpak_so" ]; then
+        HEADCRAB_INSTALLED=true
+    elif [ -f "$SLS_CONFIG_FILE" ] && { [ -f "$HOME/.local/share/applications/headcrab.desktop" ] || [ -d "$HOME/.headcrab" ]; }; then
+        HEADCRAB_INSTALLED=true
+    elif [ -f "$SLS_CONFIG_FILE" ] || [ -d "$SLS_CONFIG_DIR" ] || [ -d "/tmp/SLSsteam" ]; then
         HEADCRAB_INSTALLED=true
     elif command -v systemctl &>/dev/null && systemctl --user is-active slssteam &>/dev/null; then
         HEADCRAB_INSTALLED=true
@@ -577,6 +635,13 @@ _parse_release_manifest_json() {
     local strict_mode="${3:-}"
     [ -z "$rel_json" ] && return 1
 
+    local host_arch="x86_64"
+    if [ -n "${ASSELLA_ARCH:-}" ]; then
+        host_arch="$ASSELLA_ARCH"
+    elif command -v uname &>/dev/null; then
+        host_arch=$(uname -m 2>/dev/null || echo "x86_64")
+    fi
+
     if command -v python3 &>/dev/null; then
         local parsed
         parsed=$(echo "$rel_json" | python3 -c '
@@ -585,6 +650,8 @@ from datetime import datetime, timezone
 
 target_channel = (sys.argv[1] if len(sys.argv) > 1 else "beta").strip().lower()
 strict_mode = (sys.argv[2] if len(sys.argv) > 2 else "").strip().lower()
+host_arch = (sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "x86_64").strip().lower()
+is_arm = host_arch in ("aarch64", "arm64", "armv8b", "armv8l")
 if target_channel in ("main", "master", ""):
     target_channel = "stable"
 
@@ -691,18 +758,17 @@ try:
             continue
 
         assets = [a for a in r.get("assets", []) if isinstance(a, dict)]
-        app_asset = None
-        for a in assets:
-            name = str(a.get("name", ""))
-            dl_url = str(a.get("browser_download_url", ""))
-            if (
-                dl_url
-                and name.lower().endswith(".appimage")
-                and not name.lower().endswith(".zsync")
-                and not name.lower().endswith(".sha256")
-            ):
-                app_asset = a
-                break
+        asset_names = {str(a.get("name", "")).strip() for a in assets}
+
+        if is_arm:
+            if "ASSella-arm64.AppImage" not in asset_names or "ASSella-arm64.AppImage.zsync" not in asset_names:
+                continue
+            app_asset = next((a for a in assets if str(a.get("name", "")).strip() == "ASSella-arm64.AppImage"), None)
+        else:
+            if "ASSella.AppImage" not in asset_names:
+                continue
+            app_asset = next((a for a in assets if str(a.get("name", "")).strip() == "ASSella.AppImage"), None)
+
         if app_asset is None:
             continue
 
@@ -724,20 +790,6 @@ try:
             if aurl and aname == exact_sha_name:
                 sha_url = aurl
                 break
-        if not sha_url:
-            for a in assets:
-                aname = str(a.get("name", "")).lower()
-                aurl = str(a.get("browser_download_url", ""))
-                if aurl and aname.endswith(".appimage.sha256"):
-                    sha_url = aurl
-                    break
-        if not sha_url:
-            for a in assets:
-                aname = str(a.get("name", "")).lower()
-                aurl = str(a.get("browser_download_url", ""))
-                if aurl and aname.endswith(".sha256"):
-                    sha_url = aurl
-                    break
 
         sv = semver_key(tag, prerelease=bool(r.get("prerelease", False)))
         ts = ts_key(r)
@@ -756,7 +808,7 @@ try:
         sys.exit(0)
 except Exception:
     sys.exit(1)
-' "$channel" "$strict_mode" 2>/dev/null || true)
+' "$channel" "$strict_mode" "$host_arch" 2>/dev/null || true)
         if [ -n "$parsed" ]; then
             local tag_name dl_url sha_val sha_url ts_val
             tag_name=$(printf '%s\n' "$parsed" | sed -n '1p')
@@ -773,8 +825,10 @@ except Exception:
         fi
     elif command -v jq &>/dev/null; then
         local parsed
-        parsed=$(printf '%s' "$rel_json" | jq -r --arg target "${channel:-beta}" '
+        parsed=$(printf '%s' "$rel_json" | jq -r --arg target "${channel:-beta}" --arg arch "$host_arch" '
             (if ($target | ascii_downcase) | (. == "main" or . == "master" or . == "") then "stable" else ($target | ascii_downcase) end) as $tc
+            | ($arch | ascii_downcase) as $a
+            | ($a == "aarch64" or $a == "arm64" or $a == "armv8b" or $a == "armv8l") as $is_arm
             | def norm_branch:
                 (. // "" | ascii_downcase | gsub("^refs/heads/"; "")) as $b
                 | if ($b == "main" or $b == "master") then "main"
@@ -828,8 +882,10 @@ except Exception:
                 | ([ $all_assets[]
                      | select(type == "object")
                      | (.name // "") as $n
+                     | ($n | ascii_downcase) as $nl
                      | (.browser_download_url // "") as $u
-                     | select(($u != "") and ($n | ascii_downcase | (endswith(".appimage") and (endswith(".zsync") | not) and (endswith(".sha256") | not))))
+                     | select(($u != "") and ($nl | (endswith(".appimage") and (endswith(".zsync") | not) and (endswith(".sha256") | not))) and (if $is_arm then ($nl | (endswith("-arm64.appimage") or endswith("-aarch64.appimage"))) else ($nl | (endswith("-arm64.appimage") | not) and (endswith("-aarch64.appimage") | not)) end))
+                     | select(($is_arm == false) or ([ $all_assets[] | select(type == "object") | ((.name // "") | ascii_downcase) | select(. == ($nl + ".zsync")) ] | length > 0))
                      | (((.sha256 // "") | ascii_downcase) as $s1
                         | ((.digest // "") | ascii_downcase | sub("^sha256:"; "")) as $s2
                         | (if ($s1 | test("^[0-9a-f]{64}$")) then $s1
@@ -840,8 +896,6 @@ except Exception:
                 | select($asset != null)
                 | (($asset.name | ascii_downcase) as $an
                    | (([ $all_assets[] | select(type == "object") | select(((.name // "" | ascii_downcase) == ($an + ".sha256")) and ((.browser_download_url // "") != "")) | .browser_download_url ][0])
-                      // ([ $all_assets[] | select(type == "object") | select(((.name // "" | ascii_downcase) | endswith(".appimage.sha256")) and ((.browser_download_url // "") != "")) | .browser_download_url ][0])
-                      // ([ $all_assets[] | select(type == "object") | select(((.name // "" | ascii_downcase) | endswith(".sha256")) and ((.browser_download_url // "") != "")) | .browser_download_url ][0])
                       // "")) as $sha_url
                 | ($r.tag_name | semver_tuple($r.prerelease // false)) as $sv
                 | { ts: ($r.published_at // $r.created_at // ""), sv_num: $sv[0:5], clean: $sv[5], tag: $r.tag_name, url: $asset.url, sha: $asset.sha, sha_url: $sha_url }
@@ -992,8 +1046,478 @@ resolve_beta_and_stable_releases() {
 }
 
 # ------------------------------------------------------------------------------
-#  2. Header & Status Display
+#  2. UI Layer, Logo Animation & Unified Keyboard/Gamepad Input
 # ------------------------------------------------------------------------------
+ui_is_tty() {
+    [ -t 1 ] && [ "${TERM:-}" != "dumb" ]
+}
+
+ui_colors_enabled() {
+    ui_is_tty && [ -z "${NO_COLOR:-}" ]
+}
+
+ui_supports_unicode() {
+    local loc="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
+    case "$loc" in
+        *UTF-8*|*utf-8*|*UTF8*|*utf8*) return 0 ;;
+        C|POSIX) return 1 ;;
+    esac
+    case "${TERM_PROGRAM:-}" in
+        Apple_Terminal|iTerm.app|vscode|WezTerm|Alacritty|kitty|ghostty) return 0 ;;
+    esac
+    if command -v locale &>/dev/null && [ "$(locale charmap 2>/dev/null || true)" = "UTF-8" ]; then
+        return 0
+    fi
+    return 1
+}
+
+ui_distro_color() {
+    ui_colors_enabled || return 0
+    case "${1,,}" in
+        cachyos)             printf '%s' "${ESC}[38;2;0;212;170m" ;;
+        arch|archlinux)      printf '%s' "${ESC}[38;2;23;147;209m" ;;
+        steamos)             printf '%s' "${ESC}[38;2;26;159;255m" ;;
+        bazzite)             printf '%s' "${ESC}[38;2;138;79;255m" ;;
+        endeavouros)         printf '%s' "${ESC}[38;2;140;90;220m" ;;
+        manjaro)             printf '%s' "${ESC}[38;2;53;191;92m" ;;
+        garuda)              printf '%s' "${ESC}[38;2;235;64;120m" ;;
+        fedora|nobara)       printf '%s' "${ESC}[38;2;81;162;218m" ;;
+        ubuntu)              printf '%s' "${ESC}[38;2;233;84;32m" ;;
+        debian)              printf '%s' "${ESC}[38;2;215;10;83m" ;;
+        linuxmint|mint)      printf '%s' "${ESC}[38;2;135;207;62m" ;;
+        pop|pop_os)          printf '%s' "${ESC}[38;2;72;185;199m" ;;
+        opensuse*|suse*)     printf '%s' "${ESC}[38;2;115;186;37m" ;;
+        nixos)               printf '%s' "${ESC}[38;2;82;119;195m" ;;
+        chimeraos|holoiso)   printf '%s' "${ESC}[38;2;255;105;97m" ;;
+        alpine)              printf '%s' "${ESC}[38;2;13;89;127m" ;;
+        void)                printf '%s' "${ESC}[38;2;71;128;97m" ;;
+        gentoo)              printf '%s' "${ESC}[38;2;160;140;210m" ;;
+        *)                   printf '%s' "${PURE_WHITE}" ;;
+    esac
+}
+
+ui_draw_logo_frame() {
+    local phase="$1"
+    local flash="${2:-0}"
+    local move_home="${3:-1}"
+    local frame=""
+    if [ "$move_home" = "1" ] && ui_is_tty; then
+        frame="${ESC}[H"
+    fi
+    local c_left="$CORAL" c_right="$BLUE" c_top="$GOLD" c_fill="$PEACH"
+    local px="██"
+    ui_supports_unicode || px="##"
+
+    if [ "$flash" = "1" ]; then
+        c_left="$PURE_WHITE"; c_right="$PURE_WHITE"; c_top="$PURE_WHITE"; c_fill="$PURE_WHITE"
+    elif [ "$phase" -ge 4 ]; then
+        c_left="$PEACH"; c_right="$PEACH"; c_top="$PEACH"; c_fill="$PEACH"
+    fi
+
+    local y x color cell
+    for y in 0 1 2 3 4 5 6 7; do
+        frame+="  "
+        for x in 0 1 2 3 4 5 6 7 8; do
+            color=""
+            case "$y,$x" in
+                0,4)                     [ "$phase" -ge 2 ] && color="$c_top" ;;
+                1,3|1,5)                 [ "$phase" -ge 2 ] && color="$c_top" ;;
+                1,4)                     [ "$phase" -ge 3 ] && color="$c_fill" ;;
+                2,2|3,1|4,0|5,0|6,1|6,2) [ "$phase" -ge 0 ] && color="$c_left" ;;
+                2,6|3,7|4,8|5,8|6,7|6,6) [ "$phase" -ge 1 ] && color="$c_right" ;;
+                2,3|2,4|2,5|3,2|3,3|3,4|3,5|3,6|4,1|4,2|4,6|4,7|5,1|5,2|5,3|5,5|5,6|5,7)
+                                         [ "$phase" -ge 3 ] && color="$c_fill" ;;
+                4,3|4,4|4,5|5,4)         [ "$phase" -eq 3 ] && color="$CORAL" ;;
+                7,2|7,3|7,5|7,6)         [ "$phase" -ge 3 ] && color="$c_fill" ;;
+            esac
+            if [ -n "$color" ]; then
+                cell="${color}${px}${RESET}"
+            else
+                cell="  "
+            fi
+            frame+="$cell"
+        done
+        frame+="\n"
+    done
+    printf '%b' "$frame"
+}
+
+ui_play_logo_animation() {
+    if ! ui_is_tty || [ "${NO_ANIM:-false}" = true ] || [ -n "${NO_COLOR:-}" ]; then
+        if ui_is_tty; then
+            printf '\n'
+            ui_draw_logo_frame 4 0 0
+            printf '\n'
+        fi
+        return 0
+    fi
+
+    printf '%s%s%s' "${ESC}[?25l" "${ESC}[2J" "${ESC}[H"
+    ui_draw_logo_frame 0 0 1; sleep 0.14
+    ui_draw_logo_frame 1 0 1; sleep 0.14
+    ui_draw_logo_frame 2 0 1; sleep 0.14
+    ui_draw_logo_frame 3 0 1; sleep 0.18
+    ui_draw_logo_frame 3 1 1; sleep 0.08
+    ui_draw_logo_frame 4 0 1; sleep 0.18
+    ui_draw_logo_frame 4 1 1; sleep 0.08
+    ui_draw_logo_frame 4 0 1; sleep 0.25
+    printf '%s\n' "${ESC}[?25h"
+}
+
+ui_print_status_strip() {
+    local arch="${ASSELLA_ARCH:-$(uname -m 2>/dev/null || echo x86_64)}"
+    local d_color steam_badge sls_badge fuse_badge ver_color
+    d_color=$(ui_distro_color "${DISTRO_ID:-unknown}")
+
+    case "${STEAM_TYPE:-none}" in
+        native)  steam_badge="${STEAM_BLUE}native${RESET} ${PURE_WHITE}(steam)${RESET}" ;;
+        flatpak) steam_badge="${FLATPAK_BLUE}flatpak${RESET} ${PURE_WHITE}(steam)${RESET}" ;;
+        snap)    steam_badge="${PURE_WHITE}snap (steam)${RESET}" ;;
+        *)       steam_badge="${PURE_WHITE}not detected (steam)${RESET}" ;;
+    esac
+
+    if [ "${IS_NIXOS:-false}" = true ]; then
+        sls_badge="${DIM}SLSsteam unsupported (NixOS)${RESET}"
+    elif [ "${HEADCRAB_INSTALLED:-false}" = true ]; then
+        sls_badge="${SLS_ORANGE}SLSsteam ok${RESET}"
+    else
+        sls_badge="${PURE_WHITE}SLSsteam not detected${RESET}"
+    fi
+
+    if [ "${IS_NIXOS:-false}" = true ]; then
+        fuse_badge="${SLS_ORANGE}FUSE nixos${RESET}"
+    elif [ "${FUSE_INSTALLED:-false}" = true ]; then
+        fuse_badge="${SLS_ORANGE}FUSE ok${RESET}"
+    else
+        fuse_badge="${PURE_WHITE}FUSE missing${RESET}"
+    fi
+
+    ver_color="$PEACH"
+    case "${LOCAL_VER,,}" in
+        *beta*|*canary*|*dev*|*rc*) ver_color="$SLS_ORANGE" ;;
+        "not installed"|unknown|"") ver_color="$DIM" ;;
+    esac
+
+    printf '  %sASSella Installer%s\n\n' "$BOLD" "$RESET"
+    printf '  %s%s (%s)%s %s|%s %b %s|%s %b %s|%s %b %s|%s %sinstalled - %s%s%s%s\n' \
+        "$d_color" "${DISTRO_NAME:-Generic Linux}" "$arch" "$RESET" \
+        "$DIM" "$RESET" \
+        "$steam_badge" \
+        "$DIM" "$RESET" \
+        "$sls_badge" \
+        "$DIM" "$RESET" \
+        "$fuse_badge" \
+        "$DIM" "$RESET" \
+        "$PURE_WHITE" "$ver_color" "${LOCAL_VER:-Not Installed}" "$RESET"
+
+    if [ "${FUSE_INSTALLED:-false}" = false ] && [ "${IS_NIXOS:-false}" = false ]; then
+        local family cmd
+        family=$(detect_distro_family)
+        cmd="${PKG_FUSE_CMD[$family]:-}"
+        if [ -n "$cmd" ]; then
+            printf '  %s! AppImage requires fuse2:%s %s%s%s\n' "$YELLOW" "$RESET" "$GREEN" "$cmd" "$RESET"
+        else
+            printf '  %s! AppImage requires fuse2 (libfuse.so.2).%s\n' "$YELLOW" "$RESET"
+        fi
+    fi
+    printf '\n'
+}
+
+ui_start_tty_reader() {
+    local fifo="$1"
+    local etx=$'\003'
+    (
+        local b1 b2 b3
+        while IFS= read -r -s -n 1 b1 </dev/tty; do
+            case "$b1" in
+                "$etx")
+                    printf 'INT\n' >"$fifo"
+                    ;;
+                ""|$'\r'|$'\n')
+                    printf 'ENTER\n' >"$fifo"
+                    ;;
+                "$ESC")
+                    if IFS= read -r -s -n 1 -t 0.05 b2 </dev/tty; then
+                        if [ "$b2" = "[" ] && IFS= read -r -s -n 1 -t 0.05 b3 </dev/tty; then
+                            case "$b3" in
+                                A|D) printf 'UP\n' >"$fifo" ;;
+                                B|C) printf 'DOWN\n' >"$fifo" ;;
+                            esac
+                        fi
+                    else
+                        printf 'ESC\n' >"$fifo"
+                    fi
+                    ;;
+                k|K) printf 'UP\n' >"$fifo" ;;
+                j|J) printf 'DOWN\n' >"$fifo" ;;
+                *)   printf 'KEY:%s\n' "$b1" >"$fifo" ;;
+            esac
+        done
+        printf 'EOF\n' >"$fifo"
+    ) 2>/dev/null &
+    TTY_READER_PID=$!
+}
+
+ui_start_gamepad_reader() {
+    local fifo="$1"
+    [ -r /dev/input/js0 ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    python3 - "$fifo" <<'PY' >/dev/null 2>&1 &
+import os, struct, sys, time
+
+fifo_path = sys.argv[1]
+try:
+    fd = os.open("/dev/input/js0", os.O_RDONLY)
+    out = open(fifo_path, "w", buffering=1)
+except OSError:
+    sys.exit(0)
+
+FMT = "IhBB"
+SIZE = struct.calcsize(FMT)
+last_nav = 0.0
+
+while True:
+    try:
+        data = os.read(fd, SIZE)
+    except OSError:
+        break
+    if len(data) < SIZE:
+        break
+    _ts, val, etype, num = struct.unpack(FMT, data)
+    etype_clean = etype & ~0x80
+    if etype & 0x80:
+        continue
+    now = time.monotonic()
+
+    if etype_clean == 1 and val == 1:
+        if num == 0:    out.write("ENTER\n")
+        elif num == 1:  out.write("ESC\n")
+        elif num == 13: out.write("UP\n")
+        elif num == 14: out.write("DOWN\n")
+    elif etype_clean == 2 and num in (1, 7):
+        if val < -16000 and now - last_nav > 0.18:
+            out.write("UP\n")
+            last_nav = now
+        elif val > 16000 and now - last_nav > 0.18:
+            out.write("DOWN\n")
+            last_nav = now
+PY
+    JS_READER_PID=$!
+}
+
+# ui_select_menu RESULT_VAR TITLE HINT_KEYS "color|label" ...
+#   Returns 0 on selection (RESULT_VAR set to 0-based index), or 1 if no interactive TTY / EOF.
+ui_select_menu() {
+    local result_var="$1"
+    local title="$2"
+    local hotkeys="$3"
+    shift 3
+    local entries=("$@")
+    local count=${#entries[@]}
+    local selected=0
+    local i
+
+    if ! ui_is_tty || [ ! -r /dev/tty ]; then
+        return 1
+    fi
+
+    local fifo
+    fifo=$(mktemp -u "${TMPDIR:-/tmp}/assella-ui-fifo.XXXXXX")
+    UI_FIFO="$fifo"
+    mkfifo "$fifo"
+
+    ORIG_STTY=$(stty -g </dev/tty 2>/dev/null || true)
+    stty -echo -icanon </dev/tty 2>/dev/null || true
+    printf '%s' "${ESC}[?25l"
+
+    exec 3<>"$fifo"
+    ui_start_tty_reader "$fifo"
+    ui_start_gamepad_reader "$fifo"
+
+    local rendered_lines=$((count + 4))
+    local first_draw=true
+    local pointer="❯"
+    ui_supports_unicode || pointer=">"
+    local aborted=false
+
+    while true; do
+        if [ "$first_draw" = false ]; then
+            printf '%s' "${ESC}[${rendered_lines}A"
+        fi
+        first_draw=false
+
+        printf '\r\033[K  %b\n' "$title"
+        printf '\r\033[K\n'
+        for ((i = 0; i < count; i++)); do
+            local spec="${entries[$i]}"
+            local cname="${spec%%|*}"
+            local label="${spec#*|}"
+            local ccode="$PURE_WHITE"
+            case "$cname" in
+                green)  ccode="$GREEN" ;;
+                peach)  ccode="$PEACH" ;;
+                orange) ccode="$SLS_ORANGE" ;;
+                white)  ccode="$PURE_WHITE" ;;
+            esac
+
+            if [ "$i" -eq "$selected" ]; then
+                printf '\r\033[K  %s%s %s%s\n' "$ccode$BOLD" "$pointer" "$label" "$RESET"
+            else
+                printf '\r\033[K    %s%s%s\n' "$ccode" "$label" "$RESET"
+            fi
+        done
+        printf '\r\033[K\n'
+        printf '\r\033[K  %s%s%s\n' "$DIM" "↑/↓ or D-Pad · Enter / A · $hotkeys" "$RESET"
+
+        local ev=""
+        if ! IFS= read -r ev <&3; then
+            aborted=true
+            break
+        fi
+
+        case "$ev" in
+            INT)  cleanup; exit 130 ;;
+            EOF)  aborted=true; break ;;
+            UP)   selected=$(( (selected - 1 + count) % count )) ;;
+            DOWN) selected=$(( (selected + 1) % count )) ;;
+            ENTER) break ;;
+            ESC)   selected=$((count - 1)); break ;;
+            KEY:1) selected=0; break ;;
+            KEY:2) [ "$count" -ge 2 ] && { selected=1; break; } ;;
+            KEY:3|KEY:n|KEY:N|KEY:q|KEY:Q) selected=$((count - 1)); break ;;
+            KEY:s|KEY:S) selected=0; break ;;
+            KEY:b|KEY:B) [ "$count" -ge 2 ] && { selected=1; break; } ;;
+            KEY:y|KEY:Y) selected=0; break ;;
+        esac
+    done
+
+    [ -n "${TTY_READER_PID:-}" ] && kill "$TTY_READER_PID" 2>/dev/null || true
+    [ -n "${JS_READER_PID:-}" ] && kill "$JS_READER_PID" 2>/dev/null || true
+    TTY_READER_PID=""
+    JS_READER_PID=""
+    exec 3>&-
+    rm -f "$fifo"
+    UI_FIFO=""
+
+    if [ -n "${ORIG_STTY:-}" ]; then
+        stty "$ORIG_STTY" </dev/tty 2>/dev/null || true
+        ORIG_STTY=""
+    fi
+
+    printf '%s' "${ESC}[${rendered_lines}A"
+    for ((i = 0; i < rendered_lines; i++)); do
+        printf '\r\033[K\n'
+    done
+    printf '%s%s' "${ESC}[${rendered_lines}A" "${ESC}[?25h"
+
+    if [ "$aborted" = true ]; then
+        return 1
+    fi
+    printf -v "$result_var" '%s' "$selected"
+    return 0
+}
+
+ui_draw_progress_frame() {
+    local step="$1" frame="$2" title="$3" label="$4" full="$5" empty="$6"
+    local width=26 trail=8
+    local head=$((step % (width + trail)))
+    local bar="" i=0 age
+
+    while [ "$i" -lt "$width" ]; do
+        age=$((head - i))
+        if [ "$age" -ge 0 ] && [ "$age" -lt "$trail" ]; then
+            case "$age" in
+                0|1) bar+="${GOLD}${full}${RESET}" ;;
+                2|3) bar+="${PEACH}${full}${RESET}" ;;
+                4|5) bar+="${CORAL}${full}${RESET}" ;;
+                *)   bar+="${BLUE}${full}${RESET}" ;;
+            esac
+        else
+            bar+="${DIM}${empty}${RESET}"
+        fi
+        i=$((i + 1))
+    done
+
+    printf '\r\033[K  %s%s%s %s %s%s%s %s%s%s' \
+        "$PEACH" "$frame" "$RESET" "$bar" "$BOLD" "$title" "$RESET" "$DIM" "$label" "$RESET"
+}
+
+ui_run_with_progress() {
+    local title="$1"
+    local done_msg="$2"
+    shift 2
+
+    if ! ui_colors_enabled; then
+        "$@"
+        return $?
+    fi
+
+    local log_file
+    log_file=$(mktemp "${TMPDIR:-/tmp}/assella-step-log.XXXXXX")
+    : >"$log_file"
+
+    "$@" >"$log_file" 2>&1 &
+    local task_pid=$!
+
+    local full="█" empty="░" tick="✓" frame_count=10
+    if ! ui_supports_unicode; then
+        full="#"; empty="-"; tick="ok"; frame_count=4
+    fi
+
+    printf '%s' "${ESC}[?25l"
+    (
+        local step=0 frame label="working"
+        while :; do
+            if [ "$frame_count" -eq 10 ]; then
+                case $((step % 10)) in
+                    0) frame='⠋' ;; 1) frame='⠙' ;; 2) frame='⠹' ;; 3) frame='⠸' ;; 4) frame='⠼' ;;
+                    5) frame='⠴' ;; 6) frame='⠦' ;; 7) frame='⠧' ;; 8) frame='⠇' ;; *) frame='⠏' ;;
+                esac
+            else
+                case $((step % 4)) in
+                    0) frame='-' ;; 1) frame='\' ;; 2) frame='|' ;; *) frame='/' ;;
+                esac
+            fi
+            if [ $((step % 4)) -eq 0 ] && [ -s "$log_file" ]; then
+                label=$(tail -n 1 "$log_file" 2>/dev/null | tr -d '\r' | sed 's/\x1b\[[0-9;]*[mK]//g')
+                [ "${#label}" -gt 48 ] && label="${label:0:45}..."
+            fi
+            ui_draw_progress_frame "$step" "$frame" "$title" "$label" "$full" "$empty"
+            step=$((step + 1))
+            sleep 0.08
+        done
+    ) &
+    UI_PROG_PID=$!
+
+    local rc=0
+    wait "$task_pid" || rc=$?
+
+    kill "$UI_PROG_PID" 2>/dev/null || true
+    wait "$UI_PROG_PID" 2>/dev/null || true
+    UI_PROG_PID=""
+
+    printf '\r\033[K%s' "${ESC}[?25h"
+    if [ "$rc" -eq 0 ]; then
+        printf '  %s%s%s %s\n' "$GREEN" "$tick" "$RESET" "$done_msg"
+    else
+        printf '  %s✗%s %s failed\n\n' "$RED" "$RESET" "$title"
+        cat "$log_file"
+    fi
+    rm -f "$log_file"
+    return "$rc"
+}
+
+ui_print_steamos_bazzite_warning() {
+    if [ "${DISTRO_ID:-}" = "steamos" ] || [ "${DISTRO_ID:-}" = "bazzite" ] || [ "${IS_STEAM_DECK:-false}" = true ]; then
+        printf '\n  %s%s! %s Warning:%s Since you are on %s, make sure you do NOT reboot or boot\n' \
+            "$YELLOW" "$BOLD" "${DISTRO_NAME:-SteamOS}" "$RESET" "${DISTRO_NAME:-SteamOS}"
+        printf '    into Game Mode if things are not working in Desktop Mode — it can cause a bootloop.\n'
+        printf '    In case of a bootloop, check the TTY recovery guide at:\n'
+        printf '    %shttps://assella.pages.dev/recovery-tty%s\n' "$CYAN" "$RESET"
+    fi
+}
+
 show_header() {
     clear 2>/dev/null || true
     echo -e "${CYAN}${BOLD}===================================================================${NC}"
@@ -1478,8 +2002,21 @@ _attempt_download_and_verify() {
     esac
 }
 
+_ui_finalize_desktop_and_icons() {
+    write_desktop_entry
+    install_application_icon
+    if command -v update-desktop-database &>/dev/null; then
+        update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+    fi
+    if [ -z "${XDG_CURRENT_DESKTOP:-}" ] || [[ "$XDG_CURRENT_DESKTOP" != *"KDE"* ]]; then
+        command -v gtk-update-icon-cache &>/dev/null && gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+    fi
+}
+
 do_install() {
-    echo -e "\n${YELLOW}[INFO] Installing / Updating ASSella...${NC}"
+    if [ "${UI_PROGRESS_MODE:-false}" != true ]; then
+        echo -e "\n${YELLOW}[INFO] Installing / Updating ASSella...${NC}"
+    fi
     mkdir -p "$INSTALL_DESTINATION"
 
     check_disk_space "$INSTALL_DESTINATION" || {
@@ -1487,7 +2024,7 @@ do_install() {
         return 1
     }
 
-    if [ -f "$INSTALL_DESTINATION/ACCELA.AppImage" ] && [ ! -L "$INSTALL_DESTINATION/ACCELA.AppImage" ]; then
+    if [ "${UI_PROGRESS_MODE:-false}" != true ] && [ -f "$INSTALL_DESTINATION/ACCELA.AppImage" ] && [ ! -L "$INSTALL_DESTINATION/ACCELA.AppImage" ]; then
         echo -e "${YELLOW}[INFO] Existing ACCELA.AppImage found (will back up after verification).${NC}"
     fi
 
@@ -1520,11 +2057,13 @@ do_install() {
             echo -e "${YELLOW}[INFO] Pass --allow-downgrade to force installing an older release.${NC}"
             pause_if_interactive
             return 1
-        elif [ "$local_ch" != "$target_ch" ]; then
+        elif [ "$local_ch" != "$target_ch" ] && [ "${UI_PROGRESS_MODE:-false}" != true ]; then
             echo -e "${YELLOW}[WARN] Switching channel ($local_ch -> $target_ch): installing $LATEST_VER over $LOCAL_VER.${NC}"
         fi
     fi
-    echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER)...${NC}"
+    if [ "${UI_PROGRESS_MODE:-false}" != true ]; then
+        echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER)...${NC}"
+    fi
 
     TMP_DIR="$(mktemp -d -t assella-install-XXXXXX)" || {
         echo -e "${RED}[ERROR] Could not create temporary download directory.${NC}"
@@ -1544,16 +2083,28 @@ do_install() {
     local dl_rc=0
     local allow_prompt="true"
     [ "$can_try_r2" = true ] && allow_prompt="false"
-    _attempt_download_and_verify "$DL_TMP" "$allow_prompt" || dl_rc=$?
+    [ "${UI_PROGRESS_MODE:-false}" = true ] && allow_prompt="false"
+
+    if [ "${UI_PROGRESS_MODE:-false}" = true ]; then
+        ui_run_with_progress "Downloading" "Downloaded & verified ASSella ${LATEST_VER}" \
+            _attempt_download_and_verify "$DL_TMP" "$allow_prompt" || dl_rc=$?
+    else
+        _attempt_download_and_verify "$DL_TMP" "$allow_prompt" || dl_rc=$?
+    fi
 
     if [ "$dl_rc" -ne 0 ] && [ "$can_try_r2" = true ]; then
         echo -e "${YELLOW}[WARN] Primary download/verification failed; trying Cloudflare R2 mirror...${NC}"
         local requested_ver="$LATEST_VER"
         local requested_ts="${LATEST_PUBLISHED_AT:-}"
         if _fallback_to_r2_release "$TARGET_CHANNEL" "$requested_ver" "$requested_ts"; then
-            echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER) from Cloudflare R2...${NC}"
             dl_rc=0
-            _attempt_download_and_verify "$DL_TMP" "true" || dl_rc=$?
+            if [ "${UI_PROGRESS_MODE:-false}" = true ]; then
+                ui_run_with_progress "Downloading (R2)" "Downloaded & verified ASSella ${LATEST_VER} (R2)" \
+                    _attempt_download_and_verify "$DL_TMP" "false" || dl_rc=$?
+            else
+                echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER) from Cloudflare R2...${NC}"
+                _attempt_download_and_verify "$DL_TMP" "true" || dl_rc=$?
+            fi
         fi
     fi
 
@@ -1606,7 +2157,9 @@ do_install() {
     # Compatibility symlink ACCELA.AppImage -> ASSella.AppImage
     rm -f "$INSTALL_DESTINATION/ACCELA.AppImage"
     ln -s "ASSella.AppImage" "$INSTALL_DESTINATION/ACCELA.AppImage"
-    echo -e "${GREEN}[INFO] Created compatibility symlink ACCELA.AppImage -> ASSella.AppImage.${NC}"
+    if [ "${UI_PROGRESS_MODE:-false}" != true ]; then
+        echo -e "${GREEN}[INFO] Created compatibility symlink ACCELA.AppImage -> ASSella.AppImage.${NC}"
+    fi
 
     # Handle NixOS Launcher Script
     local EXEC_COMMAND=""
@@ -1614,15 +2167,42 @@ do_install() {
         echo -e "${YELLOW}[INFO] Configuring NixOS compatibility launcher...${NC}"
         cat >"$NIXOS_LAUNCHER" <<'EOL'
 #!/usr/bin/env bash
+# Ensure Nix profile paths are in PATH for desktop GUI launchers
+_nix_user="${USER:-${LOGNAME:-$(id -un 2>/dev/null || whoami)}}"
+export PATH="$HOME/.nix-profile/bin:/etc/profiles/per-user/$_nix_user/bin:/run/current-system/sw/bin:$PATH"
+
+APPIMAGE="$HOME/.local/share/ACCELA/ASSella.AppImage"
+
 if command -v steam-run &>/dev/null; then
-    exec steam-run "$HOME/.local/share/ACCELA/ASSella.AppImage" "$@"
+    exec steam-run "$APPIMAGE" "$@"
 elif command -v appimage-run &>/dev/null; then
-    exec appimage-run "$HOME/.local/share/ACCELA/ASSella.AppImage" "$@"
-else
-    echo "NixOS detected! Please install steam-run or appimage-run to launch ASSella:"
-    echo "  nix-shell -p steam-run --run 'steam-run ~/.local/share/ACCELA/ASSella.AppImage'"
-    read -p "Press Enter to exit..."
+    exec appimage-run "$APPIMAGE" "$@"
+elif [ -n "${NIX_LD:-}" ] && [ -e "$NIX_LD" ]; then
+    exec "$APPIMAGE" "$@"
+elif command -v nix-shell &>/dev/null; then
+    _tmp_sentinel=$(mktemp -t assella_nix.XXXXXX 2>/dev/null || true)
+    nix-shell -p steam-run --run 'rm -f "$1"; exec steam-run "$2" "${@:3}"' -- "$_tmp_sentinel" "$APPIMAGE" "$@"
+    _status=$?
+    if [ -n "$_tmp_sentinel" ] && [ ! -f "$_tmp_sentinel" ]; then
+        exit "$_status"
+    fi
+    [ -n "$_tmp_sentinel" ] && rm -f "$_tmp_sentinel" 2>/dev/null || true
 fi
+
+msg="NixOS detected! Please install 'steam-run' or 'appimage-run' (or enable programs.nix-ld) in your NixOS configuration to launch ASSella."
+if command -v zenity &>/dev/null; then
+    zenity --error --text="$msg" --title="ASSella Launcher"
+elif command -v kdialog &>/dev/null; then
+    kdialog --error "$msg" --title "ASSella Launcher"
+elif command -v notify-send &>/dev/null; then
+    notify-send -u critical "ASSella Launcher" "$msg"
+else
+    echo "$msg" >&2
+    if [ -t 0 ]; then
+        read -p "Press Enter to exit..." dummy
+    fi
+fi
+exit 1
 EOL
         chmod +x "$NIXOS_LAUNCHER"
         EXEC_COMMAND="$NIXOS_LAUNCHER %u"
@@ -1630,20 +2210,25 @@ EOL
         EXEC_COMMAND="$INSTALL_DESTINATION/ACCELA.AppImage %u"
     fi
 
-    # Desktop Shortcut Creation
-    echo -e "${YELLOW}[INFO] Configuring desktop shortcut ($PRIMARY_DESKTOP_ENTRY)...${NC}"
-    write_desktop_entry
+    if [ "${UI_PROGRESS_MODE:-false}" = true ]; then
+        ui_run_with_progress "Integrating" "Installed desktop entry & icons" \
+            _ui_finalize_desktop_and_icons || true
+    else
+        # Desktop Shortcut Creation
+        echo -e "${YELLOW}[INFO] Configuring desktop shortcut ($PRIMARY_DESKTOP_ENTRY)...${NC}"
+        write_desktop_entry
 
-    # Application Icon Download
-    echo -e "${YELLOW}[INFO] Applying application icon...${NC}"
-    install_application_icon
+        # Application Icon Download
+        echo -e "${YELLOW}[INFO] Applying application icon...${NC}"
+        install_application_icon
 
-    # Update system desktop database
-    if command -v update-desktop-database &>/dev/null; then
-        update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
-    fi
-    if [ -z "${XDG_CURRENT_DESKTOP:-}" ] || [[ "$XDG_CURRENT_DESKTOP" != *"KDE"* ]]; then
-        command -v gtk-update-icon-cache &>/dev/null && gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+        # Update system desktop database
+        if command -v update-desktop-database &>/dev/null; then
+            update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+        fi
+        if [ -z "${XDG_CURRENT_DESKTOP:-}" ] || [[ "$XDG_CURRENT_DESKTOP" != *"KDE"* ]]; then
+            command -v gtk-update-icon-cache &>/dev/null && gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+        fi
     fi
 
     # Check FUSE
@@ -1658,9 +2243,18 @@ EOL
         fi
     fi
 
-    echo -e "\n${GREEN}${BOLD}=========================================${NC}"
-    echo -e "${GREEN}${BOLD}[OK] ASSella has been installed & patched!${NC}"
-    echo -e "${GREEN}${BOLD}=========================================${NC}\n"
+    if [ "${UI_PROGRESS_MODE:-false}" = true ]; then
+        local tick="✓"
+        ui_supports_unicode || tick="ok"
+        printf '\n  %s%s ASSella %s ready!%s\n' "$BOLD" "$GREEN" "$LATEST_VER" "$RESET"
+        ui_print_steamos_bazzite_warning
+        printf '\n'
+    else
+        echo -e "\n${GREEN}${BOLD}=========================================${NC}"
+        echo -e "${GREEN}${BOLD}[OK] ASSella has been installed & patched!${NC}"
+        echo -e "${GREEN}${BOLD}=========================================${NC}\n"
+        ui_print_steamos_bazzite_warning
+    fi
 
     get_local_version
 }
@@ -1706,6 +2300,7 @@ do_uninstall() {
     rm -f "$INSTALL_DESTINATION/ASSella.AppImage"
     rm -f "$INSTALL_DESTINATION/ACCELA.AppImage"
     rm -f "$INSTALL_DESTINATION/version"
+    rm -f "$VERSION_TS_FILE"
     rm -f "$NIXOS_LAUNCHER"
     rm -f "$PRIMARY_DESKTOP_ENTRY"
     rm -f "$LEGACY_DESKTOP_ENTRY"
@@ -1791,120 +2386,153 @@ run_diagnostics() {
 # ------------------------------------------------------------------------------
 interactive_flow() {
     INTERACTIVE=true
-    show_header
-    echo -e "${BOLD}${CYAN}Welcome to the ASSella Setup Wizard${NC}\n"
 
-    # Step 1: Headcrab (SLSsteam)
-    echo -e "${BOLD}--- [Step 1/2] Headcrab (SLSsteam) Setup ---${NC}"
-    check_headcrab_status
-    local default_hc="n"
-    local hc_prompt=""
-    if [ "$HEADCRAB_INSTALLED" = true ]; then
-        echo -e "  Status: ${GREEN}Installed ($SLS_CONFIG_DIR)${NC}"
-        hc_prompt="Do you want to re-run / update Headcrab (SLSsteam)? [y/N]: "
-        default_hc="n"
+    # Run release resolution in background while logo animates
+    local rel_tmp
+    rel_tmp=$(mktemp "${TMPDIR:-/tmp}/assella-rel-preflight.XXXXXX")
+    (
+        resolve_beta_and_stable_releases >/dev/null 2>&1 || true
+        printf 'BETA_VER=%q\nBETA_URL=%q\nBETA_SHA256=%q\nBETA_SHA256_URL=%q\nBETA_PUBLISHED_AT=%q\n' \
+            "${BETA_VER:-}" "${BETA_URL:-}" "${BETA_SHA256:-}" "${BETA_SHA256_URL:-}" "${BETA_PUBLISHED_AT:-}" >"$rel_tmp"
+        printf 'STABLE_VER=%q\nSTABLE_URL=%q\nSTABLE_SHA256=%q\nSTABLE_SHA256_URL=%q\nSTABLE_PUBLISHED_AT=%q\n' \
+            "${STABLE_VER:-}" "${STABLE_URL:-}" "${STABLE_SHA256:-}" "${STABLE_SHA256_URL:-}" "${STABLE_PUBLISHED_AT:-}" >>"$rel_tmp"
+    ) &
+    local rel_pid=$!
+
+    ui_play_logo_animation
+    wait "$rel_pid" 2>/dev/null || true
+    if [ -s "$rel_tmp" ]; then
+        # shellcheck source=/dev/null
+        . "$rel_tmp"
+    fi
+    rm -f "$rel_tmp"
+
+    ui_print_status_strip
+
+    local tick="✓"
+    ui_supports_unicode || tick="ok"
+
+    # Step 1: Headcrab / SLSsteam (automatically skipped on NixOS)
+    if [ "${IS_NIXOS:-false}" = true ]; then
+        printf '  %s!%s %sNixOS detected:%s %sskipping Headcrab (SLSsteam) setup%s\n' \
+            "$YELLOW" "$RESET" "$BOLD" "$RESET" "$DIM" "$RESET"
     else
-        echo -e "  Status: ${YELLOW}Not Detected${NC}"
-        echo -e "  ${CYAN}Headcrab is required for SLSsteam integration and game launching.${NC}"
-        hc_prompt="Do you want to install Headcrab (SLSsteam) now? [Y/n]: "
-        default_hc="y"
-    fi
-
-    local run_hc=""
-    run_hc=$(prompt_user "$hc_prompt" "$default_hc")
-    if [[ "$run_hc" =~ ^[yY] ]]; then
-        run_headcrab_installer
-    else
-        echo -e "${YELLOW}[INFO] Skipping Headcrab installation.${NC}"
-    fi
-
-    # FUSE 2 Check
-    check_and_warn_fuse
-
-    echo ""
-    # Step 2: ASSella
-    echo -e "${BOLD}--- [Step 2/2] ASSella Application Setup ---${NC}"
-    get_local_version
-    resolve_beta_and_stable_releases
-    echo -e "  Currently Installed: ${YELLOW}$LOCAL_VER${NC}"
-    if [ -n "${BETA_URL:-}" ]; then
-        echo -e "  ${BOLD}[1]${NC} Latest Beta:   ${CYAN}$BETA_VER${NC} (${CYAN}Beta / Pre-release${NC})"
-    else
-        echo -e "  ${BOLD}[1]${NC} Latest Beta:   ${YELLOW}Unavailable${NC}"
-    fi
-    if [ -n "${STABLE_URL:-}" ]; then
-        echo -e "  ${BOLD}[2]${NC} Latest Stable: ${GREEN}$STABLE_VER${NC} (${GREEN}Stable / Main${NC})"
-    else
-        echo -e "  ${BOLD}[2]${NC} Latest Stable: ${YELLOW}Unavailable${NC}"
-    fi
-
-    local default_track="1"
-    if [ "${TARGET_CHANNEL:-}" = "stable" ] && [ -n "${STABLE_URL:-}" ]; then
-        default_track="2"
-    elif [ -z "${BETA_URL:-}" ] && [ -n "${STABLE_URL:-}" ]; then
-        default_track="2"
-    fi
-
-    local track_choice=""
-    track_choice=$(prompt_user "Choose release to install [1=Beta / 2=Stable / n=Skip] (default: $default_track): " "$default_track")
-    local chosen_ch=""
-    case "${track_choice,,}" in
-        1|b|beta)
-            chosen_ch="beta"
-            ;;
-        2|s|stable)
-            chosen_ch="stable"
-            ;;
-        n|no|skip|q)
-            echo -e "${YELLOW}[INFO] Skipping ASSella installation.${NC}"
-            ;;
-        *)
-            if [[ "$track_choice" =~ ^[yY] ]]; then
-                [ "$default_track" = "2" ] && chosen_ch="stable" || chosen_ch="beta"
-            else
-                echo -e "${YELLOW}[INFO] Skipping ASSella installation.${NC}"
+        local hc_choice=0
+        if [ "$HEADCRAB_INSTALLED" = true ]; then
+            if ! ui_select_menu hc_choice \
+                "${BOLD}Headcrab (SLSsteam)${RESET} ${DIM}|${RESET} ${GREEN}Installed${RESET}" \
+                "1=Skip · 2=Update · 3/Esc=Exit" \
+                "orange|Skip (keep current)" \
+                "green|Update / Re-run Headcrab" \
+                "white|Exit installer"; then
+                echo -e "${YELLOW}[INFO] Interactive TTY unavailable; skipping Headcrab.${NC}"
+                hc_choice=0
             fi
-            ;;
+            case "$hc_choice" in
+                0) printf '  %s%s%s %sHeadcrab kept%s %s(skipped)%s\n' \
+                       "$GREEN" "$tick" "$RESET" "$SLS_ORANGE" "$RESET" "$DIM" "$RESET" ;;
+                1) run_headcrab_installer ;;
+                2) printf '  %sExiting installer.%s\n' "$PURE_WHITE" "$RESET"; exit 0 ;;
+            esac
+        else
+            if ! ui_select_menu hc_choice \
+                "${BOLD}Headcrab (SLSsteam)${RESET} ${DIM}|${RESET} ${PURE_WHITE}Not Detected${RESET}" \
+                "1/y=Install · 2=Skip · 3/Esc=Exit" \
+                "green|Install Headcrab (Recommended)" \
+                "orange|Skip for now" \
+                "white|Exit installer"; then
+                echo -e "${YELLOW}[INFO] Interactive TTY unavailable; skipping Headcrab.${NC}"
+                hc_choice=1
+            fi
+            case "$hc_choice" in
+                0) run_headcrab_installer ;;
+                1) printf '  %s!%s %sHeadcrab skipped%s\n' "$SLS_ORANGE" "$RESET" "$SLS_ORANGE" "$RESET" ;;
+                2) printf '  %sExiting installer.%s\n' "$PURE_WHITE" "$RESET"; exit 0 ;;
+            esac
+        fi
+    fi
+
+    # Step 2: ASSella Installer (Stable always first, green + recommended; Beta peach; Skip orange)
+    local local_ver_color="$PEACH"
+    case "${LOCAL_VER,,}" in
+        *beta*|*canary*|*dev*|*rc*) local_ver_color="$SLS_ORANGE" ;;
+        "not installed"|unknown|"") local_ver_color="$DIM" ;;
     esac
 
-    if [ -n "$chosen_ch" ]; then
-        TARGET_CHANNEL="$chosen_ch"
-        if [ "$chosen_ch" = "beta" ] && [ -n "${BETA_URL:-}" ]; then
-            PRESELECTED_VER="$BETA_VER"
-            PRESELECTED_URL="$BETA_URL"
-            PRESELECTED_SHA256="${BETA_SHA256:-}"
-            PRESELECTED_SHA256_URL="${BETA_SHA256_URL:-}"
-            PRESELECTED_PUBLISHED_AT="${BETA_PUBLISHED_AT:-}"
-        elif [ "$chosen_ch" = "stable" ] && [ -n "${STABLE_URL:-}" ]; then
-            PRESELECTED_VER="$STABLE_VER"
-            PRESELECTED_URL="$STABLE_URL"
-            PRESELECTED_SHA256="${STABLE_SHA256:-}"
-            PRESELECTED_SHA256_URL="${STABLE_SHA256_URL:-}"
-            PRESELECTED_PUBLISHED_AT="${STABLE_PUBLISHED_AT:-}"
+    local stable_label="Stable    Unavailable"
+    local beta_label="Beta      Unavailable"
+    [ -n "${STABLE_URL:-}" ] && stable_label="Stable    ${STABLE_VER} (recommended)"
+    [ -n "${BETA_URL:-}" ] && beta_label="Beta      ${BETA_VER}"
+
+    local rel_choice=0
+    if ! ui_select_menu rel_choice \
+        "${BOLD}ASSella Installer${RESET} ${DIM}|${RESET} ${PURE_WHITE}local installed :${RESET} ${local_ver_color}${LOCAL_VER}${RESET}" \
+        "1/s=Stable · 2/b=Beta · 3/n=Skip" \
+        "green|${stable_label}" \
+        "peach|${beta_label}" \
+        "orange|Skip"; then
+        echo -e "${YELLOW}[INFO] Interactive TTY unavailable; skipping interactive selection.${NC}"
+        return 0
+    fi
+
+    local chosen_ch=""
+    case "$rel_choice" in
+        0) [ -n "${STABLE_URL:-}" ] && chosen_ch="stable" ;;
+        1) [ -n "${BETA_URL:-}" ] && chosen_ch="beta" ;;
+        2) printf '  %s!%s %sASSella update skipped%s\n\n' "$SLS_ORANGE" "$RESET" "$SLS_ORANGE" "$RESET"
+           return 0 ;;
+    esac
+
+    if [ -z "$chosen_ch" ]; then
+        echo -e "${YELLOW}[WARN] Selected release is currently unavailable.${NC}"
+        return 1
+    fi
+
+    TARGET_CHANNEL="$chosen_ch"
+    if [ "$chosen_ch" = "beta" ] && [ -n "${BETA_URL:-}" ]; then
+        PRESELECTED_VER="$BETA_VER"
+        PRESELECTED_URL="$BETA_URL"
+        PRESELECTED_SHA256="${BETA_SHA256:-}"
+        PRESELECTED_SHA256_URL="${BETA_SHA256_URL:-}"
+        PRESELECTED_PUBLISHED_AT="${BETA_PUBLISHED_AT:-}"
+        printf '  %s%s%s %sASSella %s%s\n\n' "$GREEN" "$tick" "$RESET" "$PEACH" "$PRESELECTED_VER" "$RESET"
+    elif [ "$chosen_ch" = "stable" ] && [ -n "${STABLE_URL:-}" ]; then
+        PRESELECTED_VER="$STABLE_VER"
+        PRESELECTED_URL="$STABLE_URL"
+        PRESELECTED_SHA256="${STABLE_SHA256:-}"
+        PRESELECTED_SHA256_URL="${STABLE_SHA256_URL:-}"
+        PRESELECTED_PUBLISHED_AT="${STABLE_PUBLISHED_AT:-}"
+        printf '  %s%s%s %sASSella %s%s\n\n' "$GREEN" "$tick" "$RESET" "$GREEN" "$PRESELECTED_VER" "$RESET"
+    fi
+
+    local prev_allow_dg="$ALLOW_DOWNGRADE"
+    if [ -n "${PRESELECTED_VER:-}" ] && _is_installed_version "${LOCAL_VER:-}" && ! _release_satisfies_request "$TARGET_CHANNEL" "$PRESELECTED_VER" "$LOCAL_VER" "${PRESELECTED_PUBLISHED_AT:-}" "${LOCAL_PUBLISHED_AT:-}"; then
+        local dg_choice=1
+        if ! ui_select_menu dg_choice \
+            "${YELLOW}Downgrade Warning${RESET} ${DIM}|${RESET} ${LOCAL_VER} -> ${PRESELECTED_VER} (${TARGET_CHANNEL})" \
+            "1/y=Proceed · 2/n=Cancel" \
+            "orange|Proceed with downgrade" \
+            "white|Cancel"; then
+            dg_choice=1
         fi
-        local proceed_install="y"
-        if [ -n "${PRESELECTED_VER:-}" ] && _is_installed_version "${LOCAL_VER:-}" && ! _release_satisfies_request "$TARGET_CHANNEL" "$PRESELECTED_VER" "$LOCAL_VER" "${PRESELECTED_PUBLISHED_AT:-}" "${LOCAL_PUBLISHED_AT:-}"; then
-            echo -e "${YELLOW}[WARN] Selected release $PRESELECTED_VER ($TARGET_CHANNEL) is older than installed $LOCAL_VER.${NC}"
-            proceed_install=$(prompt_user "Do you want to proceed with downgrading from $LOCAL_VER to $PRESELECTED_VER? [y/N]: " "n")
-        fi
-        if [[ "$proceed_install" =~ ^[yY] ]]; then
-            local prev_allow_dg="$ALLOW_DOWNGRADE"
-            if [ -n "${PRESELECTED_VER:-}" ] && _is_installed_version "${LOCAL_VER:-}" && ! _release_satisfies_request "$TARGET_CHANNEL" "$PRESELECTED_VER" "$LOCAL_VER" "${PRESELECTED_PUBLISHED_AT:-}" "${LOCAL_PUBLISHED_AT:-}"; then
-                ALLOW_DOWNGRADE=true
-            fi
-            do_install || true
-            ALLOW_DOWNGRADE="$prev_allow_dg"
+        if [ "$dg_choice" -eq 0 ]; then
+            ALLOW_DOWNGRADE=true
         else
             PRESELECTED_VER=""
             PRESELECTED_URL=""
             PRESELECTED_SHA256=""
             PRESELECTED_SHA256_URL=""
             PRESELECTED_PUBLISHED_AT=""
-            echo -e "${YELLOW}[INFO] Downgrade cancelled. Skipping ASSella installation.${NC}"
+            printf '  %s!%s %sDowngrade cancelled.%s\n' "$SLS_ORANGE" "$RESET" "$SLS_ORANGE" "$RESET"
+            return 0
         fi
     fi
 
-    echo -e "\n${GREEN}${BOLD}Setup completed!${NC}\n"
+    local prev_ui_prog="$UI_PROGRESS_MODE"
+    ui_colors_enabled && UI_PROGRESS_MODE=true
+    do_install || true
+    UI_PROGRESS_MODE="$prev_ui_prog"
+    ALLOW_DOWNGRADE="$prev_allow_dg"
 }
 
 interactive_menu() {
@@ -2056,6 +2684,9 @@ main() {
                 ;;
             --allow-downgrade)
                 ALLOW_DOWNGRADE=true
+                ;;
+            --no-anim)
+                NO_ANIM=true
                 ;;
             --help|-h)
                 action="help"

@@ -23,7 +23,7 @@ from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.settings_tabs.windows_depot_warning import WindowsDepotWarningDialog
 from utils.helpers import create_checkbox_setting
-from utils.paths import is_valid_download_directory
+from utils.paths import is_valid_download_directory, is_blacklisted_system_path, normalize_to_library_root
 
 
 def _scrolled(page: QWidget) -> QScrollArea:
@@ -181,39 +181,55 @@ def create_downloads_tab(dialog) -> QWidget:
 
     # Load saved value (default is "Ask Every Time" / "")
     current_val = dialog.settings.value("default_download_directory", "")
-    if not current_val or not is_valid_download_directory(current_val):
-        if current_val:
-            dialog.settings.setValue("default_download_directory", "")
+    if current_val and is_blacklisted_system_path(current_val):
+        dialog.settings.setValue("default_download_directory", "")
+        current_val = ""
+
+    if not current_val:
         dialog.dl_location_combo.setCurrentIndex(0)
     elif current_val in detected_libs:
         idx = dialog.dl_location_combo.findData(current_val)
         if idx >= 0:
             dialog.dl_location_combo.setCurrentIndex(idx)
     else:
-        dialog.dl_location_combo.insertItem(1, _fmt_path(current_val), current_val)
+        lbl = _fmt_path(current_val) if is_valid_download_directory(current_val) else f"[Offline] {_fmt_path(current_val)}"
+        dialog.dl_location_combo.insertItem(1, lbl, current_val)
         dialog.dl_location_combo.setCurrentIndex(1)
+
+    dialog._prev_dl_location_idx = dialog.dl_location_combo.currentIndex()
 
     def on_dl_location_changed(index):
         data = dialog.dl_location_combo.itemData(index)
         if data == "custom":
             path = ThemedFileDialog.getExistingDirectory(dialog, "Select Custom Download Location")
-            if path and is_valid_download_directory(path):
-                existing_idx = dialog.dl_location_combo.findData(path)
-                if existing_idx >= 0:
-                    dialog.dl_location_combo.setCurrentIndex(existing_idx)
+            if path:
+                norm = normalize_to_library_root(path)
+                if is_valid_download_directory(norm):
+                    steam_helpers.ensure_steam_library(norm)
+                    existing_idx = dialog.dl_location_combo.findData(norm)
+                    if existing_idx >= 0:
+                        dialog.dl_location_combo.setCurrentIndex(existing_idx)
+                        dialog._prev_dl_location_idx = existing_idx
+                    else:
+                        insert_pos = dialog.dl_location_combo.count() - 1
+                        dialog.dl_location_combo.insertItem(insert_pos, _fmt_path(norm), norm)
+                        dialog.dl_location_combo.setCurrentIndex(insert_pos)
+                        dialog._prev_dl_location_idx = insert_pos
                 else:
-                    insert_pos = dialog.dl_location_combo.count() - 1
-                    dialog.dl_location_combo.insertItem(insert_pos, _fmt_path(path), path)
-                    dialog.dl_location_combo.setCurrentIndex(insert_pos)
-            elif path:
-                ThemedMessageBox.warning(
-                    dialog,
-                    "Invalid Location",
-                    "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
-                )
-                dialog.dl_location_combo.setCurrentIndex(0)
+                    ThemedMessageBox.warning(
+                        dialog,
+                        "Invalid Location",
+                        "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
+                    )
+                    dialog.dl_location_combo.blockSignals(True)
+                    dialog.dl_location_combo.setCurrentIndex(dialog._prev_dl_location_idx)
+                    dialog.dl_location_combo.blockSignals(False)
             else:
-                dialog.dl_location_combo.setCurrentIndex(0)
+                dialog.dl_location_combo.blockSignals(True)
+                dialog.dl_location_combo.setCurrentIndex(dialog._prev_dl_location_idx)
+                dialog.dl_location_combo.blockSignals(False)
+        else:
+            dialog._prev_dl_location_idx = index
 
     dialog.dl_location_combo.currentIndexChanged.connect(on_dl_location_changed)
     size_control(dialog.dl_location_combo, "md")
@@ -459,7 +475,13 @@ def create_downloads_tab(dialog) -> QWidget:
     # being squeezed (and clipped) when the window is short.
     dl_subtabs.addTab(_scrolled(general_widget), "General")
 
-    # ── Subtab 2: Depot selection ──
+    # ── Subtab 2: Stealth ──
+    from ui.dialogs.settings_tabs.stealth_tab import create_stealth_subtab
+
+    dialog.dl_subtabs = dl_subtabs
+    dialog.stealth_subtab_index = dl_subtabs.addTab(create_stealth_subtab(dialog), "Stealth")
+
+    # ── Subtab 3: Depot selection ──
     hide_widget = QWidget()
     hide_layout = QVBoxLayout(hide_widget)
     hide_layout.setContentsMargins(0, 8, 0, 0)
@@ -636,6 +658,9 @@ def create_downloads_tab(dialog) -> QWidget:
         cached_holder.layout().addWidget(create_cached_page(dialog))
 
     dl_subtabs.currentChanged.connect(_build_cached)
+
+    if getattr(dialog, "_initial_subtab", "") == "stealth" and hasattr(dialog, "stealth_subtab_index"):
+        dl_subtabs.setCurrentIndex(dialog.stealth_subtab_index)
 
     layout.addWidget(dl_subtabs)
     dialog.tab_widget.addTab(tab, "Downloads")

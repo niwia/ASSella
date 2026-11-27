@@ -29,26 +29,13 @@ SLSSTEAM_API_PIPE = "/tmp/SLSsteam.API"
 
 
 def check_slssteam_active() -> bool:
-    """Check if SLSsteam.so is loaded in a running Steam process."""
+    """Check if SLSsteam.so is loaded in a running Steam process or active on its API pipe."""
     try:
-        for pid_dir in os.listdir("/proc"):
-            if not pid_dir.isdigit():
-                continue
-            try:
-                with open(f"/proc/{pid_dir}/comm", "r", encoding="utf-8", errors="ignore") as f:
-                    if f.read().strip() != "steam":
-                        continue
-            except OSError:
-                continue
-            try:
-                with open(f"/proc/{pid_dir}/maps", "r", encoding="utf-8", errors="ignore") as f:
-                    if "SLSsteam.so" in f.read():
-                        return True
-            except OSError:
-                continue
-    except OSError:
-        pass
-    return False
+        from utils.slssteam_integration import is_slssteam_process_active
+        return is_slssteam_process_active()
+    except Exception as e:
+        logger.debug(f"[NativeHandoff] check_slssteam_active: {e}")
+        return False
 
 
 def get_sls_config_dir() -> Optional[Path]:
@@ -217,6 +204,7 @@ def perform_steam_handoff(
     dest_path: str = "",
     progress_cb: Optional[Callable[[str], None]] = None,
     auto_install: bool = False,
+    warnings_out: Optional[List[str]] = None,
 ) -> Tuple[bool, str]:
     """
     Perform the complete handoff flow to the Steam client:
@@ -280,14 +268,15 @@ def perform_steam_handoff(
     # Resolve depots if none explicitly selected
     from utils.dlc_helpers import is_dlc_only_mode, filter_dlc_depots_only
     is_dlc = is_dlc_only_mode(appid) or bool(game_data.get("is_dlc_only"))
-    depots_meta = (game_data.get("depots") or {}) if game_data else {}
+    depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
 
     if not selected_depots:
+        from utils.depot_utils import extract_depot_ids
         all_d = set(str(d) for d in depot_keys.keys())
         if manifest_gids:
             all_d.update(str(d) for d in manifest_gids.keys())
         if game_data and game_data.get("depots"):
-            all_d.update(str(d) for d in game_data["depots"].keys())
+            all_d.update(extract_depot_ids(game_data["depots"]))
         if is_dlc:
             selected_depots = filter_dlc_depots_only(all_d, appid, depots_meta=depots_meta)
         else:
@@ -297,15 +286,54 @@ def perform_steam_handoff(
 
     # Exclude any depots without decryption keys (except shared redists) to avoid Steam DepotWithoutKey errors
     from utils.plugin_games import SHARED_REDISTS
-    valid_keyed_depots = {str(d) for d, k in depot_keys.items() if k and str(d) != str(appid)} | SHARED_REDISTS
-    unkeyed_depots = [str(d) for d in selected_depots if str(d) not in valid_keyed_depots]
-    if unkeyed_depots:
-        _emit(f"Warning: Excluded {len(unkeyed_depots)} depot(s) without keys (e.g. blacklisted/unavailable): {unkeyed_depots}")
-        logger.warning(f"[SteamHandoff] Excluded {len(unkeyed_depots)} unkeyed depot(s) for {appid}: {unkeyed_depots}")
-        selected_depots = [d for d in selected_depots if str(d) in valid_keyed_depots]
 
-    if not selected_depots and not is_dlc:
-        return False, f"No valid keyed content depots could be resolved for {game_name} ({appid}). Steam cannot download without valid depots."
+    def _partition_keyed(selected):
+        valid = {
+            str(d)
+            for d, k in depot_keys.items()
+            if k and str(d) != str(appid)
+        } | SHARED_REDISTS
+        excluded = [str(d) for d in selected if str(d) not in valid]
+        return [str(d) for d in selected if str(d) in valid], excluded
+
+    original_selected = list(selected_depots)
+    selected_depots, unkeyed_depots = _partition_keyed(original_selected)
+
+    if unkeyed_depots:
+        # The cache may simply be older than the selected depot. Refresh it
+        # once before telling the user content is unavailable.
+        fresh_keys, fresh_gids = task_helper._fetch_hubcap_keys(
+            game_data, appid, force_refresh=True
+        )
+        if fresh_keys:
+            depot_keys.update(fresh_keys)
+            manifest_gids.update(fresh_gids)
+            selected_depots, unkeyed_depots = _partition_keyed(original_selected)
+
+    unkeyed_warning = ""
+    if unkeyed_depots:
+        unkeyed_warning = (
+            f"{len(unkeyed_depots)} selected depot(s) were excluded because no "
+            f"decryption key is available: {', '.join(unkeyed_depots)}. "
+            "Steam will install the remaining keyed depots, but content in "
+            "these depots may be missing until a key becomes available."
+        )
+        _emit(f"Warning: {unkeyed_warning}")
+        logger.warning(
+            f"[SteamHandoff] Excluded {len(unkeyed_depots)} unkeyed depot(s) "
+            f"for {appid}: {unkeyed_depots}"
+        )
+        if warnings_out is not None:
+            warnings_out.append(unkeyed_warning)
+
+    if not selected_depots and (not is_dlc or bool(original_selected)):
+        reason = (
+            f"No valid keyed content depots could be resolved for {game_name} "
+            f"({appid}). Steam cannot download without valid depots."
+        )
+        if unkeyed_warning:
+            reason = f"{reason} {unkeyed_warning}"
+        return False, reason
 
     # AdditionalDepots gets only actual depots. DecryptionKeys keeps depot keys AND the root AppID key.
     active_keys = {str(d): k for d, k in depot_keys.items()}
@@ -390,11 +418,14 @@ def perform_steam_handoff(
             f"The game and depot keys are unlocked in your Steam library, ready to install."
         )
 
+    if unkeyed_warning:
+        success_msg = f"{success_msg}\n\nWarning: {unkeyed_warning}"
+
     # Register into plugin_library so AT0-M and library management track it
     try:
         from utils.plugin_games import register_plugin_game
         depot_names: Dict[str, str] = {}
-        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
         for did in (selected_depots or []):
             meta = depots_meta.get(did) or depots_meta.get(int(did) if str(did).isdigit() else did) or {}
             if isinstance(meta, dict) and meta.get("desc"):

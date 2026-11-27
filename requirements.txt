@@ -18,8 +18,6 @@ cffi==2.1.1
     #   curl-cffi
 charset-normalizer==3.5.2
     # via requests
-configobj==5.0.9
-    # via -r requirements.in
 cryptography==50.0.2
     # via -r requirements.in
 curl-cffi==0.17.0
@@ -46,8 +44,6 @@ psutil==7.2.2
     # via -r requirements.in
 pycparser==3.11
     # via cffi
-pycryptodome==3.23.0
-    # via -r requirements.in
 pycryptodomex==3.24.0
     # via steam
 pygments==2.21.0

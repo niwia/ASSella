@@ -265,6 +265,13 @@ def create_sls_tab(dialog) -> QWidget:
         "Uses 0: 480 in SLSsteam FakeAppIds to map all unowned games to Spacewar (480) for online networking features.",
     )
     dialog.all_games_online_checkbox.setChecked(current_all_online)
+    from utils.yaml_config_manager import is_slssteam_config_management_enabled as _is_cfg_mgmt
+    _cfg_ready = _is_cfg_mgmt() and get_user_config_path().exists()
+    if not _cfg_ready:
+        dialog.all_games_online_checkbox.setEnabled(False)
+        dialog.all_games_online_checkbox.setToolTip(
+            "Requires SLSsteam config management and an existing config.yaml."
+        )
 
     def _on_all_games_online_toggled(state):
         is_checked = bool(state)

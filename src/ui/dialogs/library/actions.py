@@ -12,7 +12,8 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSlot, QPropertyAnimation, QEasingCurve
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QIcon
+from utils.paths import Paths
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -29,12 +30,6 @@ try:
     from core import morrenus_api
 except ImportError:
     morrenus_api = None
-
-try:
-    from core.steam_helpers import slssteam_api_send
-except ImportError:
-    def slssteam_api_send(_cmd):
-        return None
 
 try:
     from utils.helpers import get_base_path
@@ -142,35 +137,41 @@ class LibraryActionsMixin:
 
         count = len(self._selected_appids)
 
-        act_select_all = QAction("✓  Select All", menu)
+        act_select_all = QAction("Select All", menu)
+        act_select_all.setIcon(QIcon(str(Paths.icon("check.svg"))))
         act_select_all.triggered.connect(self._on_select_all_action_clicked)
         menu.addAction(act_select_all)
 
         menu.addSeparator()
 
-        act_move_atom = QAction("→  Move to AT0-M", menu)
+        act_move_atom = QAction("Move to AT0-M", menu)
+        act_move_atom.setIcon(QIcon(str(Paths.icon("archive.svg"))))
         act_move_atom.setEnabled(count > 0)
         act_move_atom.triggered.connect(self._on_move_to_atom_action_clicked)
         menu.addAction(act_move_atom)
 
-        act_update = QAction("↻  Update Selected", menu)
+        act_update = QAction("Update Selected", menu)
+        act_update.setIcon(QIcon(str(Paths.icon("refresh.svg"))))
         act_update.setEnabled(count > 0)
         act_update.triggered.connect(self._on_update_action_clicked)
         menu.addAction(act_update)
 
-        act_uninstall = QAction("✕  Uninstall Selected", menu)
+        act_uninstall = QAction("Uninstall Selected", menu)
+        act_uninstall.setIcon(QIcon(str(Paths.icon("delete_outline.svg"))))
         act_uninstall.setEnabled(count > 0)
         act_uninstall.triggered.connect(self._on_uninstall_action_clicked)
         menu.addAction(act_uninstall)
 
         menu.addSeparator()
 
-        act_clear = QAction("↩  Clear Selection", menu)
+        act_clear = QAction("Clear Selection", menu)
+        act_clear.setIcon(QIcon(str(Paths.icon("restore.svg"))))
         act_clear.setEnabled(count > 0)
         act_clear.triggered.connect(self._on_clear_selection_clicked)
         menu.addAction(act_clear)
 
-        act_exit = QAction("✕  Exit Multi-Select", menu)
+        act_exit = QAction("Exit Multi-Select", menu)
+        act_exit.setIcon(QIcon(str(Paths.icon("close.svg"))))
         act_exit.triggered.connect(lambda: self._toggle_select_mode(False))
         menu.addAction(act_exit)
 
@@ -229,7 +230,8 @@ class LibraryActionsMixin:
         menu.addAction(act_select)
 
         if self._select_mode:
-            act_select_all = QAction("Select All (✓)", menu)
+            act_select_all = QAction("Select All", menu)
+            act_select_all.setIcon(QIcon(str(Paths.icon("check.svg"))))
             act_select_all.triggered.connect(self._on_select_all_action_clicked)
             menu.addAction(act_select_all)
 
@@ -323,6 +325,12 @@ class LibraryActionsMixin:
                 self._show_pending_atom_dialog(game_data)
             return
 
+        # Registered-but-not-downloaded ASSella game: its own dialog
+        if game_data.get("assella_pending"):
+            if not self._select_mode and not self._dialog_open:
+                self._show_pending_assella_dialog(game_data)
+            return
+
         # In select mode: toggle selection, don't open dialog
         if self._select_mode:
             appid = str(game_data.get("appid", "0"))
@@ -359,6 +367,23 @@ class LibraryActionsMixin:
             dlg.exec()
             if dlg.removed:
                 self._refresh_game_list()
+        finally:
+            self._dialog_open = False
+
+    def _show_pending_assella_dialog(self, game_data: dict) -> None:
+        from ui.dialogs.assella_pending_dialog import AssellaPendingDialog
+
+        self._dialog_open = True
+        try:
+            dlg = AssellaPendingDialog(game_data, self, getattr(self, "accent_color", "#a1c9fd"))
+            dlg.exec()
+            if getattr(dlg, "removed", False):
+                name = game_data.get("game_name") or f"App {game_data.get('appid')}"
+                if hasattr(self, "info_label") and self.info_label:
+                    self.info_label.setText(f"[OK] Removed {name} from AdditionalApps")
+                self._refresh_game_list()
+            elif getattr(dlg, "download_requested", False):
+                self._fetch_game_manifest(game_data)
         finally:
             self._dialog_open = False
 
@@ -691,7 +716,8 @@ class LibraryActionsMixin:
         try:
             if mode == "dlc_data":
                 from utils.yaml.dlc import add_dlc_data_batch
-                add_dlc_data_batch(config_path, appid, dlc_dict)
+                if not add_dlc_data_batch(config_path, appid, dlc_dict):
+                    raise RuntimeError(f"Failed to write DlcData section into {config_path}")
             else:
                 from utils.yaml.apps import add_additional_apps_batch
                 apps_list = [(did, dname) for did, dname in dlc_dict.items()]
@@ -1560,6 +1586,9 @@ class LibraryActionsMixin:
         if game_data.get("atom_pending"):
             self._show_pending_atom_dialog(game_data)
             return
+        if game_data.get("assella_pending"):
+            self._show_pending_assella_dialog(game_data)
+            return
 
         # For Steam tab games, offer DLC download and open folder options
         if getattr(self, "_active_tab", "") == "steam" or game_data.get("is_steam_tab"):
@@ -1698,32 +1727,102 @@ class LibraryActionsMixin:
         c_data = opts.get("compat", False)
         c_saves = opts.get("saves", False)
         c_wipe_sls = opts.get("wipe_sls", False)
+        c_delete_files = opts.get("delete_files", True)
+        c_shortcuts = opts.get("shortcuts", True)
 
-        if c_wipe_sls_only:
+        if not opts:
+            from ui.dialogs.uninstall_confirm_dialog import UninstallConfirmDialog
+            dlg = UninstallConfirmDialog(parent, game_data=game_data)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            c_wipe_sls_only = dlg.should_wipe_sls_only()
+            c_delete_files = dlg.should_delete_game_files()
+            c_data = dlg.should_wipe_prefix()
+            c_saves = dlg.should_remove_saves()
+            c_wipe_sls = dlg.should_remove_sls()
+            c_shortcuts = dlg.should_remove_shortcuts()
+
+            target_dlc_ids = dlg.get_target_dlc_ids()
+            if target_dlc_ids is not None:
+                game_data = dict(game_data)
+                game_data["_dlc_uninstall_ids"] = target_dlc_ids
+
+            if dlg.compatdata_path:
+                game_data = dict(game_data)
+                game_data["_resolved_compatdata"] = dlg.compatdata_path
+
+            if c_wipe_sls_only:
+                progress_title = "Removing integrations..."
+            elif is_dlc_only:
+                progress_title = "Uninstalling DLC..."
+            else:
+                progress_title = "Uninstalling game..."
+
+        elif c_wipe_sls_only:
+            # Fallback path resolution for AT0-M titles when invoked directly via opts
+            install_path = game_data.get("install_path")
+            if not install_path or not os.path.exists(install_path):
+                try:
+                    from utils.plugin_games import get_atom_game_install_info
+                    atom_info = get_atom_game_install_info(appid)
+                    if atom_info:
+                        install_path = atom_info.get("common_path") or atom_info.get("install_path")
+                except Exception as e:
+                    logger.debug(f"[LibraryActions] Could not resolve AT0-M install info: {e}")
+
+            compatdata_path = None
+            if platform.system() == "Linux" and appid and appid not in ("0", "N/A", "unknown"):
+                try:
+                    from core.steam_helpers import get_steam_libraries
+                    for lib in get_steam_libraries() or []:
+                        cp = os.path.join(lib, "steamapps", "compatdata", appid)
+                        if os.path.exists(cp):
+                            compatdata_path = cp
+                            break
+                except Exception as e:
+                    logger.debug(f"[LibraryActions] Error checking compatdata: {e}")
+
             confirm_title = "Take away my sins"
             confirm_msg = (
                 f"Are you sure you want to remove SLS integrations for '{game_name}'?\n\n"
-                "• Removes game from SLS config (SLS Online and EOS Proxy integrations will be reset as well)\n"
-                "• Removes AppTokens, .DepotDownloader folder, and .depot tracking\n\n"
-                "Note: Game files, saves, achievements, and Proton prefix will NOT be deleted."
+                "[Will Be Removed]\n"
+                "• SLSsteam configuration entries (AdditionalApps, Depots, DecryptionKeys)\n"
+                "• AT0-M plugin library registration\n"
+                "• ASSella markers (.assella, .DepotDownloader) and tracking metadata\n"
+                "• Injected proxy DLLs (EOS & Goldberg restored to genuine binaries)\n\n"
+                "[Will Be Preserved]\n"
+                f"• Game directory: {install_path or 'Intact'} (100% intact)\n"
+                "• Steam app manifest: Adopted natively (StateFlags=6)\n"
             )
+            if compatdata_path:
+                confirm_msg += f"• Proton prefix (Windows saves): {compatdata_path}\n"
+            else:
+                confirm_msg += "• Proton prefix: Intact / not modified\n"
+            confirm_msg += "• Steam Cloud saves & achievements (intact)\n"
             progress_title = "Removing integrations..."
-        else:
-            confirm_title = "Confirm Uninstall"
-            confirm_msg = self.game_manager.get_uninstall_confirmation_message(
-                game_data, remove_compatdata=c_data, remove_saves=c_saves
-            )
-            progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
 
-        reply = ThemedMessageBox.question(
-            parent,
-            confirm_title,
-            confirm_msg,
-            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-        )
-        if reply != ThemedMessageBox.StandardButton.Yes:
-            return
-        c_wipe_sls = opts.get("wipe_sls", False)
+            if not opts.get("skip_confirm"):
+                reply = ThemedMessageBox.question(
+                    parent,
+                    confirm_title,
+                    confirm_msg,
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                )
+                if reply != ThemedMessageBox.StandardButton.Yes:
+                    return
+            c_wipe_sls = opts.get("wipe_sls", False)
+
+        elif opts.get("from_advanced"):
+            c_data = opts.get("compat", False)
+            c_saves = opts.get("saves", False)
+            c_wipe_sls = opts.get("wipe_sls", True)
+            c_delete_files = opts.get("delete_files", True)
+            c_shortcuts = opts.get("shortcuts", True)
+            progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
+        else:
+            c_wipe_sls = True
+            progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
 
         self._uninstall_progress_dialog = ThemedProgressDialog(
             progress_title, None, 0, 0, parent
@@ -1731,24 +1830,47 @@ class LibraryActionsMixin:
         self._uninstall_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self._uninstall_progress_dialog.show()
 
-        self.executor.submit(self._uninstall_game_async, game_data, c_data, c_saves, c_wipe_sls, c_wipe_sls_only)
+        self.executor.submit(
+            self._uninstall_game_async,
+            game_data,
+            c_data,
+            c_saves,
+            c_wipe_sls,
+            c_wipe_sls_only,
+            c_delete_files,
+            c_shortcuts,
+        )
 
     def _uninstall_game_async(
-        self, game_data: dict, c_data: bool, c_saves: bool, c_wipe_sls: bool = False, c_wipe_sls_only: bool = False
+        self,
+        game_data: dict,
+        c_data: bool,
+        c_saves: bool,
+        c_wipe_sls: bool = False,
+        c_wipe_sls_only: bool = False,
+        remove_game_files: bool = True,
+        remove_shortcuts: bool = True,
     ) -> None:
         """Background task to uninstall game."""
         try:
+            self._last_uninstall_summary = None
             if c_wipe_sls_only:
                 success, err = self._wipe_sls_only(game_data)
+                self._last_uninstall_summary = getattr(LibraryActionsMixin, "last_wipe_summary", None)
                 if success and self.game_manager:
                     appid = str(game_data.get("appid", ""))
                     if appid:
                         self.game_manager.remove_game(appid)
             else:
                 success, err = self.game_manager.uninstall_game(
-                    game_data, remove_compatdata=c_data, remove_saves=c_saves,
-                    remove_sls=c_wipe_sls
+                    game_data,
+                    remove_compatdata=c_data,
+                    remove_saves=c_saves,
+                    remove_sls=c_wipe_sls,
+                    remove_game_files=remove_game_files,
+                    remove_shortcuts=remove_shortcuts,
                 )
+                self._last_uninstall_summary = getattr(self.game_manager, "last_uninstall_summary", None)
             self.uninstall_complete.emit(success, str(err) if err else "")
         except Exception as e:
             self.uninstall_complete.emit(False, str(e))
@@ -1761,7 +1883,14 @@ class LibraryActionsMixin:
 
         parent = self._dialog_parent()
         if success:
-            ThemedMessageBox.information(parent, "Success", "Operation completed.")
+            summary = getattr(self, "_last_uninstall_summary", None)
+            if not summary and hasattr(self, "game_manager"):
+                summary = getattr(self.game_manager, "last_uninstall_summary", None)
+            ThemedMessageBox.information(
+                parent,
+                "Uninstall Complete",
+                summary or "Operation completed successfully."
+            )
             if self._details_dialog:
                 try:
                     self._details_dialog.accept()
@@ -1770,6 +1899,8 @@ class LibraryActionsMixin:
             self._refresh_game_list()
         else:
             ThemedMessageBox.critical(parent, "Error", f"Failed: {error}")
+
+    last_wipe_summary = None
 
     @staticmethod
     def _wipe_sls_only(game_data: dict) -> tuple:
@@ -1780,6 +1911,15 @@ class LibraryActionsMixin:
         appid = str(game_data.get("appid", "")).strip()
         install_path = game_data.get("install_path", "")
         errors = []
+
+        if not install_path or not os.path.exists(install_path):
+            try:
+                from utils.plugin_games import get_atom_game_install_info
+                atom_info = get_atom_game_install_info(appid)
+                if atom_info:
+                    install_path = atom_info.get("common_path") or atom_info.get("install_path") or ""
+            except Exception as e:
+                logger.debug(f"Could not resolve AT0-M install info in wipe_sls_only: {e}")
 
         # 1. Discover all associated DLC AppIDs and Depot IDs
         target_ids = {appid} if appid and appid not in ("0", "N/A", "unknown") else set()
@@ -1813,7 +1953,7 @@ class LibraryActionsMixin:
             from utils.helpers import get_base_path
             depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
             if depot_file.exists():
-                for line in depot_file.read_text().splitlines():
+                for line in depot_file.read_text(encoding="utf-8", errors="replace").splitlines():
                     parts = line.split(":")
                     if parts and parts[0].strip().isdigit():
                         depot_ids.add(parts[0].strip())
@@ -1883,16 +2023,58 @@ class LibraryActionsMixin:
                 except Exception as e:
                     logger.debug(f"Failed to unregister plugin game {appid} in wipe_sls_only: {e}")
 
-            if platform.system() == "Linux":
-                try:
-                    for aid in ({appid} | dlc_ids):
-                        if aid and aid.isdigit():
-                            slssteam_api_send(f"uninstall|{aid}")
-                except Exception as api_err:
-                    logger.warning(f"Failed to send SLSsteam uninstall API trigger: {api_err}")
+            # Notify SLSsteam of config updates without dispatching uninstall commands to Steam client
+            try:
+                from utils.sls_bridge import SLSBridge
+                SLSBridge.notify_reload()
+            except Exception as notify_err:
+                logger.debug(f"SLS reload notification error in wipe_sls_only: {notify_err}")
         except Exception as e:
             logger.error(f"Error cleaning SLS config for {appid}: {e}", exc_info=True)
             errors.append(f"SLS config: {e}")
+
+        # Prime existing appmanifest ACF file for Steam native adoption if present
+        acf_adopted = False
+        if appid and appid not in ("0", "N/A", "unknown"):
+            try:
+                from core.steam_helpers import get_steam_libraries
+                from utils.steam_acf import set_acf_state_flags
+                libs = get_steam_libraries() or []
+                lib_p = game_data.get("library_path")
+                if lib_p and lib_p not in libs:
+                    libs.append(lib_p)
+                for lib in libs:
+                    acf_path = Path(lib) / "steamapps" / f"appmanifest_{appid}.acf"
+                    if acf_path.is_file():
+                        set_acf_state_flags(acf_path, 6)
+                        acf_adopted = True
+                        logger.info(f"I bought the game: Set StateFlags=6 on {acf_path} for Steam adoption")
+            except Exception as acf_err:
+                logger.debug(f"Failed to prime ACF for {appid} in wipe_sls_only: {acf_err}")
+
+        # On Windows, clean GreenLuma AppList files if wrapper mode is enabled
+        if platform.system() == "Windows" and appid and appid.isdigit():
+            try:
+                from utils.yaml_config_manager import is_greenluma_wrapper_mode_enabled
+                if is_greenluma_wrapper_mode_enabled():
+                    from core.steam_helpers import find_steam_install
+                    steam_path = find_steam_install()
+                    if steam_path:
+                        app_list_dir = os.path.join(steam_path, "AppList")
+                        if os.path.isdir(app_list_dir):
+                            for fname in os.listdir(app_list_dir):
+                                if fname.endswith(".txt"):
+                                    fpath = os.path.join(app_list_dir, fname)
+                                    try:
+                                        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                                            c = f.read().strip()
+                                        if c in target_ids:
+                                            os.remove(fpath)
+                                            logger.info(f"I bought the game: Removed GreenLuma AppList file {fpath}")
+                                    except Exception as f_err:
+                                        logger.debug(f"Failed removing GreenLuma file {fpath}: {f_err}")
+            except Exception as gl_err:
+                logger.debug(f"GreenLuma AppList cleanup failed in wipe_sls_only: {gl_err}")
 
         # 3. Restore original EOS binaries and remove EOS proxy (if applied)
         if install_path and os.path.isdir(install_path):
@@ -1991,6 +2173,59 @@ class LibraryActionsMixin:
         except Exception as _set_err:
             logger.debug(f"Failed to clear settings keys for appid {appid}: {_set_err}")
 
+        # 8. Clear update status cache for the game and its target IDs
+        try:
+            from utils.update_status_cache import get_update_status_cache
+            usc = get_update_status_cache()
+            for tid in target_ids:
+                usc.clear_status(str(tid))
+            usc.save()
+        except Exception as _usc_err:
+            logger.debug(f"Failed to clear update status cache in wipe_sls_only: {_usc_err}")
+
+        compatdata_path = None
+        if platform.system() == "Linux" and appid and appid not in ("0", "N/A", "unknown"):
+            try:
+                from core.steam_helpers import get_steam_libraries
+                for lib in get_steam_libraries() or []:
+                    cp = os.path.join(lib, "steamapps", "compatdata", appid)
+                    if os.path.exists(cp):
+                        compatdata_path = cp
+                        break
+            except Exception as e:
+                logger.debug(f"Error checking compatdata in wipe_sls_only: {e}")
+
+        summary_lines = [
+            f"Cleaned integrations for '{game_data.get('game_name', appid)}'.",
+            "",
+            "[Cleaned]",
+            "• SLSsteam configuration entries",
+            "• AT0-M plugin library registration",
+            "• ASSella & DepotDownloader markers",
+            f"• Depot tracking metadata ({appid}.depot)",
+        ]
+        if platform.system() == "Windows":
+            summary_lines.append("• GreenLuma AppList entries (if present)")
+        summary_lines.extend([
+            "",
+            "[Preserved & Adopted]",
+            f"• Game directory: {install_path or 'Intact'} (100% intact)",
+        ])
+        if acf_adopted:
+            summary_lines.append("• Steam app manifest: Primed for native verification (StateFlags=6)")
+        else:
+            summary_lines.append("• Steam app manifest: Steam will discover existing files upon install")
+        if compatdata_path:
+            summary_lines.append(f"• Proton prefix (Windows saves): {compatdata_path} (intact)")
+        else:
+            summary_lines.append("• Proton prefix: Intact / not modified")
+        summary_lines.extend([
+            "• Local & Steam Cloud saves (intact)",
+            "",
+            "Please restart Steam so your legitimate purchase can verify and adopt the installed files.",
+        ])
+        LibraryActionsMixin.last_wipe_summary = "\n".join(summary_lines)
+
         if errors:
             return False, "; ".join(errors)
         return True, None
@@ -2066,8 +2301,15 @@ class LibraryActionsMixin:
         elif acf_existed:
             try:
                 from utils.steam_acf import ensure_acf_has_installed_depots
+                from utils.dlc_helpers import get_saved_depot_selection
 
-                depot_ids = game_data.get("depot_ids") or []
+                depot_ids = (
+                    game_data.get("depot_ids")
+                    or game_data.get("selected_depots_list")
+                    or get_saved_depot_selection(appid)
+                    or list((game_data.get("installed_depots") or {}).keys())
+                    or []
+                )
                 status = ensure_acf_has_installed_depots(
                     acf, appid, depot_ids, game_data
                 )

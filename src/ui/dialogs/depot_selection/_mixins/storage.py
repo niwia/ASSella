@@ -35,14 +35,10 @@ class StorageMixin:
             else ""
         )
 
-        storage_paths = storage_targets.candidate_drives(def_dir, self.preferred_library_path)
+        storage_paths = storage_targets.candidate_drives(def_dir, self.preferred_library_path) or []
         self._storage_paths = storage_paths
         self._storage_btn_group = QButtonGroup(self)
         self._storage_btn_group.setExclusive(True)
-
-        if not storage_paths:
-            layout.addStretch(1)
-            return
 
         # Locked storage display (verify / update / DLC flows over installed
         # games): greyed-out label showing the install location, no choice.
@@ -95,6 +91,7 @@ class StorageMixin:
 
         self._storage_buttons = {}
         self._more_storage_combo = None
+        self._custom_storage_path = None
 
         total_storages = len(storage_paths)
         max_direct_buttons = 3
@@ -122,6 +119,8 @@ class StorageMixin:
                 target_path = storage_paths[btn_id]
                 self.selected_storage_path = target_path
                 logger.info(f"Storage library selected via button [{btn_id}]: {target_path}")
+                if self._custom_storage_btn:
+                    self._custom_storage_btn.setChecked(False)
                 if self._more_storage_combo:
                     self._more_storage_combo.blockSignals(True)
                     self._more_storage_combo.setCurrentIndex(-1)
@@ -147,6 +146,8 @@ class StorageMixin:
                     if chosen_path:
                         self.selected_storage_path = chosen_path
                         logger.info(f"Storage library selected via dropdown: {chosen_path}")
+                        if self._custom_storage_btn:
+                            self._custom_storage_btn.setChecked(False)
                         checked_btn = self._storage_btn_group.checkedButton()
                         if checked_btn:
                             self._storage_btn_group.setExclusive(False)
@@ -156,40 +157,91 @@ class StorageMixin:
             self._more_storage_combo.currentIndexChanged.connect(_on_combo_changed)
             layout.addWidget(self._more_storage_combo, 1)
 
-        if total_storages > 1:
-            self.remember_storage_chk = QCheckBox("Remember choice")
-            self.remember_storage_chk.setChecked(False)
-            self.remember_storage_chk.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.remember_storage_chk.setToolTip("Use this library from now on without asking.\nChange it in Settings → Downloads.")
-            self.remember_storage_chk.setStyleSheet("""
-                QCheckBox {
-                    font-size: 8pt;
-                    color: rgba(255, 255, 255, 0.7);
-                    spacing: 5px;
-                    border: none;
-                    background: transparent;
-                }
-                QCheckBox:focus {
-                    border: none;
-                    outline: none;
-                }
-                QCheckBox::indicator {
-                    width: 13px;
-                    height: 13px;
-                    border: none;
-                    border-radius: 3px;
-                    background: rgba(255, 255, 255, 0.12);
-                    outline: none;
-                }
-                QCheckBox::indicator:hover {
-                    background: rgba(255, 255, 255, 0.22);
-                }
-                QCheckBox::indicator:checked {
-                    background: %s;
-                    border: none;
-                }
-            """ % self.accent_color)
-            layout.addWidget(self.remember_storage_chk)
+        # Custom directory selection button (hidden in AT0-M mode)
+        self._custom_storage_btn = QPushButton("Custom...")
+        self._custom_storage_btn.setCheckable(True)
+        self._custom_storage_btn.setFixedHeight(28)
+        self._custom_storage_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._custom_storage_btn.setToolTip("Select a custom directory or external drive")
+        self._custom_storage_btn.setStyleSheet(_get_storage_btn_style())
+        self.selected_is_standalone = False
+
+        def _on_custom_btn_clicked():
+            from ui.dialogs.themed_file_dialog import ThemedFileDialog
+            from ui.dialogs.themed_message_box import ThemedMessageBox
+            from utils.paths import is_valid_download_directory
+            from core.steam_helpers import is_path_in_steam_library
+
+            chosen_dir = ThemedFileDialog.getExistingDirectory(self, "Select Installation Directory / Steam Library")
+            if not chosen_dir:
+                if self._custom_storage_path and self.selected_storage_path == self._custom_storage_path:
+                    self._custom_storage_btn.setChecked(True)
+                else:
+                    self._custom_storage_btn.setChecked(False)
+                    if self.selected_storage_path in self._storage_buttons:
+                        self._storage_buttons[self.selected_storage_path].setChecked(True)
+                return
+
+            real_p = os.path.realpath(os.path.expanduser(chosen_dir))
+            if not is_valid_download_directory(real_p):
+                ThemedMessageBox.warning(
+                    self,
+                    "Invalid Location",
+                    "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
+                )
+                self._custom_storage_btn.setChecked(bool(self._custom_storage_path and self.selected_storage_path == self._custom_storage_path))
+                return
+
+            self._custom_storage_path = real_p
+            self.selected_storage_path = real_p
+            is_in_steam = is_path_in_steam_library(real_p)
+            self.selected_is_standalone = not is_in_steam
+
+            if is_in_steam:
+                target = storage_targets.describe(real_p)
+                btn_text = f"{target.label} ({target.free})" if target.free else target.label
+                self._custom_storage_btn.setToolTip(target.tooltip)
+            else:
+                folder_name = os.path.basename(real_p) or "Folder"
+                btn_text = f"{folder_name} (Standalone)"
+                self._custom_storage_btn.setToolTip(f"Standalone custom folder: {real_p}")
+
+            self._custom_storage_btn.setText(btn_text)
+            self._custom_storage_btn.setChecked(True)
+
+            self._storage_btn_group.setExclusive(False)
+            for b in self._storage_btn_group.buttons():
+                b.setChecked(False)
+            self._storage_btn_group.setExclusive(True)
+
+            if self._more_storage_combo:
+                self._more_storage_combo.blockSignals(True)
+                self._more_storage_combo.setCurrentIndex(-1)
+                self._more_storage_combo.blockSignals(False)
+
+            logger.info(f"Custom storage library selected: {real_p} (standalone={self.selected_is_standalone})")
+
+        self._custom_storage_btn.clicked.connect(_on_custom_btn_clicked)
+        layout.addWidget(self._custom_storage_btn, 1)
+
+        self.remember_storage_chk = QCheckBox("Remember choice")
+        self.remember_storage_chk.setChecked(False)
+        self.remember_storage_chk.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remember_storage_chk.setToolTip("Use this library from now on without asking.\nChange it in Settings -> Downloads.")
+        self.remember_storage_chk.setStyleSheet("""
+            QCheckBox {
+                font-size: 8pt;
+                color: rgba(255, 255, 255, 0.7);
+                spacing: 5px;
+                border: none;
+                background: transparent;
+            }
+            QCheckBox:focus {
+                border: none;
+                outline: none;
+            }
+        """)
+        layout.addWidget(self.remember_storage_chk)
 
         # Pre-select priority: preferred library path (zip confirmation or job
         # metadata), then the library the game is already installed in, then the
@@ -217,11 +269,18 @@ class StorageMixin:
         self.selected_storage_path = default_target
         if default_target in self._storage_buttons:
             self._storage_buttons[default_target].setChecked(True)
-        elif self._more_storage_combo:
+        elif self._more_storage_combo and any(self._more_storage_combo.itemData(i) == default_target for i in range(self._more_storage_combo.count())):
             for idx in range(self._more_storage_combo.count()):
                 if self._more_storage_combo.itemData(idx) == default_target:
                     self._more_storage_combo.setCurrentIndex(idx)
                     break
+        elif default_target and getattr(self, "_custom_storage_btn", None):
+            self._custom_storage_path = default_target
+            target = storage_targets.describe(default_target)
+            btn_text = f"{target.label} ({target.free})" if target.free else target.label
+            self._custom_storage_btn.setText(btn_text)
+            self._custom_storage_btn.setToolTip(target.tooltip)
+            self._custom_storage_btn.setChecked(True)
 
     def get_selected_storage(self) -> str:
         """Returns the selected storage destination path, or None."""
@@ -230,3 +289,12 @@ class StorageMixin:
     def should_remember_storage(self) -> bool:
         """Whether the user checked the 'Remember choice' toggle for storage."""
         return bool(getattr(self, "remember_storage_chk", None) and self.remember_storage_chk.isChecked())
+
+    def is_standalone_storage_selected(self) -> bool:
+        """Whether the user selected a standalone custom folder."""
+        from core.steam_helpers import is_path_in_steam_library
+        if getattr(self, "selected_is_standalone", False):
+            return True
+        if self.selected_storage_path and not is_path_in_steam_library(self.selected_storage_path):
+            return True
+        return False

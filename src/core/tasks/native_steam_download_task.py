@@ -68,6 +68,7 @@ class NativeSteamDownloadTask(QObject):
     def __init__(self):
         super().__init__()
         self._is_running = True
+        self._terminal_signal_emitted = False
         self.process = None
         self.process_pid = None
         self.total_download_size_for_this_job = 0
@@ -81,6 +82,19 @@ class NativeSteamDownloadTask(QObject):
         self._appid: str = ""
         self._game_name: str = ""
         self._acf_path: Optional[Path] = None
+        self.unkeyed_depots: List[str] = []
+
+    def _emit_completed(self):
+        if self._terminal_signal_emitted:
+            return
+        self._terminal_signal_emitted = True
+        self.completed.emit()
+
+    def _emit_error(self, payload):
+        if self._terminal_signal_emitted:
+            return
+        self._terminal_signal_emitted = True
+        self.error.emit(payload)
 
     @property
     def is_running_flag(self) -> bool:
@@ -102,12 +116,25 @@ class NativeSteamDownloadTask(QObject):
         logger.info(f"[NativeSteamDL] Starting native Steam download: {game_name} ({appid})")
         self.progress.emit(f"[Native Steam] Starting download for {game_name} ({appid})")
 
+        self._terminal_signal_emitted = False
         try:
             self._run_impl(game_data, selected_depots, dest_path, appid, game_name)
         except Exception as e:
             logger.exception(f"[NativeSteamDL] Unexpected error: {e}")
             self._cleanup_failure()
-            self.error.emit((type(e), str(e), None))
+            self._emit_error((type(e), str(e), None))
+        finally:
+            # Silent `return`s on cancellation must still release the job queue.
+            if not self._terminal_signal_emitted:
+                if self._is_running:
+                    logger.error(
+                        "[NativeSteamDL] Task ended without reporting a result; emitting error."
+                    )
+                    self._emit_error(
+                        (RuntimeError, "Native Steam download ended without reporting a result", None)
+                    )
+                else:
+                    self._emit_completed()
 
     def _run_impl(
         self,
@@ -126,14 +153,14 @@ class NativeSteamDownloadTask(QObject):
                 "Please start Steam first, then try again."
             )
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
 
         sls_config_dir = self._get_config_dir()
         if not sls_config_dir:
             msg = "SLSsteam config directory not found."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
         self._sls_config_dir = sls_config_dir
         config_path = sls_config_dir / "config.yaml"
@@ -142,7 +169,7 @@ class NativeSteamDownloadTask(QObject):
         if not steamapps_dir:
             msg = f"Could not resolve a steamapps directory in: {dest_path}"
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
 
         acf_path = steamapps_dir / f"appmanifest_{appid}.acf"
@@ -170,7 +197,7 @@ class NativeSteamDownloadTask(QObject):
         if not depot_keys:
             msg = "No depot keys available from Hubcap for this game."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
         self.progress.emit(f"[Native Steam] Got {len(depot_keys)} depot key(s) from Hubcap")
         if not self._is_running:
@@ -193,8 +220,13 @@ class NativeSteamDownloadTask(QObject):
             msg = "Failed to patch SLSsteam config.yaml."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
+        if self.unkeyed_depots:
+            self.progress.emit(
+                "[Native Steam] Warning: excluded depot(s) without decryption keys: "
+                + ", ".join(self.unkeyed_depots)
+            )
         self.progress.emit("[Native Steam] config.yaml patched with depot keys")
 
         # 3b. Check and apply pinned manifest GIDs (for recommended/pinned builds)
@@ -222,7 +254,7 @@ class NativeSteamDownloadTask(QObject):
             msg = "AT0-M plugins (download interceptor / Styx) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
 
         if is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True):
@@ -360,7 +392,7 @@ class NativeSteamDownloadTask(QObject):
             except Exception as e:
                 logger.warning(f"[NativeSteamDL] Could not register into plugin_library: {e}")
 
-            self.completed.emit()
+            self._emit_completed()
         elif not self._is_running:
             self.progress.emit("[Native Steam] Download cancelled")
             self._cleanup_failure()
@@ -368,31 +400,16 @@ class NativeSteamDownloadTask(QObject):
             msg = "Steam download did not complete successfully. Check Steam and logs for details."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
 
     def _check_slssteam_active(self) -> bool:
-        """Check if SLSsteam.so is loaded in a running Steam process."""
+        """Check if SLSsteam.so is loaded in a running Steam process or listening on its API pipe."""
         try:
-            for pid_dir in os.listdir("/proc"):
-                if not pid_dir.isdigit():
-                    continue
-                try:
-                    with open(f"/proc/{pid_dir}/comm", "r", encoding="utf-8", errors="ignore") as f:
-                        if f.read().strip() != "steam":
-                            continue
-                except OSError as e:
-                    logger.debug(f"[NativeSteamDL] Could not read /proc/{pid_dir}/comm: {e}")
-                    continue
-                try:
-                    with open(f"/proc/{pid_dir}/maps", "r", encoding="utf-8", errors="ignore") as f:
-                        if "SLSsteam.so" in f.read():
-                            return True
-                except OSError as e:
-                    logger.debug(f"[NativeSteamDL] Could not read /proc/{pid_dir}/maps: {e}")
-                    continue
-        except OSError as e:
-            logger.debug(f"[NativeSteamDL] Steam process scan failed: {e}")
-        return False
+            from utils.slssteam_integration import is_slssteam_process_active
+            return is_slssteam_process_active()
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] _check_slssteam_active: {e}")
+            return False
 
     def _get_config_dir(self) -> Optional[Path]:
         """Return the active SLSsteam config directory."""
@@ -457,9 +474,17 @@ class NativeSteamDownloadTask(QObject):
             return 0
 
     def _fetch_hubcap_keys(
-        self, game_data: Dict[str, Any], appid: str
+        self,
+        game_data: Dict[str, Any],
+        appid: str,
+        force_refresh: bool = False,
     ) -> Tuple[Dict[str, str], Dict[str, str]]:
-        """Fetch depot decryption keys, DLC info, and manifest GIDs, prioritizing local cache and DB."""
+        """Fetch depot decryption keys, DLC info, and manifest GIDs.
+
+        The local Lua cache is preferred, but not forever: a stale cache is
+        refreshed after 24 hours, and callers can force a Hubcap fetch when a
+        selected depot is missing a key.
+        """
         depot_keys: Dict[str, str] = {}
         manifest_gids: Dict[str, str] = {}
         appid_str = str(appid).strip()
@@ -470,16 +495,27 @@ class NativeSteamDownloadTask(QObject):
 
         cached_lua = Path(get_base_path()) / "cached_luas" / f"{appid_str}.lua"
         lua_txt = None
+        cached_txt = None
+        cache_is_stale = False
 
         # 1. Try reading from cached_luas/{appid}.lua
         if cached_lua.exists():
             try:
-                lua_txt = cached_lua.read_text(encoding="utf-8", errors="ignore")
-                logger.info(f"[NativeSteamDL] Using local cached Lua: {cached_lua}")
+                cached_txt = cached_lua.read_text(encoding="utf-8", errors="ignore")
+                age = time.time() - cached_lua.stat().st_mtime
+                cache_is_stale = age > 24 * 60 * 60
+                if not force_refresh and not cache_is_stale:
+                    lua_txt = cached_txt
+                    logger.info(f"[NativeSteamDL] Using local cached Lua: {cached_lua}")
+                elif cache_is_stale:
+                    logger.info(
+                        f"[NativeSteamDL] Local Lua cache is {age / 3600:.1f}h old; "
+                        "refreshing from Hubcap"
+                    )
             except Exception as e:
                 logger.debug(f"[NativeSteamDL] Error reading cached_luas: {e}")
 
-        # 2. If not cached, fetch manifest from Hubcap API to obtain Lua and keys
+        # 2. If not cached (or refresh requested/stale), fetch manifest from Hubcap API
         if not lua_txt:
             try:
                 from core import morrenus_api
@@ -509,6 +545,13 @@ class NativeSteamDownloadTask(QObject):
                     logger.warning(f"[NativeSteamDL] Hubcap download failed: {err}")
             except Exception as e:
                 logger.exception(f"[NativeSteamDL] Hubcap fetch error: {e}")
+
+        # A failed refresh must not throw away the last usable cache.
+        if not lua_txt and cached_txt:
+            lua_txt = cached_txt
+            logger.warning(
+                "[NativeSteamDL] Hubcap refresh failed; falling back to cached Lua"
+            )
 
         # 3. Parse Lua if available to extract root app key, DLCs, and depot keys
         if lua_txt:
@@ -571,16 +614,57 @@ class NativeSteamDownloadTask(QObject):
             logger.debug(f"[NativeSteamDL] Error checking DepotKeyManager: {e}")
 
         # 5. Fallback/merge from game_data
-        for depot_id, depot_info in (game_data.get("depots") or {}).items():
-            if isinstance(depot_info, dict):
-                k = depot_info.get("key") or depot_info.get("decryption_key")
-                if k:
-                    depot_keys.setdefault(str(depot_id), k)
-                m = depot_info.get("manifest_id") or depot_info.get("gid")
-                if m:
-                    manifest_gids.setdefault(str(depot_id), str(m))
+        depots_raw = game_data.get("depots")
+        if isinstance(depots_raw, dict):
+            for depot_id, depot_info in depots_raw.items():
+                if isinstance(depot_info, dict):
+                    k = depot_info.get("key") or depot_info.get("decryption_key")
+                    if k:
+                        depot_keys.setdefault(str(depot_id), k)
+                    m = depot_info.get("manifest_id") or depot_info.get("gid")
+                    if m:
+                        manifest_gids.setdefault(str(depot_id), str(m))
         if game_data.get("app_key"):
             depot_keys.setdefault(appid_str, game_data["app_key"])
+
+        # Auto-bridge known workshop keys from db/workshop_keys.txt
+        try:
+            from utils.paths import Paths
+            ws_keys_file = Paths.workshop_keys()
+            if ws_keys_file.exists():
+                ws_depot_id = None
+                if isinstance(depots_raw, dict):
+                    raw_ws = depots_raw.get("workshopdepot")
+                    if raw_ws and str(raw_ws).strip().isdigit():
+                        ws_depot_id = str(raw_ws).strip()
+                if not ws_depot_id:
+                    try:
+                        from managers.db_manager import DatabaseManager
+                        app_info = DatabaseManager().get_app_info(appid_str, bypass_expiration=True)
+                        if app_info and isinstance(app_info.get("depots"), dict):
+                            raw_ws = app_info["depots"].get("workshopdepot")
+                            if raw_ws and str(raw_ws).strip().isdigit():
+                                ws_depot_id = str(raw_ws).strip()
+                    except Exception as e:
+                        logger.debug(f"[NativeSteamDL] workshopdepot lookup: {e}")
+
+                with open(ws_keys_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split(";")
+                        if len(parts) >= 2:
+                            k_id = parts[0].strip()
+                            k_val = parts[1].strip()
+                            if len(k_val) == 64 and (
+                                k_id == appid_str
+                                or k_id in depot_keys
+                                or (ws_depot_id and k_id == ws_depot_id)
+                                or (isinstance(depots_raw, dict) and k_id in depots_raw)
+                            ):
+                                depot_keys.setdefault(k_id, k_val)
+                                if k_id == appid_str:
+                                    game_data.setdefault("app_key", k_val)
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] Error reading workshop keys: {e}")
 
         logger.info(f"[NativeSteamDL] Resolved {len(depot_keys)} depot keys and {len(game_data.get('dlcs', {}))} DLCs for {appid_str}")
         return depot_keys, manifest_gids
@@ -620,10 +704,14 @@ class NativeSteamDownloadTask(QObject):
             _get_section_bounds,
             _fix_additional_apps_indentation,
             _append_to_additional_apps,
+            _add_dlc_batch_in_memory,
+            _remove_entry_in_memory,
+            _normalize_flow_sections,
             remove_fake_app_id,
             remove_launch_option,
         )
         from utils.dlc_helpers import (
+            DLC_DATA_THRESHOLD,
             is_dlc_only_mode,
             get_base_depot_ids_for_app,
         )
@@ -642,7 +730,16 @@ class NativeSteamDownloadTask(QObject):
                 for dinfo in game_data["depots"].values():
                     if isinstance(dinfo, dict) and dinfo.get("dlcappid"):
                         resolved_dlc_appids.add(str(dinfo["dlcappid"]))
-        dlc_appids = resolved_dlc_appids
+        resolved_dlc_appids.discard(appid_str)
+        dlc_appids = sorted(
+            resolved_dlc_appids, key=lambda x: int(x) if str(x).isdigit() else 0
+        )
+        use_dlc_data = len(dlc_appids) >= DLC_DATA_THRESHOLD
+        dlc_names = {}
+        if game_data and isinstance(game_data.get("dlcs"), dict):
+            dlc_names = {
+                str(k): str(v) for k, v in game_data.get("dlcs", {}).items()
+            }
 
         if not config_path.exists():
             config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -656,6 +753,9 @@ class NativeSteamDownloadTask(QObject):
             logger.info(f"[NativeSteamDL] Backed up config.yaml to {backup}")
 
         content = config_path.read_text(encoding="utf-8", errors="ignore")
+        # The AT0-M writer parses sections line by line; make flow-style
+        # collections visible before any bounds lookup rebuilds a section.
+        content = _normalize_flow_sections(content)
 
         # 1. Enable Plugins: yes in-memory
         if not re.search(r"^[ \t]*Plugins[ \t]*:[ \t]*(?:yes|true)\b", content, re.MULTILINE | re.IGNORECASE):
@@ -667,12 +767,16 @@ class NativeSteamDownloadTask(QObject):
         # 2. AdditionalApps
         fixed_content, _ = _fix_additional_apps_indentation(content)
         app_bounds = _get_section_bounds(fixed_content, "AdditionalApps")
+        dlc_entries_for_data = dlc_appids
 
         if is_dlc:
             from utils.dlc_helpers import resolve_dlc_mapping_for_selection
             sel_dlcs, sel_dlc_depots = resolve_dlc_mapping_for_selection(
                 appid_str, selected_items=selected_depots, game_data=game_data
             )
+            dlc_entries_for_data = [
+                str(did) for did in sel_dlcs if str(did) != appid_str
+            ]
 
             # In DLC mode: If parent AppID was NOT explicitly selected, remove it from AdditionalApps.
             # If parent AppID WAS explicitly selected, keep/add it in AdditionalApps.
@@ -690,6 +794,8 @@ class NativeSteamDownloadTask(QObject):
                 content = fixed_content
 
             for did, label in sel_dlcs.items():
+                if use_dlc_data and str(did) != appid_str:
+                    continue
                 comment = f"[DLC] {label} / {game_name}" if (game_name and did != appid_str) else (label or game_name)
                 bounds = _get_section_bounds(content, "AdditionalApps")
                 if bounds:
@@ -713,14 +819,36 @@ class NativeSteamDownloadTask(QObject):
                     content = fixed_content
             else:
                 content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
-            for did in sorted(dlc_appids, key=lambda x: int(x) if x.isdigit() else 0):
-                bounds = _get_section_bounds(content, "AdditionalApps")
-                section = content[bounds[1]:bounds[2]] if bounds else ""
-                if not re.search(rf"^[ \t]*-[ \t]*{re.escape(did)}(?:[ \t]*#[^\r\n]*)?$", section, re.MULTILINE):
-                    if bounds:
-                        content = _append_to_additional_apps(content, did, f"[DLC] {game_name} ({did})", bounds)
-                    else:
-                        content = content.rstrip() + f"\n\nAdditionalApps:\n  - {did} # [DLC] {game_name}\n"
+            if not use_dlc_data:
+                for did in dlc_appids:
+                    bounds = _get_section_bounds(content, "AdditionalApps")
+                    section = content[bounds[1]:bounds[2]] if bounds else ""
+                    if not re.search(rf"^[ \t]*-[ \t]*{re.escape(did)}(?:[ \t]*#[^\r\n]*)?$", section, re.MULTILINE):
+                        if bounds:
+                            content = _append_to_additional_apps(content, did, f"[DLC] {game_name} ({did})", bounds)
+                        else:
+                            content = content.rstrip() + f"\n\nAdditionalApps:\n  - {did} # [DLC] {game_name}\n"
+
+        # Steam/SLS handlers cap AdditionalApps; move large DLC sets to DlcData
+        # (and remove any old AdditionalApps copies so there is one source of truth).
+        if use_dlc_data and dlc_entries_for_data:
+            for did in dlc_entries_for_data:
+                content, _ = _remove_entry_in_memory(
+                    content,
+                    "AdditionalApps",
+                    re.compile(
+                        rf"^[ \t]*-[ \t]*['\"]?{re.escape(did)}['\"]?[ \t]*(?:#[^\r\n]*)?$",
+                        re.MULTILINE,
+                    ),
+                )
+            content, _ = _add_dlc_batch_in_memory(
+                content,
+                appid_str,
+                {
+                    did: dlc_names.get(did, f"DLC {did}")
+                    for did in dlc_entries_for_data
+                },
+            )
 
         # 3. Format AdditionalDepots with descriptive comments
         from utils.yaml_config_manager import SHARED_REDISTS
@@ -730,9 +858,10 @@ class NativeSteamDownloadTask(QObject):
         if is_dlc:
             new_depot_ids = list(sel_dlc_depots)
         else:
+            from utils.depot_utils import extract_depot_ids
             raw_candidates = set(str(d) for d in selected_depots) if selected_depots else (
                 set(str(d) for d in depot_keys.keys()) | (
-                    set(str(d) for d in game_data["depots"].keys()) if (game_data and game_data.get("depots")) else set()
+                    extract_depot_ids(game_data.get("depots")) if game_data else set()
                 )
             )
             new_depot_ids = [d for d in raw_candidates if d != appid_str]
@@ -747,6 +876,7 @@ class NativeSteamDownloadTask(QObject):
                 filtered_depots.append(d)
             else:
                 excluded_missing.append(d)
+        self.unkeyed_depots = list(excluded_missing)
         if excluded_missing:
             logger.warning(
                 f"[NativeSteamDL] Excluded {len(excluded_missing)} depot(s) without keys for {appid_str}: {excluded_missing}"
@@ -768,14 +898,14 @@ class NativeSteamDownloadTask(QObject):
 
         # If user explicitly selected depots, prune any depots of THIS game that are not selected
         if game_data and game_data.get("depots") and selected_depots:
-            all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str}
+            all_game_depots = {str(d) for d in extract_depot_ids(game_data["depots"]) if str(d) != appid_str}
             user_depots_set = set(new_depot_ids)
             for d in all_game_depots:
                 if d in existing_depots_comments and d not in user_depots_set and d not in shared_redists:
                     existing_depots_comments.pop(d, None)
 
         # Merge new depot IDs with comments
-        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
         for d in new_depot_ids:
             if d in shared_redists:
                 existing_depots_comments[d] = "Steamworks Shared"
@@ -832,7 +962,7 @@ class NativeSteamDownloadTask(QObject):
                     key_comments[appid_str] = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
 
             if game_data and game_data.get("depots"):
-                all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str}
+                all_game_depots = {str(d) for d in extract_depot_ids(game_data["depots"]) if str(d) != appid_str}
                 user_depots_set = set(new_depot_ids)
                 for d in all_game_depots:
                     if d not in user_depots_set and d not in sel_dlcs and d not in shared_redists:
@@ -945,7 +1075,11 @@ class NativeSteamDownloadTask(QObject):
 
         if is_dlc:
             remove_fake_app_id(config_path, appid_str)
-            remove_launch_option(config_path, appid_str)
+            remove_launch_option(
+                config_path,
+                appid_str,
+                markers=("netsock.so", "LD_AUDIT", "#assella-bypass"),
+            )
 
         logger.info(f"[NativeSteamDL] config.yaml successfully patched in single pass ({len(content)} chars)")
         return True

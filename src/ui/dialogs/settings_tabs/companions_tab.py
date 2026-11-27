@@ -17,6 +17,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
+    QApplication,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -348,6 +349,235 @@ def _epsilon_install_page(dialog, page_lay, rebuild) -> None:
     page_lay.addStretch(1)
 
 
+def _epsilon_console_card(dialog, page_lay, info, rebuild) -> None:
+    """Pair the AT0-M web console with this machine's Epsilon bridge.
+
+    The token is handed over in the URL fragment, which browsers never send to
+    the web server, so the page can keep it locally after the first load.
+    """
+    card, cl = dialog._create_card_frame("Web console (AT0-M)")
+    cl.addWidget(_label(
+        "Browse Steam and register games from the at0m page. It talks to Epsilon on "
+        "127.0.0.1 only, and needs the console token below. The token never leaves "
+        "this machine and is never sent to the docs site."
+    ))
+
+    token = str(info.get("console_token") or "")
+    if token:
+        display = token[:11] + "…" + token[-4:] if len(token) > 20 else token
+        cl.addWidget(_label(f"Token: {display}", "color: #FFFFFF; font-family: monospace;"
+                                 " font-size: 9pt; border: none; background: transparent;"))
+    else:
+        cl.addWidget(_label(
+            "No token yet. Start the Epsilon bridge once (or press Refresh) and it will "
+            "create one.", f"color: {WARN}; font-size: 8.5pt; border: none; background: transparent;"
+        ))
+
+    # Shared with Uran: the switch lives in settings.json, Uran draws the
+    # button inside Steam, and Epsilon reports whether the CEF port is open.
+    store_lbl = _label("Store button: checking…", MUTED)
+    cl.addWidget(store_lbl)
+
+    def _fill_store(state) -> None:
+        if sip.isdeleted(store_lbl):
+            return
+        if not state:
+            _colored(store_lbl, "Store button: bridge did not answer", WARN, bold=False)
+            return
+        cef = state.get("cef") or {}
+        enabled = state.get("enabled", True)
+        if not enabled:
+            _colored(store_lbl, "Store button: off · Uran will not draw it", MUTED, bold=False)
+        elif cef.get("store_tab"):
+            _colored(store_lbl, f"Store button: on · CEF {cef.get('port')} store page detected", "#7ee2a8", bold=False)
+        elif cef.get("available"):
+            _colored(
+                store_lbl,
+                f"Store button: on · CEF {cef.get('port')} found, open a Store page to see it",
+                MUTED,
+                bold=False,
+            )
+        else:
+            _colored(
+                store_lbl,
+                "Store button: on · no CEF port — enable CEF debugging in Settings → at0-m and restart Steam",
+                WARN,
+                bold=False,
+            )
+
+    if token:
+        _start(dialog, lambda: comp.epsilon_console_get("/v1/store"), _fill_store)
+
+    row = QHBoxLayout()
+    open_btn = _button("Open web console", primary=True)
+    copy_btn = _button("Copy token")
+    rotate_btn = _button("New token")
+    rotate_btn.setToolTip("Invalidates the current token; the console will ask to pair again.")
+    open_btn.setEnabled(bool(token))
+    copy_btn.setEnabled(bool(token))
+    rotate_btn.setEnabled(True)
+
+    def _open():
+        live = comp.epsilon_console_token() or token
+        if not live:
+            ThemedMessageBox.information(
+                dialog, "Web console",
+                "Start the Epsilon bridge first so it can create a console token.",
+            )
+            return
+        QDesktopServices.openUrl(QUrl(f"{comp.EPSILON_CONSOLE_URL}#k={live}"))
+
+    def _copy():
+        live = comp.epsilon_console_token() or token
+        if live:
+            QApplication.clipboard().setText(live)
+
+    def _rotate():
+        if ThemedMessageBox.question(
+            dialog, "New console token",
+            "Replace the current token? Any browser already paired with the web "
+            "console will have to pair again.",
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.No,
+        ) != ThemedMessageBox.StandardButton.Yes:
+            return
+        comp.rotate_console_token()
+        rebuild()
+
+    open_btn.clicked.connect(_open)
+    copy_btn.clicked.connect(_copy)
+    rotate_btn.clicked.connect(_rotate)
+    row.addWidget(open_btn)
+    row.addWidget(copy_btn)
+    row.addStretch(1)
+    row.addWidget(rotate_btn)
+    cl.addLayout(row)
+
+    # Phone / LAN Access & Named QR Pairing
+    lan_on = comp.is_epsilon_lan_enabled()
+    lan_url = comp.epsilon_lan_url()
+    t_row = QHBoxLayout()
+    pair_phone_btn = _button("Pair phone (QR)", primary=True)
+    lan_btn = _button("Disable LAN" if lan_on else "Allow LAN")
+    lan_lbl = _label(
+        f"Phone / LAN active: {lan_url} (works even when ASSella is closed)."
+        if lan_on
+        else "Phone / LAN access: off (127.0.0.1 only, zero extra processes).",
+        WARN if lan_on else MUTED,
+    )
+
+    def _pair_phone():
+        def _do():
+            return comp.create_pairing_invite()
+
+        def _done(res):
+            ok, pair_url, err = res or (False, "", "Failed to create pairing invite.")
+            if not ok:
+                ThemedMessageBox.warning(dialog, "Pair Phone", err)
+                rebuild()
+                return
+            dialog._active_pair_url = pair_url
+            rebuild()
+
+        pair_phone_btn.setEnabled(False)
+        _start(dialog, _do, _done)
+
+    def _toggle_lan():
+        want = not comp.is_epsilon_lan_enabled()
+        if want and ThemedMessageBox.warning(
+            dialog,
+            "Allow Phone / LAN Access",
+            "This binds Epsilon's socket to 0.0.0.0:1952 so your phone can open the web UI on the same Wi-Fi, even when ASSella is closed.\n\n"
+            "• Protected by per-device tokens\n"
+            "• Still exits after 120s of inactivity (zero idle resources)\n"
+            "• Anyone on the same Wi-Fi with a paired token can reach port 1952",
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes,
+        ) != ThemedMessageBox.StandardButton.Yes:
+            return
+        lan_btn.setEnabled(False)
+        _start(
+            dialog,
+            lambda: comp.set_epsilon_lan_enabled(want),
+            lambda res: (
+                ThemedMessageBox.warning(dialog, "Phone / LAN", res[1])
+                if res and not res[0]
+                else None,
+                rebuild(),
+            ),
+        )
+
+    pair_phone_btn.clicked.connect(_pair_phone)
+    lan_btn.clicked.connect(_toggle_lan)
+    t_row.addWidget(pair_phone_btn)
+    t_row.addWidget(lan_btn)
+    t_row.addStretch(1)
+    cl.addLayout(t_row)
+    cl.addWidget(lan_lbl)
+
+    active_pair_url = getattr(dialog, "_active_pair_url", "")
+    if active_pair_url:
+        import shutil
+        import subprocess
+        qr_bin = shutil.which("qrencode")
+        if qr_bin:
+            try:
+                res_qr = subprocess.run(
+                    [qr_bin, "-o", "-", "-t", "PNG", "-s", "5", active_pair_url],
+                    capture_output=True,
+                    timeout=3,
+                )
+                if res_qr.returncode == 0 and res_qr.stdout:
+                    from PyQt6.QtGui import QPixmap
+                    pm = QPixmap()
+                    if pm.loadFromData(res_qr.stdout, "PNG"):
+                        qr_lbl = QLabel()
+                        qr_lbl.setPixmap(pm)
+                        qr_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        qr_lbl.setStyleSheet("background: transparent; border: none; padding: 4px;")
+                        cl.addWidget(qr_lbl)
+            except Exception as qr_err:
+                logger.debug("[companions_tab] QR render skipped: %s", qr_err)
+        cl.addWidget(_label("Scan this QR on your phone, enter a device name, and tap Proceed (expires in 10m)."))
+
+    paired_devices = comp.list_paired_devices()
+    if paired_devices:
+        from datetime import datetime
+        cl.addWidget(_label("Paired phones:", "#E2E8F0"))
+        for dev in paired_devices:
+            d_row = QHBoxLayout()
+            dev_id = str(dev.get("id", ""))
+            dev_name = str(dev.get("name", "Phone"))
+            ts = int(dev.get("created_at") or 0)
+            when = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+            d_row.addWidget(_label(f"• {dev_name}" + (f" ({when})" if when else ""), MUTED), 1)
+            del_btn = _button("🗑")
+            del_btn.setToolTip(f"Revoke access for {dev_name}")
+            del_btn.setFixedWidth(36)
+
+            def _revoke(_checked=False, _did=dev_id, _dname=dev_name):
+                if ThemedMessageBox.question(
+                    dialog,
+                    "Revoke Device",
+                    f"Remove '{_dname}' and revoke its access token?",
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.No,
+                ) != ThemedMessageBox.StandardButton.Yes:
+                    return
+                comp.revoke_paired_device(_did)
+                rebuild()
+
+            del_btn.clicked.connect(_revoke)
+            d_row.addWidget(del_btn)
+            cl.addLayout(d_row)
+
+    cl.addWidget(_label(
+        "Tip: copy the token into the console if you open it on another browser. "
+        "Rotate it if you ever pasted it somewhere you no longer trust."
+    ))
+    page_lay.addWidget(card)
+
+
 def _epsilon_installed_page(dialog, page_lay, info, rebuild) -> None:
     # 1. Live status
     card, cl = dialog._create_card_frame("Epsilon")
@@ -410,10 +640,11 @@ def _epsilon_installed_page(dialog, page_lay, info, rebuild) -> None:
     cl3.addWidget(_row("Hubcap route", _combo(comp.GATEWAY_OPTIONS, s.get("hubcap_gateway", "auto"),
                                               save("hubcap_gateway")), "How Epsilon reaches the Hubcap API."))
     _key_row(dialog, cl3, s.get("manifest_api_key", ""),
-             lambda k, ts: comp.update_json(comp.epsilon_settings_path(),
-                                            {"manifest_api_key": k, "manifest_api_key_timestamp": ts}))
-    cl3.addWidget(_label("Saved to Epsilon's own settings file; used the next time the bridge wakes."))
+             lambda k, ts: comp.update_companion_settings(
+                 {"manifest_api_key": k, "manifest_api_key_timestamp": ts}))
+    cl3.addWidget(_label("Saved to the settings file Uran and Epsilon share; used the next time the bridge wakes."))
     page_lay.addWidget(card3)
+    _epsilon_console_card(dialog, page_lay, info, rebuild)
     page_lay.addStretch(1)
 
     busy_buttons = (refresh_btn, restart_btn, update_btn, repair_btn, uninstall_btn)

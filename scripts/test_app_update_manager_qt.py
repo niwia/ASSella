@@ -1133,7 +1133,7 @@ class AppUpdateProgressBridgeTests(unittest.TestCase):
 
         with (
             patch("ui.main_window.ThemedMessageBox.choices", side_effect=fake_choices),
-            patch("ui.main_window.QDesktopServices.openUrl") as open_mock,
+            patch("PyQt6.QtGui.QDesktopServices.openUrl") as open_mock,
         ):
             MainWindow._on_update_failed(ui_parent, "HTTP 403 rate limit")
 
@@ -1156,7 +1156,7 @@ class AppUpdateProgressBridgeTests(unittest.TestCase):
 
         with (
             patch("ui.main_window.ThemedMessageBox.choices", side_effect=fake_choices_releases),
-            patch("ui.main_window.QDesktopServices.openUrl") as open_mock,
+            patch("PyQt6.QtGui.QDesktopServices.openUrl") as open_mock,
         ):
             MainWindow._on_update_failed(ui_auto, "All mirrors failed")
 

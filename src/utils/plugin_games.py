@@ -7,11 +7,13 @@ tracking which AppIDs, DepotIDs, and AES DecryptionKeys belong to which game so 
 can be injected smartly without queuing unintended games.
 """
 
+import copy
 import json
 import logging
 import os
 import re
 import shutil
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -36,6 +38,14 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_LIBRARY_FILENAME = "plugin_library.json"
 
+_PLUGIN_LIB_LOCK = threading.RLock()
+_PLUGIN_LIB_CACHE: Optional[Dict[str, Any]] = None
+_PLUGIN_LIB_CACHE_KEY: Optional[Tuple[str, int, int]] = None
+
+
+class PluginLibraryCorruptError(RuntimeError):
+    """Raised when plugin_library.json exists but cannot be parsed."""
+
 
 def get_plugin_library_path() -> Path:
     """Return the path to ACCELA's plugin_library.json database."""
@@ -43,32 +53,88 @@ def get_plugin_library_path() -> Path:
     return get_data_file_path(PLUGIN_LIBRARY_FILENAME)
 
 
-def load_plugin_library() -> Dict[str, Any]:
-    """Load the plugin-managed games library from disk."""
+def load_plugin_library(strict: bool = False) -> Dict[str, Any]:
+    """Load the plugin-managed games library from disk.
+
+    Results are cached by (mtime, size) because this file is read from many UI
+    and update-checker paths. Writers use ``strict=True``: a corrupt file must
+    not be mistaken for an empty library and then overwritten.
+    """
+    global _PLUGIN_LIB_CACHE, _PLUGIN_LIB_CACHE_KEY
+
     lib_path = get_plugin_library_path()
     if not lib_path.exists():
+        with _PLUGIN_LIB_LOCK:
+            _PLUGIN_LIB_CACHE = None
+            _PLUGIN_LIB_CACHE_KEY = None
         return {}
+    try:
+        stat = lib_path.stat()
+        cache_key = (str(lib_path), stat.st_mtime_ns, stat.st_size)
+    except OSError as e:
+        if strict:
+            raise PluginLibraryCorruptError(f"Cannot stat {lib_path}: {e}") from e
+        logger.error(f"[PluginGames] Failed to stat {lib_path}: {e}")
+        return {}
+
+    with _PLUGIN_LIB_LOCK:
+        if _PLUGIN_LIB_CACHE is not None and _PLUGIN_LIB_CACHE_KEY == cache_key:
+            return copy.deepcopy(_PLUGIN_LIB_CACHE)
     try:
         with open(lib_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            if isinstance(data, dict):
-                return data
     except Exception as e:
+        if strict:
+            raise PluginLibraryCorruptError(f"Cannot parse {lib_path}: {e}") from e
+        with _PLUGIN_LIB_LOCK:
+            _PLUGIN_LIB_CACHE = None
+            _PLUGIN_LIB_CACHE_KEY = None
         logger.error(f"[PluginGames] Failed to read {lib_path}: {e}")
-    return {}
+        return {}
+    if not isinstance(data, dict):
+        if strict:
+            raise PluginLibraryCorruptError(f"{lib_path} does not contain a JSON object")
+        with _PLUGIN_LIB_LOCK:
+            _PLUGIN_LIB_CACHE = None
+            _PLUGIN_LIB_CACHE_KEY = None
+        logger.error(f"[PluginGames] Ignoring non-object plugin library at {lib_path}")
+        return {}
+
+    with _PLUGIN_LIB_LOCK:
+        _PLUGIN_LIB_CACHE = copy.deepcopy(data)
+        _PLUGIN_LIB_CACHE_KEY = cache_key
+    return copy.deepcopy(data)
 
 
 def save_plugin_library(data: Dict[str, Any]) -> bool:
-    """Save the plugin-managed games library to disk."""
+    """Save the plugin-managed games library atomically and refresh the cache."""
+    global _PLUGIN_LIB_CACHE, _PLUGIN_LIB_CACHE_KEY
+
     lib_path = get_plugin_library_path()
     try:
-        lib_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = lib_path.with_suffix(".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, sort_keys=True)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, lib_path)
+        with _PLUGIN_LIB_LOCK:
+            if lib_path.exists():
+                try:
+                    with open(lib_path, "r", encoding="utf-8") as existing:
+                        current = json.load(existing)
+                    if not isinstance(current, dict):
+                        raise ValueError("root is not a JSON object")
+                except Exception as e:
+                    logger.error(
+                        f"[PluginGames] Refusing to overwrite unreadable "
+                        f"{lib_path}: {e}. Fix or remove it first."
+                    )
+                    return False
+            lib_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = lib_path.with_suffix(f".tmp-{os.getpid()}")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, lib_path)
+            stat = lib_path.stat()
+            _PLUGIN_LIB_CACHE = copy.deepcopy(data)
+            _PLUGIN_LIB_CACHE_KEY = (str(lib_path), stat.st_mtime_ns, stat.st_size)
         return True
     except Exception as e:
         logger.error(f"[PluginGames] Failed to save {lib_path}: {e}")
@@ -291,7 +357,14 @@ def register_plugin_game(
         tokens_to_inject = {aid: tok for aid, tok in tokens_to_inject.items() if aid in allowed_token_ids}
         tokens_to_inject.pop(appid_str, None)
 
-    lib = load_plugin_library()
+    try:
+        lib = load_plugin_library(strict=True)
+    except PluginLibraryCorruptError as e:
+        logger.error(
+            f"[PluginGames] Refusing to register '{name}' ({appid_str}): {e}. "
+            "Fix or remove plugin_library.json first."
+        )
+        return False
     game_record = {
         "appid": appid_str,
         "name": name,
@@ -311,6 +384,22 @@ def register_plugin_game(
     if not save_plugin_library(lib):
         return False
 
+    # Diff the previous registration against the new scope. Registration
+    # used to be additive, so deselecting a DLC/depot left the old entry in
+    # config.yaml and SLS kept mounting it.
+    previous_dlc = {str(d) for d in (previous_record or {}).get("dlc_appids", [])}
+    previous_depots = {str(d) for d in (previous_record or {}).get("depots", [])}
+    previous_keys = {str(d) for d in ((previous_record or {}).get("keys") or {}).keys()}
+    shared_dlc = {
+        str(dlc_id)
+        for other_appid, other in lib.items()
+        if str(other_appid) != appid_str
+        for dlc_id in (other.get("dlc_appids") or [])
+    }
+    stale_dlc = previous_dlc - set(clean_dlc_appids) - shared_dlc
+    stale_depots = previous_depots - set(clean_depots)
+    stale_keys = previous_keys - set(published_keys) - {appid_str}
+
     # Smart injection into SLSsteam config.yaml
     cfg_path = get_user_config_path()
     if not cfg_path.exists():
@@ -322,16 +411,56 @@ def register_plugin_game(
         return False
 
     with batch_config_edit(cfg_path) as editor:
+        from utils.dlc_helpers import DLC_DATA_THRESHOLD
+
+        # Remove scope that the previous registration owned but this one does
+        # not. Shared DLC ids are left alone; depot/key sharing is checked by
+        # the editor itself.
+        for stale_id in sorted(stale_dlc):
+            editor.remove_app(stale_id)
+            editor.remove_app_token(stale_id)
+            editor.remove_fake_app_id(stale_id)
+            editor.remove_secondary_entry("ManifestIds", stale_id)
+        for stale_id in sorted(stale_depots):
+            editor.remove_depot(stale_id, check_shared=True, excluding_appid=appid_str)
+            editor.remove_app_token(stale_id)
+            editor.remove_secondary_entry("ManifestIds", stale_id)
+        for stale_id in sorted(stale_keys):
+            editor.remove_key(stale_id, check_shared=True, excluding_appid=appid_str)
+
+        use_dlc_data = len(clean_dlc_appids) >= DLC_DATA_THRESHOLD
         if is_dlc_only:
-            # DLC-only: add DLC AppIDs to AdditionalApps, NOT the base game appid.
-            for dlc_id in clean_dlc_appids:
-                editor.add_app(dlc_id, comment=f"{name} DLC ({dlc_id})")
+            # DLC-only: never keep the base game AppID.
+            editor.remove_app(appid_str)
             editor.remove_app_token(appid_str)
+            editor.remove_fake_app_id(appid_str)
+            editor.remove_launch_option(
+                appid_str,
+                markers=("netsock.so", "LD_AUDIT", "#assella-bypass"),
+            )
+            if use_dlc_data:
+                for dlc_id in clean_dlc_appids:
+                    editor.remove_app(dlc_id)
+                editor.add_dlc_batch(
+                    appid_str,
+                    {dlc_id: f"{name} DLC ({dlc_id})" for dlc_id in clean_dlc_appids},
+                )
+            else:
+                for dlc_id in clean_dlc_appids:
+                    editor.add_app(dlc_id, comment=f"{name} DLC ({dlc_id})")
         else:
-            # Full game owns its base and discovered DLC entitlements.
             editor.add_app(appid_str, comment=name)
-            for dlc_id in clean_dlc_appids:
-                editor.add_app(dlc_id, comment=f"[DLC] {name} ({dlc_id})")
+            if use_dlc_data:
+                for dlc_id in clean_dlc_appids:
+                    editor.remove_app(dlc_id)
+                editor.add_dlc_batch(
+                    appid_str,
+                    {dlc_id: f"{name} DLC ({dlc_id})" for dlc_id in clean_dlc_appids},
+                )
+            else:
+                # Full game owns its base and discovered DLC entitlements.
+                for dlc_id in clean_dlc_appids:
+                    editor.add_app(dlc_id, comment=f"[DLC] {name} ({dlc_id})")
 
         # Add only the required depots with clear comments (never AppIDs!)
         # A depot can be refused by the editor's guards (it is already a
@@ -421,7 +550,11 @@ def _rollback_plugin_library_record(appid_str: str, previous_record: Optional[Di
     A half-registered game is worse than an unregistered one: the library
     claims the game is AT0-M managed while SLSsteam never heard of it.
     """
-    lib = load_plugin_library()
+    try:
+        lib = load_plugin_library(strict=True)
+    except PluginLibraryCorruptError as e:
+        logger.error(f"[PluginGames] Cannot roll back {appid_str}: {e}")
+        return
     if previous_record is None:
         lib.pop(appid_str, None)
     else:
@@ -431,7 +564,11 @@ def _rollback_plugin_library_record(appid_str: str, previous_record: Optional[Di
 
 def _rollback_plugin_library_records(previous_records: Dict[str, Optional[Dict[str, Any]]]) -> None:
     """Undo a batch of plugin library entries in a single write."""
-    lib = load_plugin_library()
+    try:
+        lib = load_plugin_library(strict=True)
+    except PluginLibraryCorruptError as e:
+        logger.error(f"[PluginGames] Cannot roll back batch: {e}")
+        return
     for appid_str, previous_record in previous_records.items():
         if previous_record is None:
             lib.pop(appid_str, None)
@@ -450,7 +587,14 @@ def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool
       - Game-specific depots and keys are pruned from AdditionalDepots and DecryptionKeys.
     """
     appid_str = str(appid).strip()
-    lib = load_plugin_library()
+    try:
+        lib = load_plugin_library(strict=True)
+    except PluginLibraryCorruptError as e:
+        logger.error(
+            f"[PluginGames] Refusing to unregister {appid_str}: {e}. "
+            "Fix or remove plugin_library.json first."
+        )
+        return False
     target_game = lib.pop(appid_str, None)
     if target_game:
         save_plugin_library(lib)
@@ -523,6 +667,11 @@ def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool
                     for dlc_id in target_game.get("dlc_appids", []):
                         if dlc_id not in remaining_dlc_appids:
                             editor.remove_app(dlc_id)
+
+                # Remove depot AppTokens for unmounted depots
+                for did in target_depots:
+                    if did not in remaining_depots:
+                        editor.remove_app_token(did)
             else:
                 # Full unregistration/uninstall: remove from AdditionalApps
                 # 1a. Remove DLC AppIDs from AdditionalApps (DLC-only mode)
@@ -543,7 +692,7 @@ def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool
                     editor.remove_fake_app_id(dlc_id)
                     editor.remove_app_token(dlc_id)
                     editor.remove_launch_option(dlc_id)
-                for did in target_game.get("depot_ids", []):
+                for did in target_depots:
                     editor.remove_app_token(did)
 
                 # 1d. Remove secondary sections (GameTitles, ManifestIds, CDKeys, etc.)
@@ -834,10 +983,13 @@ def collect_game_depots_and_keys(
     zip_file = next((candidate for candidate in zip_files if candidate.exists()), None)
     if zip_file:
         try:
+            from utils.steam_manifest import tolerant_read_zip_member
             with zipfile.ZipFile(zip_file, "r") as zf:
                 for name in zf.namelist():
                     if name.endswith(".lua"):
-                        _extract_keys_and_tokens_from_lua(zf.read(name).decode("utf-8", errors="ignore"))
+                        _extract_keys_and_tokens_from_lua(
+                            tolerant_read_zip_member(zf, name, zip_path=zip_file).decode("utf-8", errors="ignore")
+                        )
         except Exception as e:
             logger.debug(f"[PluginGames] Could not read manifest zip for {appid_str}: {e}")
 
@@ -845,13 +997,14 @@ def collect_game_depots_and_keys(
     if not depot_ids and allow_hubcap_fetch:
         try:
             from core import morrenus_api
+            from utils.steam_manifest import tolerant_read_zip_member
             zip_res, _ = morrenus_api.download_manifest(appid_str, force_update=True)
             if zip_res and os.path.exists(zip_res):
                 fresh_keys = {}
                 with zipfile.ZipFile(zip_res, "r") as zf:
                     for name in zf.namelist():
                         if name.endswith(".lua"):
-                            lua_txt = zf.read(name).decode("utf-8", errors="ignore")
+                            lua_txt = tolerant_read_zip_member(zf, name, zip_path=zip_res).decode("utf-8", errors="ignore")
                             _extract_keys_and_tokens_from_lua(lua_txt)
                             for m in iter_live_matches(lua_txt, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'):
                                 fresh_keys[m.group(1)] = m.group(2).lower()
@@ -876,6 +1029,39 @@ def collect_game_depots_and_keys(
                     depot_ids.append(did_str)
     except Exception as e:
         logger.debug(f"[PluginGames] DepotKeyManager lookup error for {appid_str}: {e}")
+
+    # Auto-bridge known workshop keys from db/workshop_keys.txt
+    try:
+        from utils.paths import Paths
+        ws_keys_file = Paths.workshop_keys()
+        if ws_keys_file.exists():
+            ws_depot_id = None
+            try:
+                from managers.db_manager import DatabaseManager
+                app_info = DatabaseManager().get_app_info(appid_str, bypass_expiration=True)
+                if app_info and isinstance(app_info.get("depots"), dict):
+                    raw_ws = app_info["depots"].get("workshopdepot")
+                    if raw_ws and str(raw_ws).strip().isdigit():
+                        ws_depot_id = str(raw_ws).strip()
+            except Exception as e:
+                logger.debug(f"[PluginGames] workshopdepot lookup: {e}")
+
+            with open(ws_keys_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split(";")
+                    if len(parts) >= 2:
+                        k_id = parts[0].strip()
+                        k_val = parts[1].strip().lower()
+                        if len(k_val) == 64 and (
+                            k_id == appid_str
+                            or k_id in depot_ids
+                            or (ws_depot_id and k_id == ws_depot_id)
+                        ):
+                            decryption_keys[k_id] = k_val
+                            if k_id != appid_str and k_id not in depot_ids and not depot_ids:
+                                depot_ids.append(k_id)
+    except Exception as e:
+        logger.debug(f"[PluginGames] Error reading workshop keys for {appid_str}: {e}")
 
     # 3. Fallback: If Hubcap had no depots, query DatabaseManager and local .depot files
     if not depot_ids:
@@ -1093,17 +1279,31 @@ def revert_eos_proxy_if_applied(install_path: Optional[str]) -> bool:
     return False
 
 
-def detect_migration_complications(game_data: Dict[str, Any], settings: Any = None) -> Dict[str, Any]:
+def detect_migration_complications(
+    game_data: Any,
+    settings: Any = None,
+    appid: Optional[str] = None,
+) -> Dict[str, Any]:
     """Detect if this game has any complications when migrating to AT0-M:
     - Pinned build (buildid, manifest_map)
     - DLC-only mode (mapped DLC AppIDs, DLC depots, DLC keys)
     - EOS proxy active
     - Goldberg emulator active
+    - Missing content keys
+    - Unkeyed Steam Workshop
     """
-    appid_str = str(game_data.get("appid", "")).strip()
+    if isinstance(game_data, str) and isinstance(settings, dict):
+        appid_str = str(game_data).strip()
+        game_data = settings
+        settings_obj = None
+    else:
+        appid_str = str(appid or (game_data.get("appid", "") if isinstance(game_data, dict) else "")).strip()
+        settings_obj = settings
+
     from utils.settings import get_settings
 
-    settings_obj = settings or get_settings()
+    if settings_obj is None:
+        settings_obj = get_settings()
 
     # 1. Pinned build check
     is_pinned = bool(
@@ -1199,7 +1399,26 @@ def detect_migration_complications(game_data: Dict[str, Any], settings: Any = No
     except Exception as e:
         logger.debug(f"[PluginGames] Error checking unkeyed depots for {appid_str}: {e}")
 
-    has_complications = bool(pinned_info or dlc_info or eos_active or goldberg_active or unkeyed_info)
+    # 6. Unkeyed workshop check
+    unkeyed_workshop = None
+    try:
+        from utils.workshop_helpers import is_workshop_key_missing
+        if is_workshop_key_missing(appid_str, game_data=game_data):
+            unkeyed_workshop = {
+                "appid": appid_str,
+                "has_workshop": True,
+            }
+    except Exception as e:
+        logger.debug(f"[PluginGames] Error checking workshop key for {appid_str}: {e}")
+
+    has_complications = bool(
+        pinned_info
+        or dlc_info
+        or eos_active
+        or goldberg_active
+        or unkeyed_info
+        or unkeyed_workshop
+    )
     return {
         "has_complications": has_complications,
         "pinned": pinned_info,
@@ -1207,6 +1426,7 @@ def detect_migration_complications(game_data: Dict[str, Any], settings: Any = No
         "eos": eos_active,
         "goldberg": goldberg_active,
         "unkeyed": unkeyed_info,
+        "unkeyed_workshop": unkeyed_workshop,
     }
 
 
@@ -1288,10 +1508,11 @@ def refetch_missing_keys(appid: str, depot_ids: List[str]) -> Dict[str, str]:
         zip_res, _ = morrenus_api.download_manifest(appid, force_update=True)
         if zip_res and os.path.exists(zip_res):
             fresh_keys: Dict[str, str] = {}
+            from utils.steam_manifest import tolerant_read_zip_member
             with zipfile.ZipFile(zip_res, "r") as zf:
                 for name in zf.namelist():
                     if name.endswith(".lua"):
-                        lua_txt = zf.read(name).decode("utf-8", errors="ignore")
+                        lua_txt = tolerant_read_zip_member(zf, name, zip_path=zip_res).decode("utf-8", errors="ignore")
                         for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_txt):
                             fresh_keys[m.group(1)] = m.group(2).lower()
             if fresh_keys:

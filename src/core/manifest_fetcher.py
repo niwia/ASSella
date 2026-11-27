@@ -40,7 +40,10 @@ def verify_or_download_manifest(
 
         is_synthesized_from_lua = False
         cached_lua_path = Path(get_base_path()) / "cached_luas" / f"{app_id_str}.lua"
-        if not cached_path.exists() and cached_lua_path.exists():
+        # Only the public bundle can be reconstructed from the cached public
+        # LUA. A non-public branch has different manifest GIDs, so a synthesised
+        # bundle would silently install public-branch content under a beta name.
+        if branch_str == "public" and not cached_path.exists() and cached_lua_path.exists():
             try:
                 logger.info(
                     f"[ManifestFetcher] Found local cached LUA for AppID {app_id_str} ({cached_lua_path.name}). "
@@ -205,7 +208,7 @@ def verify_or_download_manifest(
                             steam_client_data = fresh
 
                 api_depots = steam_client_data.get("depots", {}) if steam_client_data else {}
-            except BaseException as e:
+            except Exception as e:
                 logger.error(f"[ManifestFetcher] Failed to fetch depot info for {app_id_str}: {e}")
                 api_depots = {}
 
@@ -403,7 +406,7 @@ def verify_or_download_manifest(
         else:
             logger.info(f"[ManifestFetcher] No cached manifest found for {app_id_str}. Downloading.")
 
-    except BaseException as e:
+    except Exception as e:
         logger.error(f"[ManifestFetcher] Error checking manifest cache for {app_id_str}: {e}", exc_info=True)
 
     dl_res = morrenus_api.download_manifest(app_id_str, branch=branch_str)

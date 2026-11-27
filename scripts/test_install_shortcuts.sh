@@ -8,6 +8,7 @@ TEST_HOME=$(mktemp -d)
 export HOME="$TEST_HOME"
 export XDG_DATA_HOME="$TEST_HOME/.local/share"
 export XDG_CONFIG_HOME="$TEST_HOME/.config"
+export ASSELLA_ARCH="${ASSELLA_ARCH:-x86_64}"
 trap 'rm -rf "$TEST_HOME"' EXIT
 
 # Source the beta installer first so this test exercises its real desktop-entry
@@ -142,6 +143,20 @@ test "$BETA_SHA256" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 test "$STABLE_VER" = "v3.1.1"
 test "$STABLE_URL" = "https://example.invalid/v3.1.1/ASSella.AppImage"
 test "$STABLE_SHA256" = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+# Verify ARM64 release manifest resolution in installer
+(
+    export ASSELLA_ARCH="aarch64"
+    ARM_RELEASES_JSON='[
+      {"tag_name":"v3.1.1","prerelease":false,"draft":false,"target_commitish":"main","published_at":"2026-11-11T12:05:00Z","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://example.invalid/v3.1.1/ASSella.AppImage"}]},
+      {"tag_name":"v3.2.0","prerelease":false,"draft":false,"target_commitish":"main","published_at":"2026-11-12T12:00:00Z","assets":[{"name":"ASSella-arm64.AppImage","browser_download_url":"https://example.invalid/v3.2.0/ASSella-arm64.AppImage"},{"name":"ASSella-arm64.AppImage.zsync","browser_download_url":"https://example.invalid/v3.2.0/ASSella-arm64.AppImage.zsync"},{"name":"ASSella-arm64.AppImage.sha256","browser_download_url":"https://example.invalid/v3.2.0/ASSella-arm64.AppImage.sha256"}]}
+    ]'
+    LATEST_VER=""; LATEST_URL=""; LATEST_SHA256_URL=""
+    _parse_release_manifest_json "$ARM_RELEASES_JSON" "stable"
+    test "$LATEST_VER" = "v3.2.0"
+    test "$LATEST_URL" = "https://example.invalid/v3.2.0/ASSella-arm64.AppImage"
+    test "$LATEST_SHA256_URL" = "https://example.invalid/v3.2.0/ASSella-arm64.AppImage.sha256"
+)
 
 # Verify .zsync.sha256 fallback is removed and zsync2 support is present in both installers
 for inst_script in "$REPO_DIR/install.sh" "$REPO_DIR/install_stable.sh"; do

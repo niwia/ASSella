@@ -229,6 +229,14 @@ def _apply_stylesheet(
         """ + radio_rules
         list_indicator_css = ""
     else:
+        from utils.color_utils import get_best_foreground_color
+        fg_hex = get_best_foreground_color(accent_color.name())
+        is_light_accent = (fg_hex.lower() in ("#000000", "#121214", "#1e1e24"))
+
+        check_icon_path = str(Paths.icon("check_dark.svg" if is_light_accent else "check_white.svg"))
+        dash_icon_path = str(Paths.icon("dash_dark.svg" if is_light_accent else "dash_white.svg"))
+        radio_dot_icon_path = str(Paths.icon("radio_dot_dark.svg" if is_light_accent else "radio_dot_white.svg"))
+
         checkbox_css = f"""
         QCheckBox {{
             background-color: transparent;
@@ -239,46 +247,116 @@ def _apply_stylesheet(
         }}
 
         QCheckBox::indicator {{
-            width: 14px;
-            height: 14px;
+            width: 16px;
+            height: 16px;
             background: transparent;
             border: 1.5px solid {outline};
             border-radius: 4px;
-        }}
-
-        QCheckBox::indicator:checked, QCheckBox::indicator:checked:hover, QCheckBox::indicator:checked:selected {{
-            background: {accent_color.name()};
-            border: 1.5px solid {accent_color.name()};
         }}
 
         QCheckBox::indicator:unchecked:hover {{
             border: 1.5px solid {accent_light};
-            background: rgba({accent_r}, {accent_g}, {accent_b}, 20);
+            background: transparent;
+        }}
+
+        QCheckBox::indicator:checked, QCheckBox::indicator:checked:selected {{
+            background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
+            image: url("{check_icon_path}");
+        }}
+
+        QCheckBox::indicator:checked:hover {{
+            background-color: {accent_light};
+            border: 1.5px solid {accent_light};
+            image: url("{check_icon_path}");
+        }}
+
+        QCheckBox::indicator:indeterminate {{
+            background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
+            image: url("{dash_icon_path}");
+        }}
+
+        QCheckBox::indicator:indeterminate:hover {{
+            background-color: {accent_light};
+            border: 1.5px solid {accent_light};
+            image: url("{dash_icon_path}");
+        }}
+
+        QRadioButton {{
+            background-color: transparent;
+            color: {accent_color.name()};
+            padding: 4px;
+            spacing: 8px;
+            font-weight: bold;
+        }}
+
+        QRadioButton::indicator {{
+            width: 16px;
+            height: 16px;
+            background: transparent;
+            border: 1.5px solid {outline};
+            border-radius: 9px;
+        }}
+
+        QRadioButton::indicator:unchecked:hover {{
+            border: 1.5px solid {accent_light};
+            background: transparent;
+        }}
+
+        QRadioButton::indicator:checked {{
+            background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
+            image: url("{radio_dot_icon_path}");
+        }}
+
+        QRadioButton::indicator:checked:hover {{
+            background-color: {accent_light};
+            border: 1.5px solid {accent_light};
+            image: url("{radio_dot_icon_path}");
         }}
         """
         list_indicator_css = f"""
-        QListWidget::indicator, QTableWidget::indicator, QTableView::indicator {{
-            width: 14px;
-            height: 14px;
+        QListWidget::indicator, QTableWidget::indicator, QTableView::indicator, QTreeView::indicator {{
+            width: 16px;
+            height: 16px;
             background: transparent;
             border: 1.5px solid {outline};
             border-radius: 4px;
         }}
 
-        QListWidget::indicator:unchecked, QTableWidget::indicator:unchecked, QTableView::indicator:unchecked {{
+        QListWidget::indicator:unchecked, QTableWidget::indicator:unchecked, QTableView::indicator:unchecked, QTreeView::indicator:unchecked {{
             background-color: transparent;
         }}
 
-        QListWidget::indicator:checked, QTableWidget::indicator:checked, QTableView::indicator:checked,
-        QListWidget::indicator:checked:hover, QTableWidget::indicator:checked:hover, QTableView::indicator:checked:hover,
-        QListWidget::indicator:checked:selected, QTableWidget::indicator:checked:selected, QTableView::indicator:checked:selected {{
-            background-color: {accent_color.name()};
-            border: 1.5px solid {accent_color.name()};
+        QListWidget::indicator:unchecked:hover, QTableWidget::indicator:unchecked:hover, QTableView::indicator:unchecked:hover, QTreeView::indicator:unchecked:hover {{
+            border: 1.5px solid {accent_light};
+            background-color: transparent;
         }}
 
-        QListWidget::indicator:unchecked:hover, QTableWidget::indicator:unchecked:hover, QTableView::indicator:unchecked:hover {{
+        QListWidget::indicator:checked, QTableWidget::indicator:checked, QTableView::indicator:checked, QTreeView::indicator:checked,
+        QListWidget::indicator:checked:selected, QTableWidget::indicator:checked:selected, QTableView::indicator:checked:selected, QTreeView::indicator:checked:selected {{
+            background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
+            image: url("{check_icon_path}");
+        }}
+
+        QListWidget::indicator:checked:hover, QTableWidget::indicator:checked:hover, QTableView::indicator:checked:hover, QTreeView::indicator:checked:hover {{
+            background-color: {accent_light};
             border: 1.5px solid {accent_light};
-            background-color: rgba({accent_r}, {accent_g}, {accent_b}, 20);
+            image: url("{check_icon_path}");
+        }}
+
+        QListWidget::indicator:indeterminate, QTableWidget::indicator:indeterminate, QTableView::indicator:indeterminate, QTreeView::indicator:indeterminate {{
+            background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
+            image: url("{dash_icon_path}");
+        }}
+
+        QListWidget::indicator:indeterminate:hover, QTableWidget::indicator:indeterminate:hover, QTableView::indicator:indeterminate:hover, QTreeView::indicator:indeterminate:hover {{
+            background-color: {accent_light};
+            border: 1.5px solid {accent_light};
+            image: url("{dash_icon_path}");
         }}
         """
 

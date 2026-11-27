@@ -572,12 +572,12 @@ Lobster = {
         test_dlc_depot = "9999992"
         test_unselected_dlc = "9999999"
 
-        # Provide tokens for base, selected DLC, selected DLC depot, and unselected DLC
+        # Provide numeric tokens for base, selected DLC, selected DLC depot, and unselected DLC
         tokens_map = {
-            test_base_aid: "TOKEN_BASE_GAME_SECRET",
-            test_dlc_aid: "TOKEN_DLC_SECRET",
-            test_dlc_depot: "TOKEN_DEPOT_SECRET",
-            test_unselected_dlc: "TOKEN_UNSELECTED_SECRET",
+            test_base_aid: "999999012345678901",
+            test_dlc_aid: "999999112345678902",
+            test_dlc_depot: "999999212345678903",
+            test_unselected_dlc: "999999912345678904",
         }
 
         try:
@@ -603,10 +603,17 @@ Lobster = {
             # Unselected DLC token must not enter AppTokens
             self.assertNotIn(test_unselected_dlc, cfg_tokens, "Unselected DLC token found in AppTokens!")
             # Selected DLC token and selected depot token must be present
-            self.assertEqual(cfg_tokens.get(test_dlc_aid), "TOKEN_DLC_SECRET")
-            self.assertEqual(cfg_tokens.get(test_dlc_depot), "TOKEN_DEPOT_SECRET")
+            self.assertEqual(cfg_tokens.get(test_dlc_aid), "999999112345678902")
+            self.assertEqual(cfg_tokens.get(test_dlc_depot), "999999212345678903")
         finally:
             unregister_plugin_game(test_base_aid)
+            # Guarantee test tokens are cleanly pruned
+            from utils.yaml_config_manager import batch_config_edit
+            with batch_config_edit(cfg_path) as ed:
+                ed.remove_app_token(test_base_aid)
+                ed.remove_app_token(test_dlc_aid)
+                ed.remove_app_token(test_dlc_depot)
+                ed.remove_app_token(test_unselected_dlc)
 
         print("  [PASS] AtomManifestFixDialog and DLC AppToken scoping verified")
 

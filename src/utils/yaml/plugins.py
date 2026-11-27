@@ -56,25 +56,29 @@ def ensure_sls_plugin_config_sections(config_path: Optional[Path] = None) -> boo
         logger.debug(f"ensure_sls_plugin_config_sections: Config not found at {config_path}")
         return False
 
-    # 1. Ensure Plugins: yes
-    ensure_plugins_enabled(config_path)
-
+    # 1. Ensure Plugins: yes and the plugin sections in one write.
+    extra = {
+        "AdditionalDepots": "# Depots to mount for games added through AdditionalApps\n",
+        "DecryptionKeys": "# DepotID: 64-hex AES key\n",
+    }
     try:
-        from utils.yaml.core import _get_section_bounds, _write_in_place
-        content = config_path.read_text(encoding="utf-8")
-        modified = False
-
-        for sec in ("AdditionalDepots", "DecryptionKeys"):
-            bounds = _get_section_bounds(content, sec)
-            if bounds is None:
-                if not content.endswith("\n"):
-                    content += "\n"
-                content += f"\n{sec}:\n"
-                modified = True
-
-        if modified:
-            _write_in_place(config_path, content)
-            logger.info(f"ensure_sls_plugin_config_sections: Added missing sections to {config_path}")
+        from utils.yaml.core import _get_section_bounds, batch_config_edit
+        with batch_config_edit(config_path) as editor:
+            editor.ensure_plugins()
+            content = editor.content
+            modified = False
+            for sec, note in extra.items():
+                if _get_section_bounds(content, sec) is None:
+                    content = content.rstrip("\n") + f"\n\n{note}{sec}:\n"
+                    modified = True
+            if modified:
+                editor.content = content
+                editor.has_changes = True
+        if not editor.committed_successfully:
+            logger.error(f"ensure_sls_plugin_config_sections: Could not write {config_path}")
+            return False
+        if editor.has_changes:
+            logger.info(f"ensure_sls_plugin_config_sections: Added/updated sections in {config_path}")
 
         # The plugins' shared config (katamari.conf.lua) lives next to
         # config.yaml; ASSella writes it so every plugin finds the same

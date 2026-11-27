@@ -1,7 +1,11 @@
+import logging
 import os
 import re
 import sys
-from typing import Any, Dict, Iterable, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterable, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 
 _EMPTY_PLATFORM_CONFIG = '\t"UserConfig"\n\t{\n\t}\n\t"MountedConfig"\n\t{\n\t}'
@@ -20,9 +24,11 @@ def get_install_folder_name(game_data: Dict[str, Any]) -> str:
 
 
 def get_game_directory(dest_path: str, game_data: Dict[str, Any]) -> str:
-    return os.path.join(
-        dest_path, "steamapps", "common", get_install_folder_name(game_data)
-    )
+    if not dest_path:
+        return ""
+    from utils.game_modes import resolve_install_layout
+    _, game_dir = resolve_install_layout(dest_path, game_data)
+    return game_dir
 
 
 def _get_depot_platform(depot_info: Dict[str, Any]) -> str:
@@ -245,10 +251,73 @@ def write_acf_file(
         existing_fields=existing_fields,
     )
 
-    with open(acf_path, "w", encoding="utf-8") as f:
-        f.write(acf_content)
+    # Never leave Steam a truncated appmanifest after a crash. Existing ACFs
+    # go through the backup+replace helper; a new one is written to a sibling
+    # temp file first.
+    if os.path.exists(acf_path):
+        from utils.steam_acf import atomic_write_acf
+        if not atomic_write_acf(acf_path, acf_content):
+            return None
+    else:
+        tmp_path = f"{acf_path}.tmp-{os.getpid()}"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(acf_content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, acf_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError as cleanup_err:
+                logger.debug(f"Could not remove temporary ACF {tmp_path}: {cleanup_err}")
+            raise
 
     return acf_path
+
+
+def _tolerant_decompress_member(source: Union[str, Path, Any], member) -> bytes:
+    """Decompress a ZIP member when the ZIP header CRC32 is mismatched or corrupt."""
+    import struct
+    import zipfile
+    import zlib
+
+    def _read_from_fp(fp):
+        fp.seek(member.header_offset)
+        header = fp.read(30)
+        magic, _, _, method, _, _, _, csize, usize, fn_len, extra_len = struct.unpack("<4sHHHHHIIIHH", header)
+        if magic != b"PK\x03\x04":
+            raise zipfile.BadZipFile("Invalid local file header magic")
+        fp.seek(member.header_offset + 30 + fn_len + extra_len)
+        compressed = fp.read(csize or member.compress_size)
+        if method == 8:  # Deflate
+            return zlib.decompress(compressed, -15)
+        elif method == 0:  # Stored
+            return compressed
+        raise zipfile.BadZipFile(f"Unsupported compression method {method}")
+
+    if hasattr(source, "seek") and hasattr(source, "read"):
+        return _read_from_fp(source)
+    with open(str(source), "rb") as fp:
+        return _read_from_fp(fp)
+
+
+def tolerant_read_zip_member(archive, member, zip_path: Optional[str] = None) -> bytes:
+    """Read a member from a ZipFile, bypassing BadZipFile CRC32 mismatches from remote servers."""
+    import zipfile
+    try:
+        return archive.read(member)
+    except zipfile.BadZipFile as bzf:
+        if "Bad CRC-32" in str(bzf):
+            source = zip_path or getattr(archive, "filename", None) or getattr(archive, "fp", None)
+            if source:
+                info = archive.getinfo(member) if isinstance(member, str) else member
+                mem_name = getattr(info, "filename", str(member))
+                logger.warning(
+                    f"[steam_manifest] Bypassed CRC-32 mismatch for member '{mem_name}' in zip archive"
+                )
+                return _tolerant_decompress_member(source, info)
+        raise
 
 
 def safe_extract_zip(zip_path: str, dest_dir: str) -> int:
@@ -261,6 +330,7 @@ def safe_extract_zip(zip_path: str, dest_dir: str) -> int:
     Every member is resolved against ``dest_dir`` and rejected if it lands
     outside. Absolute paths, drive letters and ``..`` traversal are all refused.
     Returns the number of extracted members; raises on a malicious entry.
+    Tolerates Bad CRC-32 errors from upstream zip generation quirks.
     """
     import zipfile
     from pathlib import Path
@@ -278,6 +348,17 @@ def safe_extract_zip(zip_path: str, dest_dir: str) -> int:
             target = (dest / name).resolve()
             if target != dest and dest not in target.parents:
                 raise ValueError(f"Refusing path traversal in archive: {name!r}")
-            archive.extract(member, dest)
+            try:
+                archive.extract(member, dest)
+            except zipfile.BadZipFile as bzf:
+                if "Bad CRC-32" in str(bzf):
+                    logger.warning(
+                        f"[steam_manifest] Bypassed CRC-32 mismatch during safe_extract_zip for '{name}' in {zip_path}"
+                    )
+                    raw = _tolerant_decompress_member(zip_path, member)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(raw)
+                else:
+                    raise
 
     return len(members)

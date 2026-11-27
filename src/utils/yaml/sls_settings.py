@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path  # noqa: TC003 - needed at runtime to resolve annotations (527bd57)
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.yaml.core import _atomic_write, _create_backup
+from utils.yaml.core import _atomic_write, _create_backup, _normalize_flow_sections
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +60,6 @@ ADVANCED_SETTINGS: List[SlsSetting] = [
                "Notifies you when steamclient.so differs from the known-safe one."),
     SlsSetting("NotifyInit", "Notify when loaded", "bool", "Safety",
                "Shows a notification once SLSsteam has started."),
-    SlsSetting("SmartTickets", "Smart tickets", "hex", "Games & DRM",
-               "Smarter SteamID spoofing by inspecting the game at launch.",
-               maximum=0xFF, flags=((0x1, "SteamDRM"), (0x2, "Denuvo"))),
     SlsSetting("MaxSchemaTries", "Achievement schema tries", "int", "Games & DRM",
                "How often to fetch achievement schemas from Steam's CDN (0 = off).", maximum=1000),
     SlsSetting("IdleStatus.AppId", "Idle status AppID", "int", "Profile",
@@ -103,10 +100,14 @@ _FALSE = ("no", "false", "off", "disabled", "0")
 def _read(path: Path) -> Optional[str]:
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return f.read()
+            content = f.read()
     except OSError as _silent_err:
         logger.debug("[sls_settings] _read: ignored %s", _silent_err, exc_info=False)
         return None
+    # Flow-style parents (IdleStatus: {AppId: 0, Title: "x"}) must become a
+    # block before _apply edits them; otherwise the fallback promoted the line
+    # to an empty block and silently dropped the sibling keys.
+    return _normalize_flow_sections(content)
 
 
 def _load(content: str) -> Dict[str, Any]:
@@ -190,34 +191,88 @@ def _value_regex(key: str, indent: str = "") -> re.Pattern:
     # The value is everything up to an inline comment (" #") or end of line;
     # the separator before the comment is kept, so "yes # note" stays valid.
     return re.compile(
-        r"^(?P<lead>" + re.escape(indent) + re.escape(key) + r"[ \t]*:)(?P<sp>[ \t]*)"
-        r"(?P<val>(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\n]|'')*'|[^#\n]*?))"
-        r"(?P<tail>[ \t]+#.*)?$",
+        r"^(?P<lead>" + re.escape(indent) + r"['\"]?" + re.escape(key) + r"['\"]?[ \t]*:)(?P<sp>[ \t]*)"
+        r"(?P<val>(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\n]|'')*'|[^#\r\n]*?))"
+        r"(?P<tail>[ \t]+#[^\r\n]*)?\r?$",
         re.MULTILINE,
     )
 
 
 def _block_bounds(content: str, parent: str) -> Optional[Tuple[int, int]]:
-    m = re.search(r"^" + re.escape(parent) + r"[ \t]*:[ \t]*(?:#.*)?$", content, re.MULTILINE)
+    # Column 0 only: an indented IdleStatus under another key is a different
+    # setting and must never be edited as the top-level parent.
+    m = re.search(
+        r"^['\"]?" + re.escape(parent) + r"['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?\r?$",
+        content,
+        re.MULTILINE,
+    )
     if not m:
         return None
-    start = m.end() + 1
+    start = m.end()
+    if content.startswith("\r", start):
+        start += 1
+    if content.startswith("\n", start):
+        start += 1
     nxt = re.compile(r"^(?=\S)", re.MULTILINE).search(content, start)
     end = nxt.start() if nxt else len(content)
     return start, end
 
 
-def _apply(content: str, setting: SlsSetting, text: str) -> str:
+def _apply(content: str, setting: SlsSetting, text: str) -> Optional[str]:
+    """Return the edited content, or None when the line cannot be rewritten safely."""
     if "." not in setting.key:
         rx = _value_regex(setting.key)
         m = rx.search(content)
-        if m is None:
-            return content.rstrip("\n") + f"\n\n{setting.key}: {text}\n"
-        return content[: m.start("sp")] + " " + text + content[m.end("val"):]
+        if m is not None:
+            lead = f"{setting.key}:"
+            return content[: m.start()] + lead + " " + text + content[m.end("val"):]
+        # Fallback: the top-level key exists but not in a shape _value_regex
+        # matches (empty value, malformed scalar). Rewrite that one column-0
+        # line, keeping its quoting and the separator before any inline
+        # comment - `f"{key}: {text}{tail}"` dropped the separator and produced
+        # `yes# note`, which YAML reads as the literal string "yes# note".
+        key_pattern = re.compile(
+            r"^(?P<key>['\"]?" + re.escape(setting.key) + r"['\"]?[ \t]*:)"
+            r"[ \t]*(?P<val>[^\r\n]*?)?(?P<tail>[ \t]+#[^\r\n]*)?\r?$",
+            re.MULTILINE,
+        )
+        km = key_pattern.search(content)
+        if km is not None:
+            existing = (km.group("val") or "").strip()
+            if "#" in existing and not existing.startswith(('"', "'")):
+                # One scalar ('Neo#tight'), not a value plus comment: no
+                # single-line rewrite exists. `write_sls_setting` replaces
+                # values that do not read back, and appending would duplicate
+                # the key, so the caller must refuse this edit instead.
+                logger.warning(
+                    f"[SlsSettings] {setting.key} holds an unquoted value containing '#', "
+                    "which YAML reads as one scalar; refusing to rewrite it"
+                )
+                return None
+            # A tab before an inline comment is not valid YAML; normalise it
+            # so the edited line can still be written.
+            tail = (km.group("tail") or "").replace("\t", " ")
+            replacement = f"{km.group('key')} {text}{tail}"
+            return content[: km.start()] + replacement + content[km.end():]
+        return content.rstrip("\n") + f"\n\n{setting.key}: {text}\n"
 
+    # Nested setting:
     parent, child = setting.key.split(".", 1)
     bounds = _block_bounds(content, parent)
     if bounds is None:
+        parent_line = re.compile(
+            r"^['\"]?" + re.escape(parent) + r"['\"]?[ \t]*:.*$",
+            re.MULTILINE,
+        )
+        # The parent exists but not as an empty block (a scalar or an
+        # unrecognised shape). Replacing that line would drop its content, so
+        # refuse instead of guessing.
+        if parent_line.search(content) is not None:
+            logger.warning(
+                f"[SlsSettings] {parent} is not an editable block; "
+                f"refusing to rewrite its value into {setting.key}"
+            )
+            return None
         return content.rstrip("\n") + f"\n\n{parent}:\n  {child}: {text}\n"
     start, end = bounds
     block = content[start:end]
@@ -225,14 +280,37 @@ def _apply(content: str, setting: SlsSetting, text: str) -> str:
     indent = indent_m.group(1) if indent_m else "  "
     m = _value_regex(child, indent).search(block)
     if m is None:
-        insert = f"{indent}{child}: {text}\n"
-        # after the last indented line of the block
-        last = 0
-        for lm in re.finditer(r"^[ \t]+\S.*$\n?", block, re.MULTILINE):
-            last = lm.end()
-        block = block[:last] + ("" if block[:last].endswith("\n") or not last else "\n") + insert + block[last:]
+        # Same rule as the top-level fallback: keep the separator before an
+        # inline comment, and keep a quoted child key quoted. Anchored to the
+        # block's own indent - an unanchored `^` matched a deeper child and
+        # rewrote it as a sibling.
+        child_pattern = re.compile(
+            r"^" + re.escape(indent) + r"(?P<key>['\"]?" + re.escape(child) + r"['\"]?[ \t]*:)"
+            r"[ \t]*(?P<val>[^\r\n]*?)?(?P<tail>[ \t]+#[^\r\n]*)?\r?$",
+            re.MULTILINE,
+        )
+        cm = child_pattern.search(block)
+        if cm is not None:
+            existing = (cm.group("val") or "").strip()
+            if "#" in existing and not existing.startswith(('"', "'")):
+                logger.warning(
+                    f"[SlsSettings] {setting.key} holds an unquoted value containing '#', "
+                    "which YAML reads as one scalar; refusing to rewrite it"
+                )
+                return None
+            tail = (cm.group("tail") or "").replace("\t", " ")
+            replacement = f"{indent}{cm.group('key')} {text}{tail}"
+            block = block[: cm.start()] + replacement + block[cm.end():]
+        else:
+            insert = f"{indent}{child}: {text}\n"
+            # after the last indented line of the block
+            last = 0
+            for lm in re.finditer(r"^[ \t]+\S.*$\n?", block, re.MULTILINE):
+                last = lm.end()
+            block = block[:last] + ("" if block[:last].endswith("\n") or not last else "\n") + insert + block[last:]
     else:
-        block = block[: m.start("sp")] + " " + text + block[m.end("val"):]
+        lead = f"{indent}{child}:"
+        block = block[: m.start()] + lead + " " + text + block[m.end("val"):]
     return content[:start] + block + content[end:]
 
 
@@ -261,6 +339,8 @@ def write_sls_setting(path: Path, setting: SlsSetting, value: Any) -> Tuple[bool
         return True, "unchanged"
 
     new_content = _apply(content, setting, text)
+    if new_content is None:
+        return False, f"{setting.key} cannot be rewritten safely; edit config.yaml by hand."
     try:
         after = _load(new_content)
     except Exception as e:

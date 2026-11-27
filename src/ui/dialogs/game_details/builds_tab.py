@@ -248,8 +248,8 @@ def init_builds_tab(dialog) -> None:
     page_layout.addWidget(dialog.builds_bottom_bar)
 
     try:
-        from core.steamdb_scraper import ByparrManager, cffi_requests
-        has_byparr = ByparrManager.is_available() or bool(cffi_requests)
+        from core.steamdb_scraper import ByparrManager, has_curl_cffi
+        has_byparr = ByparrManager.is_available() or has_curl_cffi()
     except Exception:
         has_byparr = False
     dialog.builds_bottom_bar.setVisible(has_byparr)
@@ -635,9 +635,14 @@ def on_builds_loaded(dialog, builds: list) -> None:
                 except Exception as e:
                     logger.debug(f"[BuildsTab] Byparr background deep fetch error: {e}")
                 finally:
-                    if not sip.isdeleted(dialog):
-                        dialog._fetching_byparr_deep = False
-                        _restore_refresh_btn(dialog)
+                    from utils.main_thread import post_to_main_thread
+
+                    def _finish_byparr_ui():
+                        if not sip.isdeleted(dialog):
+                            dialog._fetching_byparr_deep = False
+                            _restore_refresh_btn(dialog)
+
+                    post_to_main_thread(_finish_byparr_ui)
 
             threading.Thread(target=_byparr_worker, daemon=True).start()
             return
@@ -819,23 +824,12 @@ class BuildDepotsSelectionDialog(QDialog):
         self.selected_depots: Dict[str, str] = {}
         self.checkboxes: Dict[str, tuple] = {}
 
-        self.setStyleSheet(f"""
-            QCheckBox {{
+        self.setStyleSheet("""
+            QCheckBox {
                 color: #FFFFFF;
                 font-size: 9pt;
                 spacing: 8px;
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
-                background-color: rgba(255, 255, 255, 0.05);
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {accent_color};
-                border-color: {accent_color};
-            }}
+            }
         """)
 
         layout = install_themed_frame(self, margins=(18, 18, 18, 18), spacing=12)

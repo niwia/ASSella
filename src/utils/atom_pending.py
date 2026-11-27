@@ -45,9 +45,17 @@ def _find_appmanifest(appid: str, libraries: Iterable[str]) -> Tuple[str, str]:
 
 def _dir_has_files(path: str) -> bool:
     try:
-        for _root, _dirs, files in os.walk(path):
-            if files:
-                return True
+        with os.scandir(path) as it:
+            for entry in it:
+                if entry.is_file():
+                    return True
+                if entry.is_dir():
+                    try:
+                        with os.scandir(entry.path) as sub_it:
+                            if any(sub_entry.is_file() for sub_entry in sub_it):
+                                return True
+                    except OSError as _sub_err:
+                        logger.debug("[atom_pending] sub-directory scan skipped: %s", _sub_err)
     except OSError as _silent_err:
         logger.debug("[atom_pending] _dir_has_files: ignored %s", _silent_err, exc_info=False)
     return False
@@ -66,7 +74,12 @@ def _config_state(cfg_path) -> Tuple[set, Dict[str, str]]:
         return set(), {}
 
 
-def get_pending_atom_games(installed_appids: Iterable[str]) -> List[Dict[str, Any]]:
+def get_pending_atom_games(
+    installed_appids: Iterable[str],
+    config_state: Optional[Tuple[set, Dict[str, str]]] = None,
+    libraries: Optional[List[str]] = None,
+    plugin_lib: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """Plugin-library games that the library scan did not find on disk.
 
     ``pending_state``:
@@ -80,19 +93,27 @@ def get_pending_atom_games(installed_appids: Iterable[str]) -> List[Dict[str, An
     from utils.yaml_config_manager import get_user_config_path
 
     installed = {str(a) for a in installed_appids}
-    try:
-        lib = get_all_plugin_games(active_only=True)
-    except Exception as e:
-        logger.debug(f"[AtomPending] plugin library unreadable: {e}")
-        return []
+    if plugin_lib is None:
+        try:
+            lib = get_all_plugin_games(active_only=True)
+        except Exception as e:
+            logger.debug(f"[AtomPending] plugin library unreadable: {e}")
+            return []
+    else:
+        lib = plugin_lib
     if not lib:
         return []
 
-    try:
-        libraries = [str(p) for p in (get_steam_libraries() or [])]
-    except Exception:
-        libraries = []
-    apps, keys = _config_state(get_user_config_path())
+    if libraries is None:
+        try:
+            libraries = [str(p) for p in (get_steam_libraries() or [])]
+        except Exception:
+            libraries = []
+
+    if config_state is None:
+        apps, keys = _config_state(get_user_config_path())
+    else:
+        apps, keys = config_state
 
     out: List[Dict[str, Any]] = []
     for appid, rec in lib.items():

@@ -125,6 +125,22 @@ def main() -> int:
             "-manifest-only", "-dir", dump.temp_dir,
         ], "the command line is DepotDownloader's manifest-only invocation")
 
+    print("\n=== an explicit manifest_id override is respected ===")
+    with tempfile.TemporaryDirectory() as tmp:
+        hubcap = Path(tmp) / "hubcap_manifests"
+        hubcap.mkdir()
+        make_bundle(hubcap / "accela_fetch_1234.zip", lua=LUA,
+                    members={
+                        "1234_default111.manifest": b"default",
+                        "1234_override999.manifest": b"override",
+                    })
+        dump = md.prepare_manifest_dump(1234, "1234", manifest_id="override999",
+                                        manifests_dir=hubcap, temp_root=str(Path(tmp) / "work"))
+        check(dump.manifest_id == "override999",
+              "explicit manifest_id override selects the requested manifest")
+        check(dump.manifest_file.endswith("1234_override999.manifest"),
+              "manifest_file points to the overridden manifest")
+
     print("\n=== a bundle without the depot prefix still yields a manifest ===")
     with tempfile.TemporaryDirectory() as tmp:
         hubcap = Path(tmp) / "hubcap_manifests"
@@ -231,6 +247,17 @@ def main() -> int:
             message = str(e)
         check((message or "").startswith("Failed to write keys file:"),
               "an unwritable keys path is reported as such")
+
+        work_e = str(Path(tmp) / "work_e")
+        lua_9999 = 'addappid(9999, 1, "aabbccdd11223344556677889900aabb")\n'
+        make_bundle(hubcap / "accela_fetch_1234.zip", lua=lua_9999, members={"2001_1.manifest": b"x", "2002_2.manifest": b"y"})
+        try:
+            md.prepare_manifest_dump(1234, "9999", manifests_dir=hubcap, temp_root=work_e)
+            message = None
+        except md.ManifestDumpError as e:
+            message = str(e)
+        check((message or "").startswith("Multiple manifest files found in bundle, but none matched requested depot 9999:"),
+              "multiple ambiguous manifests for another depot are refused rather than picking [0]")
 
     print("\n=== discarding a keys file is safe to call twice ===")
     with tempfile.TemporaryDirectory() as tmp:

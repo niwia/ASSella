@@ -6,7 +6,7 @@ Persistent, disk-backed cache for game update statuses.
 Design goals:
  • Survives restarts — data written to a JSON file in the user's local data dir.
  • Smart expiry — "up_to_date" entries expire after CACHE_TTL_SECONDS (default 24h).
-   "update_available" entries never expire (cleared only after user downloads update).
+   "update_available" entries never expire but are re-validated once a day.
  • Thread-safe — uses a threading.Lock for all read/write access.
  • Non-blocking — cache file I/O is best-effort; failures are logged but do not crash.
 """
@@ -23,11 +23,16 @@ logger = logging.getLogger(__name__)
 
 # --- Constants ---
 # How long (in seconds) an "up_to_date" result is trusted before we re-check.
-# Default: 24 hours.  "update_available" never expires automatically.
 CACHE_TTL_SECONDS = 24 * 60 * 60
 
+# How long an "update_available" result is trusted before the periodic re-check
+# asks again. It is not an expiry: get_status() keeps serving the stale status
+# for display, but the checker re-validates once a day so a status that a broken
+# or interrupted update left behind cannot outlive the install it described.
+UPDATE_AVAILABLE_RECHECK_SECONDS = 24 * 60 * 60
+
 # Status values that are considered "conclusively known" and worth persisting
-PERSISTENT_STATUSES = {"update_available", "up_to_date"}
+PERSISTENT_STATUSES = {"update_available", "up_to_date", "standalone"}
 
 # Status values that should never be persisted (transient/incomplete)
 TRANSIENT_STATUSES = {"checking", "cannot_determine"}
@@ -93,6 +98,19 @@ class UpdateStatusCache:
 
             return status
 
+    def needs_recheck(self, appid: str) -> bool:
+        """True when a cached "update_available" is old enough to re-validate.
+
+        The status stays visible in the UI while the checker runs; this only
+        decides whether the game belongs in the batch.
+        """
+        with self._lock:
+            entry = self._cache.get(str(appid))
+            if entry is None or entry.get("status") != "update_available":
+                return False
+            age = time.time() - entry.get("updated_at", 0)
+            return age > UPDATE_AVAILABLE_RECHECK_SECONDS
+
     def get_raw_status(self, appid: str) -> Optional[str]:
         """
         Return the last known persistent status regardless of age/TTL,
@@ -142,6 +160,20 @@ class UpdateStatusCache:
             if str(appid) in self._cache:
                 del self._cache[str(appid)]
                 self._dirty = True
+
+    def prune_orphans(self, valid_appids: set) -> int:
+        """Remove any cached entries whose AppIDs are not in valid_appids."""
+        with self._lock:
+            valid_set = {str(a) for a in valid_appids if str(a).strip()}
+            to_remove = [aid for aid in self._cache if aid not in valid_set]
+            for aid in to_remove:
+                del self._cache[aid]
+            if to_remove:
+                self._dirty = True
+        if to_remove:
+            self.save_async()
+            logger.info(f"[UpdateCache] Pruned {len(to_remove)} orphaned update status cache entries.")
+        return len(to_remove)
 
     def clear_all(self) -> None:
         """Remove all entries from the update status cache and persist immediately."""
@@ -276,3 +308,12 @@ def get_update_cache() -> UpdateStatusCache:
             if _instance is None:
                 _instance = UpdateStatusCache()
     return _instance
+
+
+# Backward compatibility alias
+get_update_status_cache = get_update_cache
+
+
+def get_game_update_status(appid: str) -> Optional[str]:
+    """Retrieve cached update status for a game."""
+    return get_update_cache().get_status(str(appid))

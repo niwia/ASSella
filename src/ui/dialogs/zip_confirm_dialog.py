@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QMetaObject, QSize
-from PyQt6.QtGui import QPixmap, QMovie
+from PyQt6.QtGui import QPixmap, QMovie, QIcon
 from PyQt6.QtWidgets import (
     QDialog,
     QWidget,
@@ -259,16 +259,16 @@ class ZipImportConfirmationDialog(QDialog):
         tb_layout.addWidget(tb_title)
         tb_layout.addStretch(1)
 
-        close_btn = QPushButton("✕")
+        from utils.paths import Paths
+        close_btn = QPushButton()
+        close_btn.setIcon(QIcon(str(Paths.icon("close.svg"))))
+        close_btn.setIconSize(QSize(14, 14))
         close_btn.setFixedSize(22, 22)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
-                color: rgba(255, 255, 255, 0.55);
                 border: none;
-                font-size: 9.5pt;
-                font-weight: bold;
                 border-radius: 4px;
             }
             QPushButton:hover {
@@ -642,26 +642,15 @@ class ZipImportConfirmationDialog(QDialog):
         pin_layout.setSpacing(2)
 
         self.pin_checkbox = QCheckBox("Pin this build in Steam")
-        self.pin_checkbox.setStyleSheet(f"""
-            QCheckBox {{
+        self.pin_checkbox.setStyleSheet("""
+            QCheckBox {
                 color: #FFFFFF;
                 font-size: 8.8pt;
                 font-weight: 600;
                 spacing: 8px;
                 background: transparent;
                 border: none;
-            }}
-            QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
-                background: rgba(255, 255, 255, 0.05);
-            }}
-            QCheckBox::indicator:checked {{
-                background: {self.accent_color};
-                border: 1px solid {self.accent_color};
-            }}
+            }
         """)
         pin_layout.addWidget(self.pin_checkbox)
 
@@ -1473,6 +1462,49 @@ class ZipImportConfirmationDialog(QDialog):
             elif not real_installed and def_dir and os.path.realpath(lib_path) == os.path.realpath(def_dir):
                 preselect_idx = idx
 
+        self.dest_combo.addItem("Custom Folder...", "custom")
+        self._prev_dest_idx = preselect_idx
+
+        def _on_dest_combo_changed(index):
+            data = self.dest_combo.itemData(index)
+            if data == "custom":
+                from ui.dialogs.themed_file_dialog import ThemedFileDialog
+                from utils.paths import is_valid_download_directory, normalize_to_library_root
+
+                path = ThemedFileDialog.getExistingDirectory(self, "Select Custom Download Location")
+                if path:
+                    norm = normalize_to_library_root(path)
+                    if is_valid_download_directory(norm):
+                        existing_idx = self.dest_combo.findData(norm)
+                        if existing_idx >= 0:
+                            self.dest_combo.setCurrentIndex(existing_idx)
+                            self._prev_dest_idx = existing_idx
+                        else:
+                            insert_pos = self.dest_combo.count() - 1
+                            self.dest_combo.insertItem(insert_pos, f"Custom ({norm})", norm)
+                            self.dest_combo.setCurrentIndex(insert_pos)
+                            self._prev_dest_idx = insert_pos
+                    else:
+                        from ui.dialogs.themed_message_box import ThemedMessageBox
+                        ThemedMessageBox.warning(
+                            self,
+                            "Invalid Location",
+                            "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
+                        )
+                        fallback_idx = self._prev_dest_idx if (self._prev_dest_idx >= 0 and self.dest_combo.itemData(self._prev_dest_idx) != "custom") else -1
+                        self.dest_combo.blockSignals(True)
+                        self.dest_combo.setCurrentIndex(fallback_idx)
+                        self.dest_combo.blockSignals(False)
+                else:
+                    fallback_idx = self._prev_dest_idx if (self._prev_dest_idx >= 0 and self.dest_combo.itemData(self._prev_dest_idx) != "custom") else -1
+                    self.dest_combo.blockSignals(True)
+                    self.dest_combo.setCurrentIndex(fallback_idx)
+                    self.dest_combo.blockSignals(False)
+            elif data:
+                self._prev_dest_idx = index
+
+        self.dest_combo.currentIndexChanged.connect(_on_dest_combo_changed)
+
         if self.dest_combo.count() > 0:
             self.dest_combo.setCurrentIndex(preselect_idx)
 
@@ -1642,8 +1674,9 @@ class ZipImportConfirmationDialog(QDialog):
         """
         if self.dest_combo.count() > 0 and self.dest_combo.currentData():
             chosen_lib = self.dest_combo.currentData()
-            self.result_data["library_path"] = chosen_lib
-            logger.info(f"[ZipConfirmDialog] User selected destination library: {chosen_lib}")
+            if chosen_lib and chosen_lib != "custom":
+                self.result_data["library_path"] = chosen_lib
+                logger.info(f"[ZipConfirmDialog] User selected destination library: {chosen_lib}")
 
         missing_mfs = self.result_data.get("missing_manifests", {})
         self.loading_cancel_btn.setVisible(False)
@@ -1779,20 +1812,28 @@ class ZipImportConfirmationDialog(QDialog):
             for d, k in (game_data.get("depot_keys") or {}).items():
                 if k:
                     candidate_keys[str(d)] = str(k).strip().lower()
-            for d, dinfo in (game_data.get("depots") or {}).items():
-                if isinstance(dinfo, dict):
-                    k = dinfo.get("key") or dinfo.get("decryption_key")
-                    if k:
-                        candidate_keys[str(d)] = str(k).strip().lower()
+            gd_depots = game_data.get("depots")
+            if isinstance(gd_depots, dict):
+                for d, dinfo in gd_depots.items():
+                    if isinstance(dinfo, dict):
+                        k = dinfo.get("key") or dinfo.get("decryption_key")
+                        if k:
+                            candidate_keys[str(d)] = str(k).strip().lower()
 
             candidate_depots = {}
-            for d, dinfo in (game_data.get("depots") or {}).items():
-                did_str = str(d).strip()
-                if did_str.isdigit() and did_str != appid_str:
-                    d_desc = ""
-                    if isinstance(dinfo, dict):
-                        d_desc = dinfo.get("desc") or dinfo.get("name") or ""
-                    candidate_depots[did_str] = d_desc
+            if isinstance(gd_depots, dict):
+                for d, dinfo in gd_depots.items():
+                    did_str = str(d).strip()
+                    if did_str.isdigit() and did_str != appid_str:
+                        d_desc = ""
+                        if isinstance(dinfo, dict):
+                            d_desc = dinfo.get("desc") or dinfo.get("name") or ""
+                        candidate_depots[did_str] = d_desc
+            elif isinstance(gd_depots, (list, set, tuple)):
+                for d in gd_depots:
+                    did_str = str(d).strip()
+                    if did_str.isdigit() and did_str != appid_str:
+                        candidate_depots[did_str] = ""
 
             # 3. Determine missing keys and missing depots
             missing_keys = {
@@ -1917,7 +1958,9 @@ class ZipImportConfirmationDialog(QDialog):
         if self.result_data.get("is_installed") and self.result_data.get("library_path"):
             target_lib = self.result_data["library_path"]
         elif hasattr(self, "dest_combo") and self.dest_combo.currentData():
-            target_lib = self.dest_combo.currentData()
+            val = self.dest_combo.currentData()
+            if val and val != "custom":
+                target_lib = val
         if target_lib:
             meta["library_path"] = target_lib
 
@@ -1926,6 +1969,13 @@ class ZipImportConfirmationDialog(QDialog):
         return meta
 
     def accept(self):
+        target_lib = self.result_data.get("library_path")
+        if target_lib and target_lib != "custom":
+            try:
+                from core.steam_helpers import ensure_steam_library
+                ensure_steam_library(target_lib)
+            except Exception as e:
+                logger.warning(f"[ZipConfirmDialog] Failed to register library in Steam config: {e}")
         if getattr(self, "movie", None):
             try:
                 self.movie.stop()

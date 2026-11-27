@@ -19,6 +19,7 @@ from ui.dialogs.settings_tabs.advanced_tab import (
     on_experimental_acf_toggled,
     steamless_unchecked_warning,
 )
+from ui.dialogs.settings_tabs.stealth_tab import create_stealth_tab, create_stealth_subtab
 from ui.dialogs.settings_tabs.health_tab import (
     HealthStatusTile,
     create_health_tab,
@@ -95,6 +96,8 @@ __all__ = [
     "create_assela_tab",
     "create_downloads_tab",
     "create_advanced_tab",
+    "create_stealth_tab",
+    "create_stealth_subtab",
     "create_morrenus_tab",
     "create_health_tab",
     "create_tools_tab",

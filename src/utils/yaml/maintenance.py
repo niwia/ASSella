@@ -15,9 +15,22 @@ import logging
 # --- imports ---------------------------------------------------------
 import os, re, shutil
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from utils.yaml.core import _CONFIG_DISABLED, _atomic_write, _create_backup, _get_config_content_if_enabled, _get_section_bounds, _read_config_content, _remove_entry_from_section, _restrict_config_permissions, get_user_config_path
+from utils.yaml.core import (
+    _CONFIG_DISABLED,
+    _add_map_item_in_memory,
+    _atomic_write,
+    _create_backup,
+    _get_config_content_if_enabled,
+    _get_section_bounds,
+    _read_config_content,
+    _remove_entry_from_section,
+    _restrict_config_permissions,
+    batch_config_edit,
+    get_user_config_path,
+)
+from utils.yaml import core as _core
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +254,34 @@ def ensure_netsock_binary(log_cb=None) -> bool:
         logger.error(err)
         return False
 
+def _strip_yaml_comment(value: str) -> str:
+    """Drop an inline comment that is outside a quoted scalar."""
+    text = value.strip()
+    out = []
+    quote = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and quote == '"':
+                i += 1
+                if i < len(text):
+                    out.append(text[i])
+            elif ch == quote:
+                quote = None
+        else:
+            if ch in "\"'":
+                quote = ch
+                out.append(ch)
+            elif ch == "#" and (i == 0 or text[i - 1] in " \t"):
+                break
+            else:
+                out.append(ch)
+        i += 1
+    return "".join(out).strip()
+
+
 def get_launch_option(config_path: Path, app_id: str) -> Optional[str]:
     """Get the launch option command for a specific AppID from LaunchOptions: in config.yaml."""
     content = _read_config_content(config_path)
@@ -256,71 +297,63 @@ def get_launch_option(config_path: Path, app_id: str) -> Optional[str]:
 
     entry_pattern = re.compile(
         rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:[ \t]*(.+)$",
-        re.MULTILINE
+        re.MULTILINE,
     )
     m = entry_pattern.search(section_content)
     if m:
-        return m.group(1).strip()
+        return _yaml_unquote(_strip_yaml_comment(m.group(1)))
     return None
 
 def add_launch_option(config_path: Path, app_id: str, command: str) -> bool:
     """Add or replace an AppID entry in the LaunchOptions section of SLSsteam config.yaml."""
     try:
-        content = _get_config_content_if_enabled(config_path)
-        if content is _CONFIG_DISABLED:
+        if not _core.is_slssteam_config_management_enabled():
             return False
-        if content is None:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            entry = f"LaunchOptions:\n  {app_id}: {command}\n"
-            return _atomic_write(config_path, entry)
+        app_id_str = str(app_id).strip()
+        if not app_id_str:
+            return False
 
-        bounds = _get_section_bounds(content, "LaunchOptions")
-        new_line = f"  {app_id}: {command}\n"
-
-        if bounds:
-            _, content_start, section_end = bounds
-            section_content = content[content_start:section_end]
-
-            app_id_line_pattern = re.compile(
-                rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:.*$",
-                re.MULTILINE
-            )
-            existing_m = app_id_line_pattern.search(section_content)
-            if existing_m:
-                abs_m_start = content_start + existing_m.start()
-                l_start = content.rfind("\n", 0, abs_m_start)
-                l_start = 0 if l_start == -1 else l_start + 1
-                l_end = content.find("\n", abs_m_start)
-                l_end = len(content) if l_end == -1 else l_end + 1
-                new_content = content[:l_start] + new_line + content[l_end:]
+        with batch_config_edit(config_path) as editor:
+            editor.ensure_plugins()
+            content = editor.content
+            if not content.strip():
+                editor.content = f"LaunchOptions:\n  {app_id_str}: {command}\n"
+                editor.has_changes = True
+                changed = True
             else:
-                lines = section_content.splitlines(keepends=True)
-                last_idx_offset = 0
-                curr_offset = 0
-                for line in lines:
-                    s = line.strip()
-                    if s and not s.startswith("#"):
-                        last_idx_offset = curr_offset + len(line)
-                    curr_offset += len(line)
+                new_content, changed = _add_map_item_in_memory(
+                    content, "LaunchOptions", app_id_str, command
+                )
+                if changed:
+                    editor.content = new_content
+                    editor.has_changes = True
 
-                if last_idx_offset > 0:
-                    pos = content_start + last_idx_offset
-                else:
-                    pos = content_start
-                new_content = content[:pos] + new_line + content[pos:]
-        else:
-            new_content = content.rstrip() + f"\n\nLaunchOptions:\n{new_line}"
-
-        if _atomic_write(config_path, new_content):
-            logger.info(f"Added LaunchOptions for AppID '{app_id}' in {config_path}")
-            return True
-        return False
+        if not editor.committed_successfully:
+            return False
+        if changed:
+            logger.info(f"Added LaunchOptions for AppID '{app_id_str}' in {config_path}")
+        # Idempotent success: the requested command is configured either way.
+        return True
     except OSError as e:
         logger.error(f"Failed to add LaunchOptions for '{app_id}': {e}", exc_info=True)
         return False
 
-def remove_launch_option(config_path: Path, app_id: str) -> bool:
-    """Remove an AppID entry from the LaunchOptions section in SLSsteam config.yaml."""
+def remove_launch_option(
+    config_path: Path,
+    app_id: str,
+    markers: Optional[Tuple[str, ...]] = None,
+) -> bool:
+    """Remove an AppID entry from the LaunchOptions section.
+
+    ``markers`` limits the removal to values containing one of the markers.
+    Automatic cleanup (DLC-only mode, SLSonline disable, AT0-M conversion)
+    must pass markers so a user's own launch options survive; an explicit
+    "remove launch option" action leaves it unset and removes the whole entry.
+    """
+    if markers:
+        current = get_launch_option(config_path, app_id)
+        if not current or not any(marker in current for marker in markers):
+            return False
     app_id_pattern = re.compile(
         rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:.*$",
         re.MULTILINE

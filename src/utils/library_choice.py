@@ -48,9 +48,11 @@ def _match(path: str, libraries: Iterable[str]) -> Optional[str]:
     if not path:
         return None
     norm = os.path.normpath(path)
+    real = os.path.realpath(os.path.expanduser(path))
     for lib in libraries:
-        if os.path.normpath(str(lib)) == norm:
-            return str(lib)
+        lib_str = str(lib)
+        if os.path.normpath(lib_str) == norm or os.path.realpath(os.path.expanduser(lib_str)) == real:
+            return lib_str
     return None
 
 
@@ -59,12 +61,28 @@ def remembered_library(libraries: Iterable[str], settings=None) -> Optional[str]
     libs = [str(x) for x in libraries]
     if ask_each_time(settings):
         return None
-    return _match(preferred_library(settings), libs)
+    pref = preferred_library(settings)
+    matched = _match(pref, libs)
+    if matched:
+        return matched
+    if pref:
+        from utils.paths import is_valid_download_directory
+        if is_valid_download_directory(pref):
+            return pref
+    return None
 
 
 def preselect_library(libraries: Iterable[str], settings=None) -> Optional[str]:
     """The library a picker should start on (the preferred one, when it exists)."""
-    return _match(preferred_library(settings), [str(x) for x in libraries])
+    pref = preferred_library(settings)
+    matched = _match(pref, [str(x) for x in libraries])
+    if matched:
+        return matched
+    if pref:
+        from utils.paths import is_valid_download_directory
+        if is_valid_download_directory(pref):
+            return pref
+    return None
 
 
 def remember_library(path: str, settings=None) -> None:
@@ -72,7 +90,9 @@ def remember_library(path: str, settings=None) -> None:
     s = _settings(settings)
     if not s or not path:
         return
-    s.setValue(KEY_DEFAULT, path)
+    from utils.paths import normalize_to_library_root
+    norm_path = normalize_to_library_root(path)
+    s.setValue(KEY_DEFAULT, norm_path)
     s.setValue(KEY_ASK, False)
 
 
@@ -80,5 +100,7 @@ def set_preferences(path: str, ask: bool, settings=None) -> None:
     s = _settings(settings)
     if not s:
         return
-    s.setValue(KEY_DEFAULT, path or "")
-    s.setValue(KEY_ASK, bool(ask) or not path)
+    from utils.paths import normalize_to_library_root
+    norm_path = normalize_to_library_root(path) if path else ""
+    s.setValue(KEY_DEFAULT, norm_path)
+    s.setValue(KEY_ASK, bool(ask) or not norm_path)

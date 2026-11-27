@@ -136,13 +136,13 @@ def filter_dlc_depots_only(
     """
     appid_str = str(base_appid).strip()
     dlc_set = {str(d).strip() for d in (dlc_appids or []) if str(d).strip().isdigit()}
-    meta_dict = depots_meta or {}
+    meta_dict = depots_meta if isinstance(depots_meta, dict) else {}
 
     if not meta_dict and appid_str:
         try:
             from managers.db_manager import DatabaseManager
             app_info = DatabaseManager().get_app_info(appid_str, bypass_expiration=True)
-            if app_info and app_info.get("depots"):
+            if app_info and isinstance(app_info.get("depots"), dict):
                 meta_dict = app_info["depots"]
         except Exception as e:
             logger.debug(f"[DLCHelpers] depot metadata lookup failed for {appid_str}: {e}")
@@ -489,6 +489,8 @@ def is_dlc_only_context(appid: str, *sources) -> bool:
 # so this Qt-free module never imports the dialog package.
 STUB_SIZE_LIMIT = 1024
 STUB_BYPASS_AT = 64
+# Steam/SLS handlers cap AdditionalApps; above this many DLCs use DlcData.
+DLC_DATA_THRESHOLD = 64
 
 
 @dataclass(frozen=True)
@@ -720,7 +722,7 @@ def get_dlc_only_info(base_appid: str) -> List[Dict[str, str]]:
         base_game_name = app_info.get("name", "") if app_info else ""
         base_depots_data = app_info.get("depots", {}) if app_info else {}
 
-        for line in depot_file.read_text().splitlines():
+        for line in depot_file.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -1061,7 +1063,7 @@ def get_saved_depot_selection(appid: str) -> List[str]:
         depot_file = get_base_path() / "depots" / f"{appid_str}.depot"
         if depot_file.exists():
             depots = []
-            for line in depot_file.read_text().splitlines():
+            for line in depot_file.read_text(encoding="utf-8", errors="replace").splitlines():
                 line = line.strip()
                 if line and ":" in line:
                     did = line.split(":", 1)[0].strip()
@@ -1101,8 +1103,12 @@ def purge_and_sanitize_for_dlc_only(
     summary: Dict[str, Any] = {
         "base_app_removed": False,
         "dlcs_added": [],
+        "dlcs_already_present": [],
+        "dlcs_removed": [],
         "base_depots_removed": [],
+        "base_depots_kept": [],
         "base_keys_removed": [],
+        "base_keys_kept": [],
         "fake_app_removed": False,
         "launch_options_removed": False,
         "manifest_ids_removed": [],
@@ -1114,11 +1120,15 @@ def purge_and_sanitize_for_dlc_only(
         return summary
 
     from utils.yaml_config_manager import (
+        WriteOutcome,
         get_user_config_path,
+        get_dlc_data,
         remove_additional_app,
         add_additional_app,
+        add_additional_app_outcome,
         remove_additional_depot,
         add_additional_depot,
+        add_additional_depots_batch,
         get_additional_depots,
         add_decryption_key,
         remove_decryption_key,
@@ -1183,15 +1193,52 @@ def purge_and_sanitize_for_dlc_only(
                 summary["base_app_removed"] = True
 
         pure_dlcs = {aid: dname for aid, dname in sel_dlcappid_set.items() if aid != appid_str}
-        if len(pure_dlcs) >= 64:
+
+        # Re-scoping a game must remove DLC entitlements it no longer owns.
+        # The old code only added the current selection, so deselecting a DLC
+        # left its AppID in AdditionalApps and SLS kept serving it.
+        try:
+            from utils.plugin_games import get_all_plugin_games
+
+            known_dlc_ids = {
+                str(aid)
+                for aid in build_app_to_depots_map(appid_str, game_data=game_data)
+                if str(aid) != appid_str
+            }
+            gd_dlcs_raw = (game_data or {}).get("dlcs") or {}
+            if isinstance(gd_dlcs_raw, dict):
+                known_dlc_ids.update(str(d) for d in gd_dlcs_raw.keys() if str(d).isdigit())
+            elif isinstance(gd_dlcs_raw, (list, set, tuple)):
+                known_dlc_ids.update(str(d) for d in gd_dlcs_raw if str(d).isdigit())
+            known_dlc_ids.update(get_dlc_data(config_path, appid_str).keys())
+
+            shared_dlc_ids = {
+                str(dlc_id)
+                for other_appid, rec in get_all_plugin_games(active_only=False).items()
+                if str(other_appid) != appid_str
+                for dlc_id in (rec.get("dlc_appids") or [])
+            }
+            stale_dlc_ids = (
+                known_dlc_ids - set(pure_dlcs) - shared_dlc_ids
+            )
+            for stale_id in sorted(stale_dlc_ids):
+                if remove_additional_app(config_path, stale_id):
+                    summary["dlcs_removed"].append(stale_id)
+        except Exception as e:
+            logger.debug(f"[DLCMode] Could not prune stale DLC AppIDs for {appid_str}: {e}")
+
+        if len(pure_dlcs) >= DLC_DATA_THRESHOLD:
             add_dlc_data_batch(config_path, appid_str, pure_dlcs)
             summary["dlcs_added"].extend(list(pure_dlcs.keys()))
         else:
             remove_dlc_data(config_path, appid_str)
             for did, dname in pure_dlcs.items():
                 comment = f"[DLC] {dname} / {game_name}" if game_name else f"[DLC] {dname}"
-                if add_additional_app(config_path, did, comment):
+                outcome = add_additional_app_outcome(config_path, did, comment)
+                if outcome is WriteOutcome.CHANGED:
                     summary["dlcs_added"].append(did)
+                elif outcome is WriteOutcome.ALREADY_PRESENT:
+                    summary["dlcs_already_present"].append(did)
 
         # 2. AdditionalDepots: ONLY selected DLC depots, NEVER parent AppID and NEVER base game main depots!
         sel_dlc_depots.discard(appid_str)
@@ -1200,32 +1247,42 @@ def purge_and_sanitize_for_dlc_only(
             if d in existing_depots and d not in sel_dlc_depots:
                 if remove_additional_depot(config_path, d, excluding_appid=appid_str):
                     summary["base_depots_removed"].append(d)
+                elif d in get_additional_depots(config_path):
+                    # Still mounted: the shared-depot guard kept it.
+                    summary["base_depots_kept"].append(d)
 
-        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
+        depots_to_add = []
         for d in sorted(sel_dlc_depots, key=lambda x: int(x) if x.isdigit() else 0):
             if d == appid_str:
                 continue  # Safeguard: parent AppID is NEVER in AdditionalDepots
             meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
             desc = meta.get("desc", "") if isinstance(meta, dict) else ""
             comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
-            add_additional_depot(config_path, d, comment=comment)
+            depots_to_add.append((d, comment))
+        if depots_to_add:
+            add_additional_depots_batch(config_path, depots_to_add)
 
         # 3. DecryptionKeys: Remove unselected depot keys, then add keys for selected DLC depots
         existing_keys = get_decryption_keys(config_path)
         if appid_str not in sel_dlcappid_set and appid_str in existing_keys:
             if remove_decryption_key(config_path, appid_str, excluding_appid=appid_str):
                 summary["base_keys_removed"].append(appid_str)
+            elif appid_str in get_decryption_keys(config_path):
+                summary["base_keys_kept"].append(appid_str)
 
         for d in all_game_depots:
             if d in existing_keys and d not in sel_dlc_depots and d not in sel_dlcappid_set:
                 if remove_decryption_key(config_path, d, excluding_appid=appid_str):
                     summary["base_keys_removed"].append(d)
+                elif d in get_decryption_keys(config_path):
+                    summary["base_keys_kept"].append(d)
 
         # Ensure keys for selected DLC depots and DLC AppIDs are added so Steam can decrypt DLC content
         depot_keys = {}
         if game_data and game_data.get("depot_keys"):
             depot_keys.update({str(k): v for k, v in game_data["depot_keys"].items()})
-        if game_data and game_data.get("depots"):
+        if game_data and isinstance(game_data.get("depots"), dict):
             for did, dinfo in game_data["depots"].items():
                 if isinstance(dinfo, dict) and dinfo.get("key"):
                     depot_keys[str(did)] = dinfo["key"]
@@ -1251,7 +1308,8 @@ def purge_and_sanitize_for_dlc_only(
                     else:
                         comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
                     if add_decryption_key(config_path, str(d), k, comment=comment):
-                        summary.setdefault("keys_added", []).append(str(d))
+                        if str(d) not in summary.setdefault("keys_added", []):
+                            summary["keys_added"].append(str(d))
 
         # 4b. Sync DLC manifests to Steam depotcache so Steam does not fail on MRC
         try:
@@ -1265,7 +1323,11 @@ def purge_and_sanitize_for_dlc_only(
             summary["fake_app_removed"] = True
 
         # 6. Remove launch options (disable Netsock LD_AUDIT / custom wrappers)
-        if remove_launch_option(config_path, appid_str):
+        if remove_launch_option(
+            config_path,
+            appid_str,
+            markers=("netsock.so", "LD_AUDIT", "#assella-bypass"),
+        ):
             summary["launch_options_removed"] = True
 
         # 7. Remove any pinned ManifestIds for unselected depots of this game
@@ -1322,7 +1384,8 @@ def sync_dlc_only_sls_config(
       - If the game has 64 or more DLCs, adds them under DlcData to bypass Steam's 64 DLC limit.
     """
     from utils.yaml_config_manager import (
-        add_additional_app,
+        WriteOutcome,
+        add_additional_app_outcome,
         remove_additional_app,
         add_dlc_data_batch,
         remove_dlc_data,
@@ -1339,8 +1402,12 @@ def sync_dlc_only_sls_config(
         )
         return bool(res.get("dlcs_added") or res.get("base_app_removed"))
     else:
-        # Regular game mode - ensure base game in AdditionalApps
-        added = add_additional_app(config_path, appid_str, game_name)
+        # Regular game mode - ensure base game in AdditionalApps. "Already
+        # present" is success here: the config already holds what we need.
+        added = add_additional_app_outcome(config_path, appid_str, game_name) in (
+            WriteOutcome.CHANGED,
+            WriteOutcome.ALREADY_PRESENT,
+        )
 
         # Sync DLC entitlements based on user selection or discovered DLCs
         selected_depots_raw = (
@@ -1351,7 +1418,7 @@ def sync_dlc_only_sls_config(
             if selected_depots_raw is not None
             else None
         )
-        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
 
         selected_dlcs = []
         unselected_dlcs = []
@@ -1396,7 +1463,7 @@ def sync_dlc_only_sls_config(
             remove_additional_app(config_path, str(dlc_entry["dlc_appid"]).strip())
 
         # If 64 or more selected DLCs, bypass via DlcData
-        if len(selected_dlcs) >= 64:
+        if len(selected_dlcs) >= DLC_DATA_THRESHOLD:
             remove_dlc_data(config_path, appid_str)
             dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in selected_dlcs}
             add_dlc_data_batch(config_path, appid_str, dlc_dict)
@@ -1408,14 +1475,14 @@ def sync_dlc_only_sls_config(
                 dlc_id = str(dlc_entry["dlc_appid"]).strip()
                 dlc_name = dlc_entry.get("dlc_name") or f"DLC {dlc_id}"
                 comment = f"[DLC] {dlc_name} / {game_name}" if game_name else f"[DLC] {dlc_name}"
-                add_additional_app(config_path, dlc_id, comment)
+                add_additional_app_outcome(config_path, dlc_id, comment)
 
         logger.info(
             "[DLC Sync] AppID %s: selected=%d, removed=%d, storage=%s",
             appid_str,
             len(selected_dlcs),
             len(unselected_dlcs),
-            "DlcData" if len(selected_dlcs) >= 64 else "AdditionalApps",
+            "DlcData" if len(selected_dlcs) >= DLC_DATA_THRESHOLD else "AdditionalApps",
         )
         return added
 
@@ -1524,7 +1591,7 @@ def has_game_dlcs(appid: str, depots: Optional[Dict[str, Any]] = None) -> bool:
         from utils.helpers import get_base_path
         depot_file = get_base_path() / "depots" / f"{appid_str}.depot"
         if depot_file.exists():
-            lines = [l.strip() for l in depot_file.read_text().splitlines() if l.strip()]
+            lines = [l.strip() for l in depot_file.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
             if len(lines) > 1:
                 for line in lines:
                     did = line.split(":", 1)[0].strip()

@@ -12,8 +12,6 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-_slssteam_so_path_cache = None
-_library_inject_so_path_cache = None
 
 # ---------------------------------------------------------------------------
 # SteamEnv — single source of truth for Steam/SLS path resolution
@@ -117,14 +115,20 @@ def _build_steam_env() -> SteamEnv:
 
     else:
         # ── Native paths ───────────────────────────────────────────────────
-        # Steam root: prefer ~/.local/share/Steam, fall back to ~/.steam/steam symlink
+        # Steam root: prefer ~/.local/share/Steam, fall back to ~/.steam/steam symlink or native ARM steamrtarm64
         native_candidates = [
             home / ".local" / "share" / "Steam",
             home / ".steam" / "steam",
+            home / ".local" / "share" / "Steam" / "steamrtarm64",
+            home / ".steam" / "steam" / "steamrtarm64",
         ]
         steam_path = None
         for candidate in native_candidates:
-            if (candidate / "steamapps").is_dir():
+            if (
+                (candidate / "steamapps").is_dir()
+                or (candidate / "steamrtarm64").is_dir()
+                or (candidate / "steam").is_file()
+            ):
                 steam_path = str(candidate.resolve())
                 break
 
@@ -255,7 +259,9 @@ def get_installed_steam_client_version(force_refresh: bool = False) -> Optional[
         home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam",
         home / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam",
         home / ".local" / "share" / "Steam",
+        home / ".local" / "share" / "Steam" / "steamrtarm64",
         home / ".steam" / "steam",
+        home / ".steam" / "steam" / "steamrtarm64",
         home / ".steam" / "root",
     ])
 
@@ -264,8 +270,16 @@ def get_installed_steam_client_version(force_refresh: bool = False) -> Optional[
         "steam_client_steamdeck_publicbeta_ubuntu12.manifest",
         "steam_client_ubuntu12.manifest",
         "steam_client_publicbeta_ubuntu12.manifest",
+        "steam_client_linuxarm64.manifest",
+        "steam_client_publicbeta_linuxarm64.manifest",
+        "steam_client_arm64.manifest",
+        "steam_client_steamdeck_arm64.manifest",
+        "steam_client_publicbeta_arm64.manifest",
         "steam_client_steamdeck_stable_ubuntu12",
         "steam_client_ubuntu12",
+        "steam_client_linuxarm64",
+        "steam_client_publicbeta_linuxarm64",
+        "steam_client_arm64",
     ]
 
     version_pattern = re.compile(r'"version"\s+"(\d+)"')
@@ -341,8 +355,8 @@ def _find_steam_windows():
 def _find_steam_linux():
     home_dir = os.path.expanduser("~")
     potential_paths = [
-        os.path.join(home_dir, ".steam", "steam"),
         os.path.join(home_dir, ".local", "share", "Steam"),
+        os.path.join(home_dir, ".steam", "steam"),
         os.path.join(
             home_dir, ".var", "app", "com.valvesoftware.Steam", "data", "Steam"
         ),
@@ -350,9 +364,17 @@ def _find_steam_linux():
     # os.path.join(home_dir, "snap", "steam", "common", ".steam", "steam"),
 
     for path in potential_paths:
-        if os.path.isdir(os.path.join(path, "steamapps")):
+        # Standard Steam has steamapps/; native ARM64 Steam installs to steamrtarm64/
+        if (
+            os.path.isdir(os.path.join(path, "steamapps"))
+            or os.path.isdir(os.path.join(path, "steamrtarm64"))
+        ):
             real_path = os.path.realpath(path)
-            logger.info(f"Found Steam installation at: {real_path} (from {path})")
+            arm_bin = os.path.join(path, "steamrtarm64", "steam")
+            if os.path.exists(arm_bin):
+                logger.info(f"Found native ARM64 Steam installation at: {real_path} (binary: {arm_bin})")
+            else:
+                logger.info(f"Found Steam installation at: {real_path} (from {path})")
             return real_path
 
     logger.error("Could not find Steam installation in common Linux directories.")
@@ -365,7 +387,9 @@ def get_owned_steam_appids() -> set:
     home = Path.home()
     candidates = [
         home / ".local" / "share" / "Steam" / "userdata",
+        home / ".local" / "share" / "Steam" / "steamrtarm64" / "userdata",
         home / ".steam" / "steam" / "userdata",
+        home / ".steam" / "steam" / "steamrtarm64" / "userdata",
         home / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam" / "userdata",
         home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam" / "userdata",
     ]
@@ -402,14 +426,14 @@ def get_owned_steam_appids() -> set:
 def parse_library_folders(vdf_path):
     library_paths = []
     try:
-        with open(vdf_path, "r", encoding="utf-8") as f:
+        with open(vdf_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
         matches = re.findall(r"^\s*\"(?:path|\d+)\"\s*\"(.*?)\"", content, re.MULTILINE)
         for path in matches:
             normalized_path = path.replace("\\\\", "\\")
             if os.path.isdir(os.path.join(normalized_path, "steamapps")):
                 library_paths.append(normalized_path)
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         logger.error(f"Failed to parse libraryfolders.vdf: {e}")
     return library_paths
 
@@ -450,202 +474,98 @@ def get_steam_libraries():
     return list(_cached_steam_libraries)
 
 
+def is_path_in_steam_library(target_path: str, steam_libraries: Optional[List[str]] = None) -> bool:
+    """Return True if target_path resides within a registered Steam library folder."""
+    if not target_path:
+        return False
+    try:
+        norm_target = os.path.realpath(os.path.expanduser(str(target_path)))
+        libs = steam_libraries if steam_libraries is not None else get_steam_libraries()
+        for lib in libs:
+            norm_lib = os.path.realpath(os.path.expanduser(str(lib)))
+            if norm_target == norm_lib or norm_target.startswith(norm_lib + os.sep):
+                return True
+        # Structural check for libraries Steam has not registered in libraryfolders.vdf
+        # (external/dual-boot drives, or a library this app just created). Walk up from
+        # the target to the nearest candidate library root and accept the path when that
+        # root carries a genuine Steam library marker. This deliberately covers the root
+        # itself, its steamapps/ directory and everything below, so the same library is
+        # never reported "inside a library" for one path and outside for its parent.
+        target_path_obj = Path(norm_target)
+        if "steamapps" in target_path_obj.parts:
+            idx = target_path_obj.parts.index("steamapps")
+            candidate_roots = [Path(*target_path_obj.parts[:idx])]
+        else:
+            candidate_roots = [target_path_obj, target_path_obj.parent]
+        for lib_root in candidate_roots:
+            steamapps_dir = lib_root / "steamapps"
+            # libraryfolder.vdf is written by ensure_steam_library at the library
+            # root; libraryfolders.vdf is Steam's own index of primary libraries.
+            if (
+                (lib_root / "libraryfolder.vdf").is_file()
+                or (lib_root / "libraryfolders.vdf").is_file()
+                or (steamapps_dir / "libraryfolder.vdf").is_file()
+                or (steamapps_dir.is_dir() and any(steamapps_dir.glob("appmanifest_*.acf")))
+            ):
+                return True
+    except Exception as e:
+        logger.debug(f"is_path_in_steam_library check failed for {target_path}: {e}")
+    return False
+
+
+STEAM_PROCESS_NAMES = {
+    "steam",
+    ".steam-wrapped",
+    "steam-wrapped",
+    "steam-original",
+    "steam.sh",
+}
+
+
 def is_steam_running():
-    process_name = "steam.exe" if sys.platform == "win32" else "steam"
+    if sys.platform == "win32":
+        return any(
+            (p.info.get("name") or "").lower() == "steam.exe"
+            for p in psutil.process_iter(["name"])
+        )
+
+    # Check if SLSsteam pipe has an active listener first (fastest and most reliable)
+    try:
+        from utils.slssteam_integration import _is_slssteam_pipe_listening
+        if _is_slssteam_pipe_listening():
+            return True
+    except Exception:
+        pass
+
     return any(
-        (p.info.get("name") or "").lower() == process_name
+        (p.info.get("name") or "").lower() in STEAM_PROCESS_NAMES
+        or (p.info.get("name") or "").lower() == "steamwebhelper"
         for p in psutil.process_iter(["name"])
     )
 
 
-def kill_steam_process():
-    global _slssteam_so_path_cache, _library_inject_so_path_cache
-    _slssteam_so_path_cache = None
-    _library_inject_so_path_cache = None
-
-    process_name = "steam.exe" if sys.platform == "win32" else "steam"
-    steam_proc = next(
-        (
-            p
-            for p in psutil.process_iter(["pid", "name"])
-            if (p.info.get("name") or "").lower() == process_name
-        ),
-        None,
-    )
-
-    if not steam_proc:
-        logger.warning(f"{process_name} process not found.")
-        return False
-
-    if sys.platform == "linux":
-        pid = steam_proc.pid
-        maps_file = f"/proc/{pid}/maps"
-        try:
-            with open(maps_file, "r") as f:
-                for line in f:
-                    if "SLSsteam.so" in line:
-                        parts = line.split()
-                        if len(parts) > 5 and os.path.exists(parts[-1]):
-                            _slssteam_so_path_cache = parts[-1]
-                            logger.info(
-                                f"Found and cached SLSsteam.so path: {_slssteam_so_path_cache}"
-                            )
-                    elif (
-                        "library-inject.so" in line
-                        or "libSLS-library-inject.so" in line
-                    ):
-                        parts = line.split()
-                        if len(parts) > 5 and os.path.exists(parts[-1]):
-                            _library_inject_so_path_cache = parts[-1]
-                            logger.info(
-                                f"Found and cached library-inject.so path: {_library_inject_so_path_cache}"
-                            )
-        except OSError as e:
-            logger.error(f"Error reading process maps for library paths: {e}")
-
-    try:
-        steam_proc.kill()
-        steam_proc.wait(timeout=5)
-        logger.info(f"Successfully terminated {process_name} (PID: {steam_proc.pid}).")
-        return True
-    except psutil.Error as e:
-        logger.error(f"Failed to terminate {process_name}: {e}")
-        return False
+def kill_steam_process() -> bool:
+    """Deprecated: Steam process termination has been removed from ASSella."""
+    logger.debug("kill_steam_process called, but Steam process killing is removed.")
+    return False
 
 
-def start_steam():
-    """Start Steam on Windows, or attempt to start Steam with SLSsteam integration on Linux
-    Returns: "SUCCESS", "FAILED", or "NEEDS_USER_PATH"
-    """
-    global _slssteam_so_path_cache, _library_inject_so_path_cache
-    logger.info("Attempting to start Steam...")
-
-    try:
-        if sys.platform == "win32":
-            steam_path = find_steam_install()
-            if not steam_path:
-                return "FAILED"
-            exe_path = os.path.join(steam_path, "steam.exe")
-            if not os.path.exists(exe_path):
-                return "FAILED"
-            subprocess.Popen([exe_path])
-            return "SUCCESS"
-
-        elif sys.platform == "linux":
-            # For Linux, we now need to handle SLSsteam.so AND library-inject.so
-            slssteam_path = _slssteam_so_path_cache
-            library_inject_path = _library_inject_so_path_cache
-
-            # Try default locations if not cached
-            if not slssteam_path:
-                default_slssteam_paths = [
-                    "/usr/lib32/libSLSsteam.so",
-                    os.path.expanduser("~/.local/share/SLSsteam/SLSsteam.so"),
-                    os.path.expanduser(
-                        "~/.var/app/com.valvesoftware.Steam/.local/share/SLSsteam/SLSsteam.so"
-                    ),
-                ]
-                for path in default_slssteam_paths:
-                    if os.path.exists(path):
-                        slssteam_path = path
-                        logger.info(f"Found SLSsteam.so at: {path}")
-                        break
-
-            if not library_inject_path:
-                default_library_inject_paths = [
-                    "/usr/lib32/libSLS-library-inject.so",
-                    os.path.expanduser("~/.local/share/SLSsteam/library-inject.so"),
-                    os.path.expanduser(
-                        "~/.var/app/com.valvesoftware.Steam/.local/share/SLSsteam/library-inject.so"
-                    ),
-                ]
-                for path in default_library_inject_paths:
-                    if os.path.exists(path):
-                        library_inject_path = path
-                        logger.info(f"Found library-inject.so at: {path}")
-                        break
-
-            # If we have both libraries, start with them
-            if slssteam_path and library_inject_path:
-                if os.path.exists(slssteam_path) and os.path.exists(
-                    library_inject_path
-                ):
-                    # Start Steam with both libraries
-                    success = start_steam_with_slssteam(
-                        slssteam_path, library_inject_path
-                    )
-                    # Only clear caches if successful
-                    if success == "SUCCESS":
-                        _slssteam_so_path_cache = None
-                        _library_inject_so_path_cache = None
-                    return success
-                else:
-                    logger.warning("Cached library paths no longer exist")
-                    return "NEEDS_USER_PATH"
-            else:
-                # Missing one or both libraries
-                missing = []
-                if not slssteam_path:
-                    missing.append("SLSsteam.so")
-                if not library_inject_path:
-                    missing.append("library-inject.so")
-                logger.warning(f"Missing libraries: {', '.join(missing)}")
-                return "NEEDS_USER_PATH"
-        else:
-            return "FAILED"
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.error(f"Failed to execute Steam: {e}", exc_info=True)
-        return "FAILED"
+def start_steam() -> str:
+    """Deprecated: Steam execution launch has been removed from ASSella."""
+    logger.debug("start_steam called, but Steam launch execution is removed.")
+    return "FAILED"
 
 
-def start_steam_with_slssteam(slssteam_path=None, library_inject_path=None):
-    """Start Steam on Linux with SLSsteam.so AND library-inject.so via LD_AUDIT
-    Returns: "SUCCESS", "FAILED", or "NEEDS_USER_PATH"
-    """
-
-    if sys.platform != "linux":
-        logger.error("start_steam_with_slssteam is only supported on Linux")
-        return "FAILED"
-
-    # Validate paths
-    if not slssteam_path or not os.path.exists(slssteam_path):
-        logger.error(f"SLSsteam.so path is invalid or does not exist: {slssteam_path}")
-        return "NEEDS_USER_PATH"
-
-    if not library_inject_path or not os.path.exists(library_inject_path):
-        logger.error(
-            f"library-inject.so path is invalid or does not exist: {library_inject_path}"
-        )
-        return "NEEDS_USER_PATH"
-
-    try:
-        logger.info(
-            f"Executing Steam with LD_AUDIT: {library_inject_path}:{slssteam_path}"
-        )
-        env = os.environ.copy()
-        env["LD_AUDIT"] = f"{library_inject_path}:{slssteam_path}"
-        subprocess.Popen(["steam"], env=env)
-        return "SUCCESS"
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.error(
-            f"Failed to execute steam with provided libraries: {e}", exc_info=True
-        )
-        return "FAILED"
+def start_steam_with_slssteam(slssteam_path=None, library_inject_path=None) -> str:
+    """Deprecated: Steam execution launch has been removed from ASSella."""
+    logger.debug("start_steam_with_slssteam called, but Steam launch execution is removed.")
+    return "FAILED"
 
 
-def run_dll_injector(steam_path):
-    if sys.platform != "win32":
-        return False
-    injector_path = os.path.join(steam_path, "DLLInjector.exe")
-    if not os.path.exists(injector_path):
-        return False
-    try:
-        subprocess.Popen(
-            [injector_path], cwd=steam_path, creationflags=subprocess.CREATE_NO_WINDOW
-        )
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False
+def run_dll_injector(steam_path) -> bool:
+    """Deprecated: DLL injector execution has been removed from ASSella."""
+    logger.debug("run_dll_injector called, but DLL injector execution is removed.")
+    return False
 
 
 def get_library_index(library_path: str, steam_path: str | None = None) -> int:
@@ -697,18 +617,195 @@ def get_library_index(library_path: str, steam_path: str | None = None) -> int:
         return 0
 
 
+_notified_steam_restart_paths: set[str] = set()
+
+
+def _notify_steam_restart_for_new_library(real_path: str) -> None:
+    """Prompt the user when a new Steam library was registered while Steam is running."""
+    try:
+        from utils.main_thread import post_to_main_thread
+
+        def _show():
+            try:
+                from PyQt6.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app is None or app.platformName() == "offscreen":
+                    return
+                from ui.dialogs.themed_message_box import ThemedMessageBox
+                parent = app.activeWindow()
+                ThemedMessageBox.information(
+                    parent,
+                    "Steam Restart Required",
+                    f"A new Steam library folder has been registered:\n{real_path}\n\n"
+                    "Because Steam is currently running, it will not recognize this new library until Steam is restarted.\n\n"
+                    "Please restart Steam so it can detect and save the new library location.",
+                )
+            except Exception as e:
+                logger.debug(f"Failed to display Steam restart dialog: {e}")
+
+        post_to_main_thread(_show)
+    except Exception as e:
+        logger.debug(f"Failed to dispatch Steam restart notice: {e}")
+
+
+def ensure_steam_library(
+    library_path: str,
+    steam_path: str | None = None,
+    notify_if_steam_running: bool = True,
+) -> Optional[int]:
+    """Ensure a directory is recognized and registered as a Steam library folder in libraryfolders.vdf.
+
+    1. Normalizes the path to library root (stripping steamapps/... if present).
+    2. Ensures <library_path>/steamapps and <library_path>/steamapps/common exist.
+    3. If already registered in libraryfolders.vdf (or is the primary Steam install), returns its index.
+    4. Otherwise, registers a new numeric entry in libraryfolders.vdf, creates libraryfolder.vdf sidecar,
+       and invalidates the library cache so get_steam_libraries() and get_library_index() immediately reflect it.
+    """
+    if not library_path:
+        return None
+
+    from utils.paths import normalize_to_library_root, is_blacklisted_system_path
+    if is_blacklisted_system_path(library_path):
+        return None
+
+    norm_path = normalize_to_library_root(library_path)
+    real_path = os.path.realpath(norm_path)
+
+    # Always ensure local steamapps/common structure exists
+    try:
+        os.makedirs(os.path.join(real_path, "steamapps", "common"), exist_ok=True)
+    except OSError as e:
+        logger.warning(f"ensure_steam_library: could not create steamapps/common in {real_path}: {e}")
+
+    # Ensure sidecar libraryfolder.vdf exists at library root
+    try:
+        sidecar_path = os.path.join(real_path, "libraryfolder.vdf")
+        if not os.path.exists(sidecar_path):
+            with open(sidecar_path, "w", encoding="utf-8") as sf:
+                sf.write('"libraryfolder"\n{\n\t"contentid"\t\t"0"\n\t"label"\t\t""\n}\n')
+    except OSError as e:
+        logger.debug(f"ensure_steam_library: sidecar creation skipped: {e}")
+
+    if not steam_path:
+        steam_path = find_steam_install()
+    if not steam_path:
+        return None
+
+    # If it is the primary Steam install directory, index is 0
+    if os.path.realpath(steam_path) == real_path:
+        return 0
+
+    vdf_path = os.path.join(steam_path, "steamapps", "libraryfolders.vdf")
+    if not os.path.exists(vdf_path):
+        return None
+
+    try:
+        with open(vdf_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+
+        # Check if already present
+        lines = content.split("\n")
+        current_index = None
+        for line in lines:
+            index_match = re.match(r'^\s*"(\d+)"\s*$', line)
+            if index_match:
+                current_index = int(index_match.group(1))
+                continue
+            path_match = re.match(r'^\s*"path"\s*"([^"]+)"', line)
+            if path_match and current_index is not None:
+                p = path_match.group(1).replace("\\\\", "\\")
+                if os.path.realpath(p) == real_path:
+                    return current_index
+
+        # Find all existing numeric indices to allocate next
+        indices = [int(m) for m in re.findall(r'^\s*"(\d+)"\s*$', content, re.MULTILINE)]
+        next_idx = max(indices) + 1 if indices else 1
+
+        vdf_escaped_path = real_path.replace("\\", "\\\\")
+        new_entry = (
+            f'\t"{next_idx}"\n'
+            f'\t{{\n'
+            f'\t\t"path"\t\t"{vdf_escaped_path}"\n'
+            f'\t\t"label"\t\t""\n'
+            f'\t\t"contentid"\t\t"0"\n'
+            f'\t\t"totalsize"\t\t"0"\n'
+            f'\t\t"update_clean_bytes_tally"\t\t"0"\n'
+            f'\t\t"time_last_update_verified"\t\t"0"\n'
+            f'\t\t"apps"\n'
+            f'\t\t{{\n'
+            f'\t\t}}\n'
+            f'\t}}\n'
+        )
+
+        last_brace = content.rfind("}")
+        if last_brace != -1:
+            updated_content = content[:last_brace] + new_entry + "}\n"
+        else:
+            updated_content = f'"libraryfolders"\n{{\n{new_entry}}}\n'
+
+        def _write_vdf_atomic(target_file: str, data: str):
+            bak = target_file + ".assella.bak"
+            try:
+                if not os.path.exists(bak):
+                    import shutil
+                    shutil.copy2(target_file, bak)
+            except OSError:
+                pass
+            tmp = target_file + f".tmp.{os.getpid()}"
+            with open(tmp, "w", encoding="utf-8") as tf:
+                tf.write(data)
+                tf.flush()
+                os.fsync(tf.fileno())
+            os.replace(tmp, target_file)
+
+        # Write to steamapps/libraryfolders.vdf
+        _write_vdf_atomic(vdf_path, updated_content)
+
+        # Mirror update to config/libraryfolders.vdf if present
+        config_vdf = os.path.join(steam_path, "config", "libraryfolders.vdf")
+        if os.path.exists(config_vdf):
+            try:
+                _write_vdf_atomic(config_vdf, updated_content)
+            except OSError as err:
+                logger.debug(f"ensure_steam_library: config mirror skipped: {err}")
+
+        # Invalidate memory, mtime, and SteamEnv cache
+        global _cached_steam_libraries, _cached_libraries_vdf_mtime
+        _cached_steam_libraries = None
+        _cached_libraries_vdf_mtime = None
+        invalidate_steam_env_cache()
+
+        logger.info(f"Registered new Steam library in libraryfolders.vdf at index {next_idx}: {real_path}")
+
+        if notify_if_steam_running and is_steam_running() and real_path not in _notified_steam_restart_paths:
+            _notified_steam_restart_paths.add(real_path)
+            _notify_steam_restart_for_new_library(real_path)
+
+        return next_idx
+
+    except Exception as e:
+        logger.warning(f"ensure_steam_library failed for {real_path}: {e}")
+        return None
+
+
 def dispatch_steam_url(url: str) -> bool:
     """Dispatch a steam:// URL (such as steam://install/<appid>) to the active Steam client."""
     import shutil
-    import subprocess
 
     try:
         env = get_steam_env()
         cmd = None
-        if env.is_flatpak and shutil.which("flatpak"):
+        from utils.helpers import is_arm64
+        if is_arm64() and env.steam_path and (Path(env.steam_path) / "steamrtarm64" / "steam").is_file():
+            cmd = [str(Path(env.steam_path) / "steamrtarm64" / "steam"), url]
+        elif env.is_flatpak and shutil.which("flatpak"):
             cmd = ["flatpak", "run", "com.valvesoftware.Steam", url]
         elif shutil.which("steam"):
             cmd = ["steam", url]
+        elif env.steam_path and (Path(env.steam_path) / "steam").is_file():
+            cmd = [str(Path(env.steam_path) / "steam"), url]
+        elif env.steam_path and (Path(env.steam_path) / "steamrtarm64" / "steam").is_file():
+            cmd = [str(Path(env.steam_path) / "steamrtarm64" / "steam"), url]
         elif shutil.which("xdg-open"):
             cmd = ["xdg-open", url]
 
@@ -736,20 +833,12 @@ def trigger_steam_install(appid: str, library_index: int = 0) -> bool:
 
 
 def slssteam_api_send(command: str) -> bool:
-    """Send a command to SLSsteam API via named pipe."""
-    if sys.platform != "linux":
-        return False
-
-    pipe_path = "/tmp/SLSsteam.API"
-
+    """Send a command to SLSsteam API via named pipe. Delegates to non-blocking helper."""
     try:
-        with open(pipe_path, "w") as f:
-            f.write(command.strip() + "\n")
-            f.flush()
-        logger.info(f"SLSsteam API command sent: {command}")
-        return True
-    except OSError:
-        # Silently fail - API may not be available
+        from utils.slssteam_integration import _slssteam_api_send
+        return _slssteam_api_send(command)
+    except Exception as e:
+        logger.debug(f"slssteam_api_send fallback failed: {e}")
         return False
 
 
@@ -865,15 +954,19 @@ def get_most_recent_steam_id() -> Optional[str]:
         # Safety fallback: extra native paths in case env resolution missed one
         candidate_paths += [
             Path.home() / ".steam" / "steam" / "config" / "loginusers.vdf",
+            Path.home() / ".steam" / "steam" / "steamrtarm64" / "config" / "loginusers.vdf",
             Path.home() / ".steam" / "root" / "config" / "loginusers.vdf",
             Path.home() / ".local" / "share" / "Steam" / "config" / "loginusers.vdf",
+            Path.home() / ".local" / "share" / "Steam" / "steamrtarm64" / "config" / "loginusers.vdf",
             Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam" / "config" / "loginusers.vdf",
         ]
     except Exception:
         candidate_paths = [
             Path.home() / ".steam" / "steam" / "config" / "loginusers.vdf",
+            Path.home() / ".steam" / "steam" / "steamrtarm64" / "config" / "loginusers.vdf",
             Path.home() / ".steam" / "root" / "config" / "loginusers.vdf",
             Path.home() / ".local" / "share" / "Steam" / "config" / "loginusers.vdf",
+            Path.home() / ".local" / "share" / "Steam" / "steamrtarm64" / "config" / "loginusers.vdf",
             Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam" / "config" / "loginusers.vdf",
         ]
 

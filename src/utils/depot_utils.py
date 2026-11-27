@@ -41,6 +41,17 @@ REDIST_NAME_KEYWORDS = (
 )
 
 
+def extract_depot_ids(depots_obj: Any) -> Set[str]:
+    """Safely extract string depot IDs from either a dict (depot_id -> info) or a list/set/tuple of depot IDs."""
+    if not depots_obj:
+        return set()
+    if isinstance(depots_obj, dict):
+        return {str(d).strip() for d in depots_obj.keys() if str(d).strip()}
+    if isinstance(depots_obj, (list, set, tuple)):
+        return {str(d).strip() for d in depots_obj if str(d).strip()}
+    return set()
+
+
 def is_redist_or_dependency(dinfo: Any, did_str: str) -> bool:
     """True if depot is a redistributable, system package, or external dependency."""
     if did_str in BLACKLISTED_DEPOTS:

@@ -98,45 +98,20 @@ class UpdatesPanel(QFrame):
 
 def _build_faded_artwork(pixmap, target_size):
     """Scale artwork to cover target_size and apply a smooth S-curve left fade."""
-    from PyQt6.QtGui import QPainter, QLinearGradient, QPixmap
+    from ui.widgets.artwork_fade import build_faded_artwork
 
-    if pixmap is None or pixmap.isNull() or target_size.width() <= 0 or target_size.height() <= 0:
-        return QPixmap()
-
-    scaled = pixmap.scaled(
+    return build_faded_artwork(
+        pixmap,
         target_size,
-        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-        Qt.TransformationMode.SmoothTransformation,
+        direction="fade_in_right",
+        fade_start=0.0,
+        fade_end=0.72,
+        start_alpha=0,
+        peak_alpha=225,
+        end_alpha=238,
+        edge_alpha=200,
+        edge_span=0.16,
     )
-    sx = max(0, (scaled.width() - target_size.width()) // 2)
-    sy = max(0, (scaled.height() - target_size.height()) // 2)
-
-    faded = QPixmap(target_size)
-    faded.fill(Qt.GlobalColor.transparent)
-    p = QPainter(faded)
-    p.drawPixmap(0, 0, scaled, sx, sy, target_size.width(), target_size.height())
-    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-
-    # Multi-stop smoothstep S-curve alpha mask from left edge (0) to right edge (~238)
-    alpha_grad = QLinearGradient(0.0, 0.0, float(target_size.width()), 0.0)
-    fade_span = 0.72
-    steps = 10
-    for i in range(steps + 1):
-        u = i / steps
-        s = u * u * (3.0 - 2.0 * u)
-        alpha_grad.setColorAt(u * fade_span, QColor(0, 0, 0, int(round(s * 225))))
-    alpha_grad.setColorAt(1.0, QColor(0, 0, 0, 238))
-    p.fillRect(0, 0, target_size.width(), target_size.height(), alpha_grad)
-
-    # Subtle vertical edge softening so artwork blends smoothly near top/bottom borders
-    v_grad = QLinearGradient(0.0, 0.0, 0.0, float(target_size.height()))
-    v_grad.setColorAt(0.0, QColor(0, 0, 0, 200))
-    v_grad.setColorAt(0.16, QColor(0, 0, 0, 255))
-    v_grad.setColorAt(0.84, QColor(0, 0, 0, 255))
-    v_grad.setColorAt(1.0, QColor(0, 0, 0, 200))
-    p.fillRect(0, 0, target_size.width(), target_size.height(), v_grad)
-    p.end()
-    return faded
 
 
 class UpdateItemWidget(QFrame):

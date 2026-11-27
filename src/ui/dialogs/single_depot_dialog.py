@@ -395,23 +395,6 @@ class SingleDepotSelectionDialog(QDialog):
         self.depot_checkbox = QCheckBox()
         self.depot_checkbox.setChecked(self._is_pre_checked)
         self.depot_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.depot_checkbox.setStyleSheet(f"""
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
-                background-color: rgba(255, 255, 255, 0.05);
-            }}
-            QCheckBox::indicator:hover {{
-                border-color: {self.accent_color};
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {self.accent_color};
-                border-color: {self.accent_color};
-                image: url("{tick_svg_path}");
-            }}
-        """)
         card_layout.addWidget(self.depot_checkbox)
 
         # Depot ID
@@ -567,23 +550,19 @@ class SingleDepotSelectionDialog(QDialog):
         """
         def_dir = self._settings.value("default_download_directory", "", type=str) if self._settings else ""
 
-        # A configured default download directory means "put it there": this
-        # dialog then offers that one drive instead of every Steam library, and
-        # a preferred path is shown first so it is the one the user lands on.
+        # Offer all candidate drives with preferred first so the user can easily
+        # switch to another drive or custom directory even if a default is configured.
         storage_paths = storage_targets.candidate_drives(
             def_dir,
             self.preferred_library_path,
-            only_default_when_configured=True,
+            only_default_when_configured=False,
             preferred_first=True,
         )
 
-        self._storage_paths = storage_paths
+        self._storage_paths = storage_paths or []
         self._storage_btn_group = QButtonGroup(self)
         self._storage_btn_group.setExclusive(True)
-
-        if not storage_paths:
-            layout.addStretch(1)
-            return
+        self._custom_storage_path = None
 
         # Locked storage display (verify / update / DLC flows over installed
         # games): greyed-out label showing the install location, no choice.
@@ -657,6 +636,8 @@ class SingleDepotSelectionDialog(QDialog):
             def _make_handler(target_path):
                 def _handler():
                     self.selected_storage_path = target_path
+                    if hasattr(self, "_custom_storage_btn") and self._custom_storage_btn:
+                        self._custom_storage_btn.setChecked(False)
                     if self._storage_overflow_combo:
                         self._storage_overflow_combo.blockSignals(True)
                         self._storage_overflow_combo.setCurrentIndex(0)
@@ -688,6 +669,8 @@ class SingleDepotSelectionDialog(QDialog):
                 target_path = combo.itemData(index)
                 if target_path:
                     self.selected_storage_path = target_path
+                    if hasattr(self, "_custom_storage_btn") and self._custom_storage_btn:
+                        self._custom_storage_btn.setChecked(False)
                     self._storage_btn_group.setExclusive(False)
                     for b in self._storage_btn_group.buttons():
                         b.setChecked(False)
@@ -698,6 +681,96 @@ class SingleDepotSelectionDialog(QDialog):
             combo.currentIndexChanged.connect(_on_overflow_selected)
             self._storage_overflow_combo = combo
             layout.addWidget(combo, 1)
+
+        # Custom directory selection button
+        self._custom_storage_btn = QPushButton("Custom...")
+        self._custom_storage_btn.setCheckable(True)
+        self._custom_storage_btn.setFixedHeight(28)
+        self._custom_storage_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._custom_storage_btn.setToolTip("Select a custom directory or external drive")
+        self._custom_storage_btn.setStyleSheet(btn_style)
+        self.selected_is_standalone = False
+
+        def _on_custom_clicked():
+            from ui.dialogs.themed_file_dialog import ThemedFileDialog
+            from ui.dialogs.themed_message_box import ThemedMessageBox
+            from utils.paths import is_valid_download_directory
+            from core.steam_helpers import is_path_in_steam_library
+
+            chosen_dir = ThemedFileDialog.getExistingDirectory(self, "Select Installation Directory / Steam Library")
+            if not chosen_dir:
+                if self._custom_storage_path and self.selected_storage_path == self._custom_storage_path:
+                    self._custom_storage_btn.setChecked(True)
+                else:
+                    self._custom_storage_btn.setChecked(False)
+                    if self.selected_storage_path in direct_paths:
+                        idx = direct_paths.index(self.selected_storage_path)
+                        b = self._storage_btn_group.button(idx)
+                        if b:
+                            b.setChecked(True)
+                return
+
+            real_p = os.path.realpath(os.path.expanduser(chosen_dir))
+            if not is_valid_download_directory(real_p):
+                ThemedMessageBox.warning(
+                    self,
+                    "Invalid Location",
+                    "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
+                )
+                self._custom_storage_btn.setChecked(bool(self._custom_storage_path and self.selected_storage_path == self._custom_storage_path))
+                return
+
+            self._custom_storage_path = real_p
+            self.selected_storage_path = real_p
+            is_in_steam = is_path_in_steam_library(real_p)
+            self.selected_is_standalone = not is_in_steam
+
+            if is_in_steam:
+                target = storage_targets.describe(real_p)
+                btn_text = f"{target.label} ({target.free})" if target.free else target.label
+                self._custom_storage_btn.setToolTip(target.tooltip)
+            else:
+                folder_name = os.path.basename(real_p) or "Folder"
+                btn_text = f"{folder_name} (Standalone)"
+                self._custom_storage_btn.setToolTip(f"Standalone custom folder: {real_p}")
+
+            self._custom_storage_btn.setText(btn_text)
+            self._custom_storage_btn.setChecked(True)
+
+            self._storage_btn_group.setExclusive(False)
+            for b in self._storage_btn_group.buttons():
+                b.setChecked(False)
+            self._storage_btn_group.setExclusive(True)
+
+            if self._storage_overflow_combo:
+                self._storage_overflow_combo.blockSignals(True)
+                self._storage_overflow_combo.setCurrentIndex(0)
+                self._storage_overflow_combo.blockSignals(False)
+                self._set_overflow_combo_active(False)
+
+            logger.info(f"[SingleDepot] Custom storage library selected: {real_p}")
+
+        self._custom_storage_btn.clicked.connect(_on_custom_clicked)
+        layout.addWidget(self._custom_storage_btn, 1)
+
+        self.remember_storage_chk = QCheckBox("Remember choice")
+        self.remember_storage_chk.setChecked(False)
+        self.remember_storage_chk.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remember_storage_chk.setToolTip("Use this library from now on without asking.\nChange it in Settings -> Downloads.")
+        self.remember_storage_chk.setStyleSheet("""
+            QCheckBox {
+                font-size: 8pt;
+                color: rgba(255, 255, 255, 0.7);
+                spacing: 5px;
+                border: none;
+                background: transparent;
+            }
+            QCheckBox:focus {
+                border: none;
+                outline: none;
+            }
+        """)
+        layout.addWidget(self.remember_storage_chk)
 
         # Pre-select priority: preferred -> default -> first
         default_target = storage_targets.preselect(
@@ -719,6 +792,13 @@ class SingleDepotSelectionDialog(QDialog):
                 self._storage_overflow_combo.setCurrentIndex(c_idx)
                 self._storage_overflow_combo.blockSignals(False)
                 self._set_overflow_combo_active(True)
+        elif default_target and getattr(self, "_custom_storage_btn", None):
+            self._custom_storage_path = default_target
+            target = storage_targets.describe(default_target)
+            btn_text = f"{target.label} ({target.free})" if target.free else target.label
+            self._custom_storage_btn.setText(btn_text)
+            self._custom_storage_btn.setToolTip(target.tooltip)
+            self._custom_storage_btn.setChecked(True)
 
     def _set_overflow_combo_active(self, active: bool) -> None:
         if not self._storage_overflow_combo:
@@ -770,20 +850,27 @@ class SingleDepotSelectionDialog(QDialog):
             ThemedMessageBox.warning(self, "Warning", "Please check the depot first before selecting files.")
             return
 
-        try:
-            dump = prepare_manifest_dump(self.app_id, str(self.single_depot_id))
-        except ManifestDumpError as e:
-            ThemedMessageBox.critical(self, "Error", str(e))
-            return
+        target_depot = str(self.single_depot_id)
+        target_manifest_id = getattr(self, "_manifest_overrides", {}).get(target_depot)
+        if not target_manifest_id and hasattr(self, "depots") and target_depot in self.depots:
+            d_info = self.depots[target_depot]
+            if isinstance(d_info, dict):
+                target_manifest_id = d_info.get("manifest_id")
 
-        runner = ManifestDumpRunner(self, dump)
-        runner.finished.connect(lambda ok, message: self._on_dump_finished(dump, ok, message))
+        runner = ManifestDumpRunner(
+            self,
+            app_id=str(self.app_id),
+            depot_id=str(target_depot),
+            manifest_id=str(target_manifest_id) if target_manifest_id else None,
+        )
+        runner.finished.connect(lambda ok, message, r=runner: self._on_dump_finished(r.dump, ok, message))
         runner.start()
 
     def _on_dump_finished(self, dump, ok, message):
         """Open the file-selection tree over a listing that was written."""
-        if not ok:
-            ThemedMessageBox.critical(self, "Error", message)
+        if not ok or not dump:
+            if message:
+                ThemedMessageBox.critical(self, "Error", message)
             return
 
         from ui.dialogs.fileselection import FileSelectionDialog
@@ -885,7 +972,37 @@ class SingleDepotSelectionDialog(QDialog):
         if not self.depot_checkbox.isChecked():
             ThemedMessageBox.warning(self, "No Depots Selected", "Please select the depot to proceed with download.")
             return
+        if self.show_storage and not self.selected_storage_path:
+            ThemedMessageBox.warning(self, "No Storage Selected", "Please select a storage location before proceeding.")
+            return
+        if self.selected_storage_path:
+            try:
+                from core.steam_helpers import ensure_steam_library, is_path_in_steam_library
+                if is_path_in_steam_library(self.selected_storage_path):
+                    ensure_steam_library(self.selected_storage_path)
+            except Exception as e:
+                logger.warning(f"[SingleDepot] Failed to register library in Steam config: {e}")
+        if hasattr(self, "should_remember_storage") and self.should_remember_storage():
+            chosen = self.get_selected_storage()
+            if chosen and hasattr(self, "_settings") and self._settings:
+                from utils.library_choice import remember_library
+
+                remember_library(chosen, self._settings)
+                logger.info(f"[SingleDepot] Remembered default storage library: {chosen}")
         self.accept()
+
+    def should_remember_storage(self) -> bool:
+        """Whether the user checked the 'Remember choice' toggle for storage."""
+        return bool(getattr(self, "remember_storage_chk", None) and self.remember_storage_chk.isChecked())
+
+    def is_standalone_storage_selected(self) -> bool:
+        """Whether the user selected a standalone custom folder."""
+        from core.steam_helpers import is_path_in_steam_library
+        if getattr(self, "selected_is_standalone", False):
+            return True
+        if self.selected_storage_path and not is_path_in_steam_library(self.selected_storage_path):
+            return True
+        return False
 
     # Public API conforming with DepotSelectionDialog
     def get_selected_depots(self) -> List[str]:
@@ -1117,7 +1234,8 @@ class SingleDepotSelectionDialog(QDialog):
             return
         self._selected_build_id = selected_bid
         self.builds_btn.setText(f"Build: {selected_bid}")
-        if self.current_build_id and selected_bid == self.current_build_id:
+        has_mid_diff = bool(patch_depots)
+        if self.current_build_id and selected_bid == self.current_build_id and not has_mid_diff:
             self._is_build_pinned = False
         else:
             self._is_build_pinned = True
@@ -1133,39 +1251,21 @@ class SingleDepotSelectionDialog(QDialog):
                         logger.info(f"[SingleDepot] Overrode depot {did} manifest to {mid} for build {selected_bid}")
 
     def _on_builds_clicked(self):
-        from core.steamdb_scraper import ByparrManager
-        has_byparr = ByparrManager.find_byparr_dir() is not None
-
         active_bid = getattr(self, "_selected_build_id", None) or self.current_build_id
 
-        if not has_byparr:
-            from ui.dialogs.manual_manifest_dialog import ManualManifestDialog
-            dlg = ManualManifestDialog(
-                parent=self,
-                app_id=self.app_id,
-                game_name=self.game_name,
-                depots_dict=self.depots,
-                default_depot_id=self.single_depot_id,
-                current_build_id=active_bid,
-                accent_color=self.accent_color,
-            )
-            if dlg.exec():
-                selected_bid, patch_depots = dlg.get_selected_build()
-                self._apply_build_selection(selected_bid, patch_depots)
-        else:
-            from ui.dialogs.build_selection_dialog import BuildSelectionDialog
-            dlg = BuildSelectionDialog(
-                parent=self,
-                app_id=self.app_id,
-                game_name=self.game_name,
-                current_build_id=active_bid,
-                accent_color=self.accent_color,
-                depots_dict=self.depots,
-                default_depot_id=self.single_depot_id,
-            )
-            if dlg.exec():
-                selected_bid, patch_depots = dlg.get_selected_build()
-                self._apply_build_selection(selected_bid, patch_depots)
+        from ui.dialogs.build_selection_dialog import BuildSelectionDialog
+        dlg = BuildSelectionDialog(
+            parent=self,
+            app_id=self.app_id,
+            game_name=self.game_name,
+            current_build_id=active_bid,
+            accent_color=self.accent_color,
+            depots_dict=self.depots,
+            default_depot_id=self.single_depot_id,
+        )
+        if dlg.exec():
+            selected_bid, patch_depots = dlg.get_selected_build()
+            self._apply_build_selection(selected_bid, patch_depots)
 
     def _apply_dynamic_theme(self, color: QColor) -> None:
         """Dynamically adapt ambient color, titlebar, checkbox and action button styling."""
@@ -1177,24 +1277,6 @@ class SingleDepotSelectionDialog(QDialog):
             return
         self._ambient_color = color
         self.accent_color = color.name()
-
-        if hasattr(self, "depot_checkbox") and self.depot_checkbox:
-            self.depot_checkbox.setStyleSheet(f"""
-                QCheckBox::indicator {{
-                    width: 18px;
-                    height: 18px;
-                    border-radius: 4px;
-                    border: 1px solid rgba(255, 255, 255, 0.3);
-                    background-color: rgba(255, 255, 255, 0.05);
-                }}
-                QCheckBox::indicator:hover {{
-                    border-color: {self.accent_color};
-                }}
-                QCheckBox::indicator:checked {{
-                    background-color: {self.accent_color};
-                    border-color: {self.accent_color};
-                }}
-            """)
 
         if hasattr(self, "ok_btn") and self.ok_btn:
             from utils.color_utils import get_best_foreground_color
@@ -1282,6 +1364,8 @@ class SingleDepotSelectionDialog(QDialog):
             """
             for btn in self._storage_btn_group.buttons():
                 btn.setStyleSheet(btn_style)
+            if hasattr(self, "_custom_storage_btn") and self._custom_storage_btn:
+                self._custom_storage_btn.setStyleSheet(btn_style)
 
         self.update()
 

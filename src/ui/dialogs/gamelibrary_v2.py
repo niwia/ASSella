@@ -8,8 +8,8 @@ import logging
 from typing import List
 
 from PyQt6 import sip
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer, QSize
+from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import (
     QSizePolicy,
     QDialog,
@@ -199,6 +199,9 @@ class GameDetailsDialogV2(QDialog):
         self._apply_stylesheet()
         self._setup_ui()
 
+        from core.ratings import subscribe_ratings
+        subscribe_ratings(self._on_rating_updated)
+
         # Check workshop availability and downloaded content in background thread (only if enabled)
         if self.settings.value("enable_workshop_downloader", False, type=bool):
             from utils.workshop_helpers import check_game_workshop_available_async
@@ -214,20 +217,20 @@ class GameDetailsDialogV2(QDialog):
         self._builds_fetch_requested = False
 
         try:
-            from core.steamdb_scraper import ByparrManager
-            has_byparr = ByparrManager.find_byparr_dir() is not None
+            from core.steamdb_scraper import ByparrManager, has_curl_cffi
+            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or has_curl_cffi()
         except Exception:
-            has_byparr = False
+            has_solver = False
 
-        if self._cached_builds and has_byparr:
+        if self._cached_builds:
             self._populate_builds_cards(self._cached_builds)
             self.builds_center_stack.setCurrentIndex(1)
             if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
                 self.builds_bottom_bar.setVisible(True)
         else:
-            self.builds_center_stack.setCurrentIndex(0 if has_byparr else 2)
+            self.builds_center_stack.setCurrentIndex(0 if has_solver else 2)
             if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
-                self.builds_bottom_bar.setVisible(has_byparr)
+                self.builds_bottom_bar.setVisible(has_solver)
 
         if self.parent():
             from ui.dialogs.dialog_raiser import DialogRaiser
@@ -237,6 +240,23 @@ class GameDetailsDialogV2(QDialog):
         main_win = parent.main_window if hasattr(parent, "main_window") else None
         if main_win and hasattr(main_win, "progress_bar"):
             main_win.progress_bar.valueChanged.connect(self._on_main_progress_changed)
+
+    def _is_atom_game(self) -> bool:
+        if (
+            self.game_data.get("is_atom")
+            or self.game_data.get("is_vapor")
+            or self.game_data.get("is_plugin_game")
+            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M", "plugin_native")
+        ):
+            return True
+        try:
+            from utils.plugin_games import is_plugin_game
+            if is_plugin_game(self.appid):
+                return True
+        except Exception as e:
+            logger.debug(f"[GameDetails] is_plugin_game check: {e}")
+        return False
 
     # ── Per-tab height: Info is short, the other tabs get the full window ──
     FULL_HEIGHT = 540
@@ -391,13 +411,7 @@ class GameDetailsDialogV2(QDialog):
         tab_bar_layout.setContentsMargins(8, 0, 8, 0)
         tab_bar_layout.setSpacing(2)
 
-        is_atom = bool(
-            self.game_data.get("is_atom")
-            or self.game_data.get("is_vapor")
-            or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        )
+        is_atom = self._is_atom_game()
         self._is_atom = is_atom
 
         if is_atom:
@@ -452,7 +466,10 @@ class GameDetailsDialogV2(QDialog):
 
         tab_bar_layout.addStretch()
 
-        close_btn = QPushButton("✕ Close")
+        from utils.paths import Paths
+        close_btn = QPushButton("Close")
+        close_btn.setIcon(QIcon(str(Paths.icon("close.svg"))))
+        close_btn.setIconSize(QSize(13, 13))
         self._tab_close_btn = close_btn
         close_btn.setFlat(True)
         close_btn.setFixedHeight(30)
@@ -531,8 +548,8 @@ class GameDetailsDialogV2(QDialog):
             return
         self._builds_fetch_requested = True
         try:
-            from core.steamdb_scraper import ByparrManager, cffi_requests
-            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or bool(cffi_requests)
+            from core.steamdb_scraper import ByparrManager, has_curl_cffi
+            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or has_curl_cffi()
         except Exception:
             has_solver = False
 
@@ -572,14 +589,7 @@ class GameDetailsDialogV2(QDialog):
         return gd.get("update_status") == "update_available" and not (latest and latest in cached_ids)
 
     def _ensure_workshop_loaded(self):
-        is_vapor = bool(
-            self.game_data.get("is_atom")
-            or self.game_data.get("is_vapor")
-            or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        )
-        if is_vapor:
+        if self._is_atom_game():
             return
         if getattr(self, "_workshop_scanned", False):
             return
@@ -589,14 +599,7 @@ class GameDetailsDialogV2(QDialog):
     @pyqtSlot(bool)
     def _on_workshop_check_finished(self, has_ws: bool):
         from utils.dlc_helpers import is_dlc_only_mode
-        is_vapor = bool(
-            self.game_data.get("is_atom")
-            or self.game_data.get("is_vapor")
-            or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        )
-        if is_dlc_only_mode(self.appid) or is_vapor:
+        if is_dlc_only_mode(self.appid) or self._is_atom_game():
             return
         if has_ws:
             self._has_workshop = True
@@ -841,13 +844,7 @@ class GameDetailsDialogV2(QDialog):
     #  Workshop Tab Delegations
     # ──────────────────────────────────────────
     def _init_workshop_tab(self):
-        is_vapor = bool(
-            self.game_data.get("is_atom")
-            or self.game_data.get("is_vapor")
-            or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        )
+        is_vapor = self._is_atom_game()
         ws_enabled = self.settings.value("enable_workshop_downloader", False, type=bool)
         if not ws_enabled or is_vapor:
             dummy = QWidget()
@@ -958,7 +955,20 @@ class GameDetailsDialogV2(QDialog):
             if hasattr(self, "_luafix_bridge"):
                 self._luafix_bridge.loaded.emit(res_data)
 
+    def _on_rating_updated(self, appid: str = "*") -> None:
+        """Update header badges when this game's rating finishes fetching."""
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self):
+                return
+        except Exception as e:
+            logger.debug(f"[GameDetails] sip check failed: {e}")
+        if appid in ("*", str(self.appid)):
+            self.update_title()
+
     def _cleanup_delegate(self):
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
         if getattr(self, "_library_delegate", None):
             try:
                 self._library_delegate.close()

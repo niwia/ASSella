@@ -72,6 +72,10 @@ def ink_on(background: str, alpha: float) -> str:
 
 def build_stylesheet(background: str, accent: str) -> str:
     """The stylesheet for a Game Details window painted on `background`."""
+    from utils.paths import Paths
+    fg_hex = get_best_foreground_color(accent)
+    is_light = fg_hex.lower() in ("#000000", "#121214", "#1e1e24")
+    chk_icon = str(Paths.icon("check_dark.svg" if is_light else "check_white.svg"))
     tokens = get_raised_surface_tokens(background)
     ink = tokens["ink"]
     overlay = surface_overlay_rgb(background)
@@ -126,14 +130,24 @@ def build_stylesheet(background: str, accent: str) -> str:
             spacing: 6px;
         }}
         QCheckBox::indicator {{
-            width: 14px; height: 14px;
-            border: 1px solid rgba({overlay}, 0.078);
-            border-radius: 3px;
-            background: rgba(0, 0, 0, 0.157);
+            width: 16px; height: 16px;
+            border: 1.5px solid rgba({overlay}, 0.2);
+            border-radius: 4px;
+            background: transparent;
+        }}
+        QCheckBox::indicator:unchecked:hover {{
+            border-color: {accent};
+            background: transparent;
         }}
         QCheckBox::indicator:checked {{
             background-color: {accent};
-            border-color: {accent};
+            border: 1.5px solid {accent};
+            image: url("{chk_icon}");
+        }}
+        QCheckBox::indicator:checked:hover {{
+            background-color: {accent};
+            border: 1.5px solid {accent};
+            image: url("{chk_icon}");
         }}
         QScrollArea {{ border: none; background: transparent; }}
         QScrollBar:vertical {{

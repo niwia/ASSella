@@ -30,8 +30,20 @@ from utils.color_utils import get_dark_container_color, get_best_foreground_colo
 from utils.settings import get_settings
 from utils.qt_utils import clear_layout
 from ui.dialogs.themed_dialog import install_themed_frame
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 logger = logging.getLogger("ACCELA.build_selection")
+
+
+def _has_usable_manifests(depots: Optional[Dict[str, Any]]) -> bool:
+    """Return True if depots dict has at least one valid numeric manifest ID."""
+    if not isinstance(depots, dict) or not depots:
+        return False
+    for did, info in depots.items():
+        mid = info.get("manifest_id") if isinstance(info, dict) else str(info or "").strip()
+        if mid and str(mid).isdigit() and str(mid) != "0":
+            return True
+    return False
 
 
 class BuildSelectionCard(QFrame):
@@ -45,7 +57,6 @@ class BuildSelectionCard(QFrame):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            from PyQt6 import sip
             if not sip.isdeleted(self.dialog):
                 self.dialog._on_card_clicked(self.idx)
             event.accept()
@@ -58,7 +69,7 @@ class BuildSelectionDialog(QDialog):
 
     builds_loaded = pyqtSignal(list)
     builds_error = pyqtSignal(str)
-    depots_resolved = pyqtSignal(str, dict)
+    depots_resolved = pyqtSignal(str, dict, str)
 
     def __init__(
         self,
@@ -324,6 +335,18 @@ class BuildSelectionDialog(QDialog):
         self.select_btn.setEnabled(False)
         self.select_btn.setText("Use Build")
 
+        # Load cached depots for this app in a single read (avoids per-card DB scans on the UI thread)
+        cached_depots_by_build: Dict[str, Any] = {}
+        if self.app_id.isdigit():
+            try:
+                from core.steamdb_scraper import SteamDBBuildsCache
+                for cb in SteamDBBuildsCache().get_builds(int(self.app_id)):
+                    bid = str(cb.get("buildid") or "")
+                    if bid and cb.get("depots"):
+                        cached_depots_by_build[bid] = cb["depots"]
+            except Exception as e:
+                logger.debug(f"Could not preload cached depots for {self.app_id}: {e}")
+
         container_bg = get_dark_container_color(self.accent_color)
 
         for idx, item in enumerate(data):
@@ -418,13 +441,7 @@ class BuildSelectionDialog(QDialog):
             card._depots_container.setVisible(False)
             card_layout.addWidget(card._depots_container)
 
-            card_depots = item.get("depots")
-            if not card_depots:
-                try:
-                    from core.steamdb_scraper import SteamDBBuildsCache
-                    card_depots = SteamDBBuildsCache().get_build_depots(build_id)
-                except Exception:
-                    card_depots = None
+            card_depots = item.get("depots") or cached_depots_by_build.get(build_id)
             if card_depots:
                 self._update_card_depots(card, build_id, card_depots)
 
@@ -524,19 +541,19 @@ class BuildSelectionDialog(QDialog):
         build_id = str(item.get("buildid", ""))
         self._selected_build_id = build_id
 
-        # Check if depots are already in item or cache
+        # Check if depots are already in item or app-scoped cache
         try:
             from core.steamdb_scraper import SteamDBBuildsCache
             cache = SteamDBBuildsCache()
-            c_depots = cache.get_build_depots(build_id)
-            if c_depots:
+            c_depots = cache.get_build_depots(build_id, appid=self.app_id)
+            if _has_usable_manifests(c_depots):
                 self._selected_patch_depots = c_depots
                 self.accept()
                 return
         except Exception:
             pass
 
-        if item.get("depots"):
+        if _has_usable_manifests(item.get("depots")):
             self._selected_patch_depots = item["depots"]
             self.accept()
             return
@@ -548,15 +565,99 @@ class BuildSelectionDialog(QDialog):
         def _depot_worker():
             try:
                 from core.steamdb_scraper import SteamDBScraper
-                depots = SteamDBScraper().get_patch_depots(build_id)
-                self.depots_resolved.emit(build_id, depots or {})
+                scraper = SteamDBScraper()
+                depots = scraper.get_patch_depots(build_id, appid=self.app_id)
+                reason = getattr(scraper, "last_failure_reason", "")
+                if not sip.isdeleted(self):
+                    self.depots_resolved.emit(build_id, depots or {}, reason)
             except Exception as e:
                 logger.error(f"Error fetching depots for build {build_id}: {e}")
-                self.depots_resolved.emit(build_id, {})
+                if not sip.isdeleted(self):
+                    self.depots_resolved.emit(build_id, {}, "exception")
 
         threading.Thread(target=_depot_worker, daemon=True).start()
 
-    def _on_depots_resolved(self, build_id: str, depots: dict):
+    def _on_depots_resolved(self, build_id: str, depots: dict, reason: str = ""):
+        if sip.isdeleted(self):
+            return
+
+        if not _has_usable_manifests(depots):
+            self.select_btn.setEnabled(True)
+            self.select_btn.setText(f"Use Build {build_id}")
+
+            from core.steamdb_scraper import ByparrManager, steamdb_cooldown_remaining
+            has_local_byparr = ByparrManager.find_byparr_dir() is not None
+            is_local_enabled = ByparrManager.is_local_enabled()
+
+            if reason == "rate_limited":
+                remaining = steamdb_cooldown_remaining()
+                mins = max(1, int(remaining // 60) + 1)
+                res = ThemedMessageBox.question(
+                    self,
+                    "SteamDB Rate Limit Active",
+                    f"SteamDB asked ACCELA to back off temporarily (retry in ~{mins} min), "
+                    f"so manifests for Build {build_id} could not be fetched automatically.\n\n"
+                    "Would you like to manually enter the manifest ID for this build?",
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.Yes,
+                )
+                if res == ThemedMessageBox.StandardButton.Yes:
+                    self._open_manual_with_build(build_id)
+                return
+
+            if reason == "cf_challenge_byparr_disabled" or (has_local_byparr and not is_local_enabled and "challenge" in reason):
+                res = ThemedMessageBox.question(
+                    self,
+                    "Cloudflare Challenge • Byparr Disabled",
+                    f"Could not automatically resolve depot manifests for Build {build_id} from SteamDB "
+                    "because SteamDB required Cloudflare Turnstile verification.\n\n"
+                    "Byparr (Cloudflare Solver) is installed on your system but currently disabled in Settings.\n\n"
+                    "Would you like to enable Byparr now to solve the verification and retrieve the manifests?",
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.Yes,
+                )
+                if res == ThemedMessageBox.StandardButton.Yes:
+                    s = get_settings()
+                    s.setValue("byparr_url", "")
+                    s.setValue("byparr_auth_header", "")
+                    s.setValue("byparr_enabled", True)
+                    s.setValue("disable_steamdb_scraping", False)
+                    logger.info("[BuildSelection] Enabled Byparr per user confirmation; retrying build resolve.")
+                    # fetch_via_byparr() inside _depot_worker() starts Byparr safely under _start_lock
+                    self._on_select_clicked()
+                    return
+                else:
+                    self._open_manual_with_build(build_id)
+                    return
+
+            if reason == "cf_challenge_no_byparr" or (not has_local_byparr and "challenge" in reason):
+                res = ThemedMessageBox.question(
+                    self,
+                    "Cloudflare Verification Required",
+                    f"Could not automatically resolve depot manifests for Build {build_id} from SteamDB "
+                    "because SteamDB presented a Cloudflare verification challenge.\n\n"
+                    "Byparr solver is not installed. You can install it in Settings → AT0-M tab to resolve "
+                    "historical builds automatically, or enter the manifest ID manually.\n\n"
+                    "Would you like to manually enter the manifest ID for this build?",
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.Yes,
+                )
+                if res == ThemedMessageBox.StandardButton.Yes:
+                    self._open_manual_with_build(build_id)
+                return
+
+            res = ThemedMessageBox.question(
+                self,
+                "No Manifests Found",
+                f"Could not automatically resolve depot manifests for Build {build_id} from SteamDB.\n\n"
+                "Would you like to manually enter the manifest ID for this build?",
+                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                ThemedMessageBox.StandardButton.Yes,
+            )
+            if res == ThemedMessageBox.StandardButton.Yes:
+                self._open_manual_with_build(build_id)
+            return
+
         self._selected_patch_depots = depots or {}
         try:
             from core.steamdb_scraper import SteamDBBuildsCache
@@ -570,7 +671,7 @@ class BuildSelectionDialog(QDialog):
                 break
         self.accept()
 
-    def _on_manual_clicked(self):
+    def _open_manual_with_build(self, build_id: str):
         from ui.dialogs.manual_manifest_dialog import ManualManifestDialog
         dlg = ManualManifestDialog(
             parent=self,
@@ -579,11 +680,24 @@ class BuildSelectionDialog(QDialog):
             depots_dict=self.depots_dict,
             default_depot_id=self.default_depot_id,
             current_build_id=self.current_build_id,
+            target_build_id=build_id,
             accent_color=self.accent_color,
         )
         if dlg.exec():
             self._selected_build_id, self._selected_patch_depots = dlg.get_selected_build()
             self.accept()
+
+    def _on_manual_clicked(self):
+        active_bid = self._selected_build_id or self.current_build_id
+        self._open_manual_with_build(active_bid)
+
+    def get_selected_build_id(self) -> str:
+        """Return selected build ID string."""
+        return self._selected_build_id
+
+    def get_patch_depots(self) -> Dict[str, Any]:
+        """Return selected patch depots dictionary."""
+        return self._selected_patch_depots
 
     def get_selected_build(self) -> Tuple[str, Dict[str, Any]]:
         """Return (selected_build_id, patch_depots_dict)."""

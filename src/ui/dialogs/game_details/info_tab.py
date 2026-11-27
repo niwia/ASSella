@@ -6,44 +6,32 @@ rollbacks, uninstallation, SLS Online, Netsock, and EOS Proxy.
 
 import os
 import re
-import time
-import platform
 import logging
 import shutil
 import threading
 import zipfile
 from pathlib import Path
+from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, QMetaObject, Q_ARG
+from PyQt6 import sip
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QIntValidator, QPalette
 from PyQt6.QtWidgets import (
     QWidget,
     QLabel,
     QPushButton,
-    QCheckBox,
     QLineEdit,
     QFrame,
     QHBoxLayout,
     QVBoxLayout,
-    QGridLayout,
     QScrollArea,
-    QProgressDialog,
-    QApplication,
 )
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.game_details.widgets import CenteredComboBox, MaterialTile, SwitchTile
-from ui.dialogs.game_details.hero_header import thin_line, get_last_checked
+from ui.dialogs.game_details.hero_header import get_last_checked
 from ui.progress_button import ProgressButton
 from utils.helpers import get_base_path
-from utils.qt_utils import clear_layout
-from utils.lua_parsing import iter_live_matches
-from utils.steam_acf import (
-    ACF_DEFERRED,
-    ACF_FAILED,
-    ensure_acf_has_installed_depots,
-    find_appmanifest_path,
-)
 from utils.yaml_config_manager import (
     get_user_config_path, add_fake_app_id, remove_fake_app_id,
     get_fake_appid, is_slssteam_config_management_enabled,
@@ -65,13 +53,32 @@ def _install_drive_label(dialog) -> str:
         return "Open"
 
 
+def _is_vapor_mode(dialog, status: Optional[str] = None) -> bool:
+    """Consistently check if the game is in AT0-M / Vapor mode across all attributes and update status."""
+    gd = getattr(dialog, "game_data", None) or {}
+    if status is None:
+        try:
+            from utils.update_status_cache import get_game_update_status
+            aid = str(getattr(dialog, "appid", "") or gd.get("appid", "")).strip()
+            status = get_game_update_status(aid) if aid else None
+        except Exception:
+            status = gd.get("update_status")
+    return bool(
+        getattr(dialog, "is_atom", False)
+        or gd.get("is_atom")
+        or gd.get("is_vapor")
+        or gd.get("is_plugin_game")
+        or str(status or "").lower() in ("vapor", "at0m", "at0-m")
+        or gd.get("source") in ("Vapor", "at0-m", "AT0-M")
+    )
+
+
 def _build_uninstall_tile(dialog, is_vapor_mode: bool) -> MaterialTile:
-    """Uninstall tile with a menu: Standard, or Advanced (opens a window)."""
-    from PyQt6.QtWidgets import QMenu
+    """Uninstall tile: opens the unified uninstallation modal."""
     from utils.dlc_helpers import is_dlc_only_mode
 
-    tile = MaterialTile("Uninstall", "Standard / Advanced", dialog, is_toggle=False)
-    tile.update_state(False, dialog.accent_color, inactive_sub="Standard / Advanced")
+    tile = MaterialTile("Uninstall", "Standard", dialog, is_toggle=False)
+    tile.update_state(False, dialog.accent_color, inactive_sub="Standard")
     tile.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #E57373; background: transparent;")
     is_vapor_dlc = is_vapor_mode and (
         is_dlc_only_mode(dialog.appid)
@@ -83,17 +90,8 @@ def _build_uninstall_tile(dialog, is_vapor_mode: bool) -> MaterialTile:
         tile.setToolTip("Uninstall DLC-only AT0-M games from Steam.")
         return tile
 
-    menu = QMenu(tile)
-    menu.setStyleSheet(f"""
-        QMenu {{ background: #1b1c20; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 4px; }}
-        QMenu::item {{ padding: 6px 18px; border-radius: 5px; color: #E8E8EE; }}
-        QMenu::item:selected {{ background: rgba(229,115,115,0.18); color: #FFFFFF; }}
-    """)
-    menu.addAction("Uninstall", lambda: do_standard_uninstall(dialog)).setToolTip(
-        "Remove the game files and its SLSsteam entries."
-    )
-    menu.addAction("Advanced...", lambda: open_advanced_uninstall(dialog))
-    tile.clicked.connect(lambda: menu.exec(tile.mapToGlobal(tile.rect().bottomLeft())))
+    tile.setToolTip("Uninstall game files and configure cleanup options.")
+    tile.clicked.connect(lambda: do_standard_uninstall(dialog))
     return tile
 
 
@@ -136,13 +134,7 @@ def init_info_tab(dialog) -> None:
     if dialog.settings:
         dialog.settings.setValue(f"selected_branch/{dialog.appid}", saved_b)
 
-    is_vapor_mode = bool(
-        dialog.game_data.get("is_atom")
-        or dialog.game_data.get("is_vapor")
-        or dialog.game_data.get("is_plugin_game")
-        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-    )
+    is_vapor_mode = _is_vapor_mode(dialog)
 
     if is_vapor_mode:
         saved_b = "public"
@@ -155,7 +147,7 @@ def init_info_tab(dialog) -> None:
 
     dialog.branch_combo = CenteredComboBox()
     dialog.branch_combo.addItem(f"{saved_b} ({installed_bid})" if (installed_bid and not is_vapor_mode) else saved_b, saved_b)
-    dialog.branch_combo.setFixedHeight(26)
+    dialog.branch_combo.setFixedHeight(32)
     dialog.branch_combo.setMaxVisibleItems(5)
     if is_vapor_mode:
         dialog.branch_combo.setEnabled(False)
@@ -163,7 +155,7 @@ def init_info_tab(dialog) -> None:
     actions_row.addWidget(dialog.branch_combo, 1)  # equal halves with the action button
 
     dialog.validate_btn = ProgressButton("Verify Build" if is_vapor_mode else "Verify Files", dialog)
-    dialog.validate_btn.setFixedHeight(26)
+    dialog.validate_btn.setFixedHeight(32)
     if is_vapor_mode:
         dialog.validate_btn.setEnabled(False)
         dialog.validate_btn.setToolTip("Build verification is not available for AT0-M games.")
@@ -190,9 +182,6 @@ def init_info_tab(dialog) -> None:
         note.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 9pt; border: 1px dashed rgba(255,255,255,0.14);"
                            " border-radius: 8px; padding: 8px 12px; background: transparent;")
         actions_row.addWidget(note, 1)
-    else:
-        dialog.validate_btn.setFixedHeight(32)
-        dialog.branch_combo.setFixedHeight(32)
     lay.addLayout(actions_row)
     lay.addSpacing(14)
 
@@ -218,7 +207,7 @@ def init_info_tab(dialog) -> None:
     def _open_game_folder():
         p = dialog.game_data.get("install_path")
         if not p or not os.path.isdir(p):
-            if dialog.game_data.get("is_atom") or dialog.game_data.get("is_vapor"):
+            if _is_vapor_mode(dialog):
                 from utils.plugin_games import get_atom_game_install_path
                 resolved = get_atom_game_install_path(dialog.appid)
                 if resolved:
@@ -370,11 +359,11 @@ def init_info_tab(dialog) -> None:
     vapor_actions_layout.setSpacing(10)
 
     dialog.move_to_vapor_btn = QPushButton("Move to AT0-M")
-    dialog.move_to_vapor_btn.setFixedHeight(36)
+    dialog.move_to_vapor_btn.setFixedHeight(30)
     dialog.move_to_vapor_btn.setCursor(Qt.CursorShape.PointingHandCursor if not is_vapor_mode else Qt.CursorShape.ArrowCursor)
 
     dialog.remove_from_vapor_btn = QPushButton("Move to ASSella")
-    dialog.remove_from_vapor_btn.setFixedHeight(36)
+    dialog.remove_from_vapor_btn.setFixedHeight(30)
     dialog.remove_from_vapor_btn.setCursor(Qt.CursorShape.PointingHandCursor if is_vapor_mode else Qt.CursorShape.ArrowCursor)
 
     accent_hex = dialog.accent_color or "#C06C84"
@@ -416,7 +405,16 @@ def init_info_tab(dialog) -> None:
         }
     """
 
-    if is_vapor_mode:
+    from utils.game_modes import is_standalone_game
+    if is_standalone_game(dialog.game_data):
+        dialog.move_to_vapor_btn.setEnabled(False)
+        dialog.move_to_vapor_btn.setStyleSheet(trans_disabled_style)
+        dialog.move_to_vapor_btn.setToolTip("Standalone custom folder games cannot be moved to AT0-M.")
+
+        dialog.remove_from_vapor_btn.setEnabled(False)
+        dialog.remove_from_vapor_btn.setStyleSheet(trans_disabled_style)
+        dialog.remove_from_vapor_btn.setToolTip("Game is installed standalone in a custom folder.")
+    elif is_vapor_mode:
         dialog.move_to_vapor_btn.setEnabled(False)
         dialog.move_to_vapor_btn.setStyleSheet(trans_disabled_style)
         dialog.move_to_vapor_btn.setToolTip("Game is already in AT0-M (Steam Native) mode.")
@@ -442,8 +440,6 @@ def init_info_tab(dialog) -> None:
     )
     mode_text.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 9pt; background: transparent; border: none;")
     vapor_actions_layout.addWidget(mode_text, 1)
-    for _b in (dialog.move_to_vapor_btn, dialog.remove_from_vapor_btn):
-        _b.setFixedHeight(30)
     dialog.move_to_vapor_btn.setVisible(not is_vapor_mode)
     dialog.remove_from_vapor_btn.setVisible(is_vapor_mode)
     vapor_actions_layout.addWidget(dialog.move_to_vapor_btn, 0)
@@ -507,9 +503,9 @@ def load_branches_immediate(dialog) -> None:
     except Exception as e:
         logger.debug(f"[GameDetails] Could not load the branch list: {e}")
 
-    threading.Thread(target=lambda: silent_refresh_branches(dialog), daemon=True).start()
-
-    if not loaded_from_cache:
+    if loaded_from_cache:
+        threading.Thread(target=lambda: silent_refresh_branches(dialog), daemon=True).start()
+    else:
         dialog._is_fetching_branches = True
         if hasattr(dialog, "validate_btn"):
             dialog.validate_btn.setEnabled(False)
@@ -528,12 +524,14 @@ def load_branches_async(dialog, force_refresh: bool = False) -> None:
             app_info = db.get_app_info(appid, bypass_expiration=True)
             cached_branches = app_info.get("branches") if app_info else None
             if cached_branches and isinstance(cached_branches, dict) and len(cached_branches) > 0:
-                dialog.branches_loaded.emit(cached_branches)
+                if not sip.isdeleted(dialog):
+                    dialog.branches_loaded.emit(cached_branches)
                 threading.Thread(target=lambda: silent_refresh_branches(dialog), daemon=True).start()
                 return
             elif app_info and app_info.get("buildid"):
                 fallback = {"public": {"buildid": str(app_info.get("buildid"))}}
-                dialog.branches_loaded.emit(fallback)
+                if not sip.isdeleted(dialog):
+                    dialog.branches_loaded.emit(fallback)
                 threading.Thread(target=lambda: silent_refresh_branches(dialog), daemon=True).start()
                 return
         except Exception as e:
@@ -549,7 +547,8 @@ def load_branches_async(dialog, force_refresh: bool = False) -> None:
 
     def run_thread():
         b_data = _fetch()
-        dialog.branches_loaded.emit(b_data)
+        if not sip.isdeleted(dialog):
+            dialog.branches_loaded.emit(b_data)
 
     threading.Thread(target=run_thread, daemon=True).start()
 
@@ -558,7 +557,7 @@ def silent_refresh_branches(dialog) -> None:
     try:
         from core.steam_api import get_app_branches
         fresh = get_app_branches(dialog.appid, force_refresh=True)
-        if fresh:
+        if fresh and not sip.isdeleted(dialog):
             dialog.branches_loaded.emit(fresh)
     except BaseException as e:
         logger.debug(f"[GameDetails] Background branch refresh failed: {e}")
@@ -574,13 +573,7 @@ def on_branches_loaded(dialog, branches_dict: dict) -> None:
         dialog.branch_combo.blockSignals(True)
         dialog.branch_combo.clear()
 
-        is_vm = bool(
-            dialog.game_data.get("is_atom")
-            or dialog.game_data.get("is_vapor")
-            or dialog.game_data.get("is_plugin_game")
-            or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-            or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        )
+        is_vm = _is_vapor_mode(dialog)
 
         sorted_keys = sorted(branches_dict.keys(), key=lambda k: (0 if k == "public" else 1, k))
         if is_vm:
@@ -639,13 +632,7 @@ def on_branches_loaded(dialog, branches_dict: dict) -> None:
 
 
 def on_branch_combo_changed(dialog) -> None:
-    is_vm = bool(
-        dialog.game_data.get("is_atom")
-        or dialog.game_data.get("is_vapor")
-        or dialog.game_data.get("is_plugin_game")
-        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-    )
+    is_vm = _is_vapor_mode(dialog)
     if is_vm:
         sel_branch = "public"
         if dialog.settings:
@@ -709,13 +696,7 @@ def update_validate_button(dialog) -> None:
     if not hasattr(dialog, "validate_btn") or not dialog.validate_btn:
         return
 
-    is_vm = bool(
-        dialog.game_data.get("is_atom")
-        or dialog.game_data.get("is_vapor")
-        or dialog.game_data.get("is_plugin_game")
-        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-    )
+    is_vm = _is_vapor_mode(dialog)
     if is_vm:
         dialog.validate_btn.setEnabled(False)
         dialog.validate_btn.setText("Verify Build")
@@ -852,6 +833,11 @@ def update_validate_button(dialog) -> None:
 
 
 def on_validate_btn_clicked(dialog) -> None:
+    parent = getattr(dialog, "parent_window", None)
+    if not parent or not hasattr(parent, "_fetch_game_manifest"):
+        logger.warning(f"parent_window._fetch_game_manifest unavailable for AppID {dialog.appid}")
+        return
+
     sel_branch = dialog.branch_combo.currentData() or "public" if hasattr(dialog, "branch_combo") else "public"
     btn_text = dialog.validate_btn.text()
 
@@ -870,7 +856,7 @@ def on_validate_btn_clicked(dialog) -> None:
     is_verify_action = "Verify" in btn_text
     try:
         if btn_text == "Refetch":
-            dialog.parent_window._fetch_game_manifest(
+            parent._fetch_game_manifest(
                 dialog.game_data, dialog, branch=sel_branch, download_only=True
             )
         else:
@@ -887,7 +873,7 @@ def on_validate_btn_clicked(dialog) -> None:
             if is_verify_action:
                 g_data["_is_verify"] = True
 
-            dialog.parent_window._fetch_game_manifest(
+            parent._fetch_game_manifest(
                 g_data, dialog, branch=sel_branch, download_only=False, local_path_override=local_path_override,
                 is_verify=is_verify_action
             )
@@ -1138,29 +1124,29 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
 
         if dialog.settings:
             dialog.settings.setValue(f"pin_build/{dialog.appid}", pin_build)
-            dialog.settings.setValue(f"exclude_from_update_all/{dialog.appid}", False)
+            dialog.settings.setValue(f"exclude_from_update_all/{dialog.appid}", bool(pin_build))
             dialog.settings.setValue(f"installed_buildid/{dialog.appid}", build_id)
         if hasattr(dialog, "pin_tile") and dialog.pin_tile:
-            dialog.pin_tile.setChecked(True)
-            dialog.pin_tile.update_state(True, dialog.accent_color)
-        if hasattr(dialog, "exclude_tile") and dialog.exclude_tile:
-            dialog.exclude_tile.setChecked(False)
-            dialog.exclude_tile.update_state(False, "#e05a47")
-            dialog.exclude_tile.setEnabled(False)
+            dialog.pin_tile.setChecked(bool(pin_build))
+            dialog.pin_tile.update_state(bool(pin_build), dialog.accent_color)
+        if hasattr(dialog, "update_all_tile") and dialog.update_all_tile:
+            if pin_build:
+                dialog.update_all_tile.setChecked(False)
+                dialog.update_all_tile.update_state(False, "#e05a47", active_sub="Include", inactive_sub="Exclude")
+                dialog.update_all_tile.setEnabled(False)
+            else:
+                dialog.update_all_tile.setEnabled(True)
+                dialog.update_all_tile.setChecked(True)
+                dialog.update_all_tile.update_state(True, dialog.accent_color, active_sub="Include", inactive_sub="Exclude")
     except Exception as e:
         logger.error(f"Failed to create temporary manifest zip: {e}", exc_info=True)
         ThemedMessageBox.critical(dialog, "Error", f"Failed to package manifest file: {e}")
         return
 
-    is_vapor_mode = bool(
-        dialog.game_data.get("is_vapor")
-        or dialog.game_data.get("is_atom")
-        or dialog.game_data.get("is_plugin_game")
-        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-    )
+    is_vapor_mode = _is_vapor_mode(dialog)
 
     if is_vapor_mode:
-        from core.native_steam.native_steam_handoff import get_depotcache_dirs, send_sls_api
+        from core.native_steam.native_steam_handoff import get_depotcache_dirs
         from core.native_steam.steam_manifest_pinning import set_manifest_ids
         from utils.yaml_config_manager import get_user_config_path
 
@@ -1225,188 +1211,45 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
     else:
         game_data.setdefault("depots", {})
 
-    dialog.parent_window._submit_job(str(local_zip_path), game_data, dialog)
+    parent = getattr(dialog, "parent_window", None)
+    if parent and hasattr(parent, "_submit_job"):
+        parent._submit_job(str(local_zip_path), game_data, dialog)
+    else:
+        logger.warning(f"[ManualJob] Cannot submit job: parent_window._submit_job unavailable")
 
 
 def build_uninstall_panel(dialog) -> None:
-    clear_layout(dialog._uninstall_content)
-
-    from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
-    is_dlc = is_dlc_only_mode(dialog.appid)
-
-    if is_dlc:
-        dlc_list = get_dlc_only_info(dialog.appid)
-        info = QLabel("Choose DLC depot files to remove:")
-        info.setStyleSheet("color: #ff8a7a; font-size: 9.5pt; background: transparent;")
-        dialog._uninstall_content.addWidget(info)
-        dialog._dlc_checkboxes = {}
-        for dlc in (dlc_list or []):
-            did = dlc.get("dlc_appid", "")
-            dname = dlc.get("dlc_name") or did
-            cb = QCheckBox(f"{dname}  ({did})")
-            cb.setChecked(True)
-            cb.setStyleSheet("color: #ffd0c8; font-size: 9.5pt; background: transparent;")
-            dialog._dlc_checkboxes[did] = cb
-            dialog._uninstall_content.addWidget(cb)
-        if not dlc_list:
-            dialog._uninstall_content.addWidget(QLabel("No DLC depot info found."))
-        confirm = QPushButton("Remove Selected DLC Files")
-        confirm.setFixedHeight(25)
-        confirm.setStyleSheet("""
-            QPushButton { background: rgba(160, 40, 30, 0.235); color: #ff8a7a;
-                border: none; font-size: 9.5pt; font-weight: bold; }
-            QPushButton:hover { background: rgba(180, 50, 35, 0.314); }
-        """)
-        confirm.clicked.connect(lambda: do_dlc_uninstall(dialog))
-        dialog._uninstall_content.addWidget(confirm)
-    else:
-        warn = QLabel(f"Permanently removes files for '{dialog.game_data.get('game_name','this game')}'.")
-        warn.setStyleSheet("color: #ff8a7a; font-size: 9.5pt; background: transparent; border: none;")
-        warn.setWordWrap(True)
-        dialog._uninstall_content.addWidget(warn)
-
-        dialog._uninstall_opts = {}
-        options = [
-            (
-                "wipe_sls_only",
-                "I bought the game",
-                "Removes SLSsteam integrations while keeping game files, saves, and prefix intact.",
-            )
-        ]
-        if platform.system() == "Linux":
-            options.extend([
-                (
-                    "compat",
-                    "Remove Proton prefix (has Windows saves)",
-                    "Permanently deletes the entire Proton prefix directory, including any local Windows save games stored in AppData, Documents, and Saved Games.",
-                ),
-                (
-                    "saves",
-                    "Remove local cloud saves",
-                    "Permanently deletes local copies of Steam Cloud saves stored in the Steam userdata directory.",
-                ),
-            ])
-
-        for key, text, tooltip in options:
-            cb = QCheckBox(text)
-            cb.setToolTip(tooltip)
-            cb.setStyleSheet("color: #ffd0c8; font-size: 9.5pt; background: transparent;")
-            dialog._uninstall_opts[key] = cb
-            dialog._uninstall_content.addWidget(cb)
-
-        confirm = QPushButton("Confirm Uninstall")
-        confirm.setFixedHeight(28)
-        confirm.setCursor(Qt.CursorShape.PointingHandCursor)
-        dialog._uninstall_content.addWidget(confirm)
-
-        def _update_uninstall_ui():
-            is_bought_mode = bool(dialog._uninstall_opts.get("wipe_sls_only") and dialog._uninstall_opts["wipe_sls_only"].isChecked())
-            for k in ("compat", "saves"):
-                if k in dialog._uninstall_opts:
-                    dialog._uninstall_opts[k].setEnabled(not is_bought_mode)
-                    if is_bought_mode:
-                        dialog._uninstall_opts[k].setChecked(False)
-
-            if is_bought_mode:
-                confirm.setText("Take away my sins")
-                confirm.setStyleSheet("""
-                    QPushButton {
-                        background: rgba(34, 197, 94, 0.25);
-                        color: #4ADE80;
-                        border: 1px solid rgba(34, 197, 94, 0.4);
-                        border-radius: 4px;
-                        font-size: 9.5pt;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover { background: rgba(34, 197, 94, 0.35); }
-                """)
-            else:
-                confirm.setText("Confirm Uninstall")
-                confirm.setStyleSheet("""
-                    QPushButton {
-                        background: rgba(160, 40, 30, 0.235);
-                        color: #ff8a7a;
-                        border: none;
-                        border-radius: 4px;
-                        font-size: 9.5pt;
-                        font-weight: bold;
-                    }
-                    QPushButton:hover { background: rgba(180, 50, 35, 0.314); }
-                """)
-
-        for cb in dialog._uninstall_opts.values():
-            cb.toggled.connect(lambda _: _update_uninstall_ui())
-
-        _update_uninstall_ui()
-
-        confirm.clicked.connect(
-            lambda: dialog.parent_window._uninstall_game(
-                dialog.game_data, dialog, {
-                    key: cb.isChecked() for key, cb in getattr(dialog, "_uninstall_opts", {}).items()
-                }))
-        dialog._uninstall_panel_built = True
+    """Legacy inline drawer builder; unified modal replaces inline panel."""
+    pass
 
 
 def do_standard_uninstall(dialog) -> None:
-    from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
-    if is_dlc_only_mode(dialog.appid):
-        dlc_list = get_dlc_only_info(dialog.appid)
-        all_dlc_ids = [dlc.get("dlc_appid") for dlc in (dlc_list or []) if dlc.get("dlc_appid")]
-        gd = dict(dialog.game_data)
-        gd["_dlc_uninstall_ids"] = all_dlc_ids
-        dialog.parent_window._uninstall_game(gd, dialog, {})
-    else:
-        dialog.parent_window._uninstall_game(
-            dialog.game_data, dialog, {"compat": False, "saves": False, "wipe_sls": True, "wipe_sls_only": False}
-        )
+    """Launch the unified uninstallation modal."""
+    parent = getattr(dialog, "parent_window", None)
+    if parent and hasattr(parent, "_uninstall_game"):
+        parent._uninstall_game(dialog.game_data, dialog, {})
 
 
 def open_advanced_uninstall(dialog) -> None:
-    """Advanced uninstall in its own window (used to expand inside Game Details)."""
-    from PyQt6.QtWidgets import QDialog as _QDialog
-
-    from ui.dialogs.themed_dialog import install_themed_frame
-
-    win = _QDialog(dialog)
-    win.setWindowTitle(f"Uninstall {dialog.game_data.get('game_name', 'game')}")
-    win.setMinimumWidth(460)
-    body = install_themed_frame(win, margins=(16, 10, 16, 14), spacing=8)
-    dialog._uninstall_content = QVBoxLayout()
-    dialog._uninstall_content.setSpacing(6)
-    body.addLayout(dialog._uninstall_content)
-    build_uninstall_panel(dialog)
-    # Any confirm button in the panel closes this window first.
-    for i in range(dialog._uninstall_content.count()):
-        w = dialog._uninstall_content.itemAt(i).widget()
-        if isinstance(w, QPushButton):
-            w.clicked.connect(win.accept, Qt.ConnectionType.DirectConnection)
-    cancel = QPushButton("Cancel")
-    cancel.setFixedHeight(28)
-    cancel.clicked.connect(win.reject)
-    body.addWidget(cancel)
-    win.exec()
+    """Redirects to the unified uninstallation modal."""
+    do_standard_uninstall(dialog)
 
 
 def toggle_uninstall_panel(dialog) -> None:
-    """Older name: opens the advanced uninstall window."""
-    open_advanced_uninstall(dialog)
+    """Legacy alias: opens the unified uninstallation modal."""
+    do_standard_uninstall(dialog)
 
 
 def uninstall_scroll_to_bottom(dialog) -> None:
-    """Kept for older callers; advanced uninstall is a separate window now."""
+    """Legacy scroll helper kept for backward compatibility."""
     sb = dialog.uninstall_scroll.verticalScrollBar() if hasattr(dialog, "uninstall_scroll") else None
     if sb:
         sb.setValue(sb.maximum())
 
 
 def do_dlc_uninstall(dialog) -> None:
-    checked = [did for did, cb in getattr(dialog, "_dlc_checkboxes", {}).items() if cb.isChecked()]
-    if not checked:
-        ThemedMessageBox.information(dialog, "Nothing selected", "Select at least one DLC to remove.")
-        return
-    gd = dict(dialog.game_data)
-    gd["_dlc_uninstall_ids"] = checked
-    dialog.parent_window._uninstall_game(gd, dialog, {})
+    """Legacy DLC uninstall handler; unified modal handles DLC selection natively."""
+    do_standard_uninstall(dialog)
 
 
 def on_dlc_only_toggled(dialog, state: bool) -> None:
@@ -1430,10 +1273,6 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
                 )
         except Exception as e:
             logger.debug(f"DLC sync error: {e}")
-    if getattr(dialog, "_uninstall_expanded", False):
-        build_uninstall_panel(dialog)
-    else:
-        dialog._uninstall_panel_built = False
     dialog._refresh_drm_emulation_state()
     dialog.update_title()
 
@@ -1504,18 +1343,24 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
         init_slsonline_logic(dialog)
         update_eos_btn_state(dialog)
         if hasattr(dialog, "ws_tab_btn") and dialog.ws_tab_btn:
-            is_vapor = bool(
-                dialog.game_data.get("is_vapor")
-                or dialog.game_data.get("is_atom")
-                or dialog.game_data.get("is_plugin_game")
-                or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-                or dialog.game_data.get("source") == "Vapor"
-            )
+            is_vapor = _is_vapor_mode(dialog)
             if getattr(dialog, "_has_workshop", False) and not is_vapor:
                 dialog.ws_tab_btn.setVisible(True)
 
 
 def update_eos_btn_state(dialog) -> None:
+    from utils.game_modes import is_standalone_game
+    if is_standalone_game(dialog.game_data):
+        stand_tip = "Unavailable for Standalone / Custom Folder games"
+        for attr in ("sls_tile", "netsock_tile", "eos_tile", "bypass_tile", "eos_exp_tile"):
+            tile = getattr(dialog, attr, None)
+            if tile:
+                tile.setEnabled(False)
+                tile.setToolTip(stand_tip)
+        if hasattr(dialog, "sls_input") and dialog.sls_input:
+            dialog.sls_input.setEnabled(False)
+        return
+
     from utils.dlc_helpers import is_dlc_only_mode
     if is_dlc_only_mode(dialog.appid):
         if hasattr(dialog, "eos_tile") and dialog.eos_tile:
@@ -1534,7 +1379,7 @@ def update_eos_btn_state(dialog) -> None:
 
     install_path = dialog.game_data.get("install_path")
     if not install_path or not os.path.exists(install_path):
-        if dialog.game_data.get("is_atom") or dialog.game_data.get("is_vapor"):
+        if _is_vapor_mode(dialog):
             from utils.plugin_games import get_atom_game_install_path
             resolved = get_atom_game_install_path(dialog.appid)
             if resolved and os.path.exists(resolved):
@@ -1585,15 +1430,24 @@ def update_eos_btn_state(dialog) -> None:
                 dialog.eos_tile.setToolTip("Apply Epic Online Services proxy DLL.")
 
     # Always update Netsock and Bypass states
-    from utils.yaml_config_manager import get_user_config_path, get_launch_option, extract_bypass_exe
+    from utils.yaml_config_manager import (
+        get_user_config_path, get_launch_option, extract_bypass_exe,
+        is_slssteam_config_management_enabled,
+    )
     cfg_path = get_user_config_path()
+    cfg_ready = is_slssteam_config_management_enabled() and cfg_path.exists()
     cur_opt = get_launch_option(cfg_path, str(dialog.appid)) if cfg_path.exists() else None
     is_netsock_configured = bool(cur_opt and "netsock.so" in cur_opt)
     bypass_exe = extract_bypass_exe(cur_opt)
     is_bypass_configured = bool(cur_opt and bypass_exe)
 
     if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
-        if not is_sls_active:
+        if not cfg_ready:
+            dialog.netsock_tile.setEnabled(False)
+            dialog.netsock_tile.setChecked(False)
+            dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Unavailable")
+            dialog.netsock_tile.setToolTip("Requires SLSsteam config management and an existing config.yaml.")
+        elif not is_sls_active:
             dialog.netsock_tile.setEnabled(False)
             dialog.netsock_tile.setChecked(False)
             dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Enable SLSonline")
@@ -1618,7 +1472,12 @@ def update_eos_btn_state(dialog) -> None:
                 dialog.netsock_tile.setToolTip("Enable Netsock LD_AUDIT patch for Steam Networking Sockets.")
 
     if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
-        if is_netsock_configured:
+        if not cfg_ready:
+            dialog.bypass_tile.setEnabled(False)
+            dialog.bypass_tile.setChecked(False)
+            dialog.bypass_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Unavailable")
+            dialog.bypass_tile.setToolTip("Requires SLSsteam config management and an existing config.yaml.")
+        elif is_netsock_configured:
             dialog.bypass_tile.setEnabled(False)
             dialog.bypass_tile.setChecked(False)
             dialog.bypass_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
@@ -1646,10 +1505,17 @@ def on_netsock_btn_clicked(dialog) -> None:
     from utils.yaml_config_manager import (
         get_user_config_path, get_launch_option, add_launch_option,
         remove_launch_option, ensure_netsock_binary, get_netsock_so_launch_path,
-        extract_bypass_exe
+        extract_bypass_exe, is_slssteam_config_management_enabled,
     )
+    from ui.dialogs.themed_message_box import ThemedMessageBox
+    if not is_slssteam_config_management_enabled() or dialog.appid in ("0", "N/A", "unknown", "480"):
+        ThemedMessageBox.warning(dialog, "Unavailable", "SLSsteam config management is not enabled for this game.")
+        update_eos_btn_state(dialog)
+        return
     config = get_user_config_path()
     if not config.exists():
+        ThemedMessageBox.warning(dialog, "Error", f"SLSsteam config.yaml not found at {config}")
+        update_eos_btn_state(dialog)
         return
 
     cur_opt = get_launch_option(config, str(dialog.appid))
@@ -1691,7 +1557,11 @@ def on_netsock_btn_clicked(dialog) -> None:
             dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
     else:
         from ui.dialogs.themed_message_box import ThemedMessageBox
-        if remove_launch_option(config, str(dialog.appid)):
+        if remove_launch_option(
+            config,
+            str(dialog.appid),
+            markers=("netsock.so", "LD_AUDIT", "#assella-bypass"),
+        ):
             dialog.netsock_tile.setChecked(False)
             dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
             dialog.netsock_tile.setToolTip("Enable Netsock LD_AUDIT patch for Steam Networking Sockets.")
@@ -1732,7 +1602,7 @@ def on_bypass_btn_clicked(dialog) -> None:
 
     install_path = dialog.game_data.get("install_path")
     if not install_path or not os.path.exists(install_path):
-        if dialog.game_data.get("is_atom") or dialog.game_data.get("is_vapor"):
+        if _is_vapor_mode(dialog):
             from utils.plugin_games import get_atom_game_install_path
             resolved = get_atom_game_install_path(dialog.appid)
             if resolved and os.path.exists(resolved):
@@ -1816,10 +1686,12 @@ def on_eos_btn_clicked(dialog) -> None:
 
 
 def init_slsonline_logic(dialog) -> None:
-    dialog.eos_tile.clicked.connect(lambda: on_eos_btn_clicked(dialog))
-    dialog.netsock_tile.clicked.connect(lambda: on_netsock_btn_clicked(dialog))
-    if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
-        dialog.bypass_tile.clicked.connect(lambda: on_bypass_btn_clicked(dialog))
+    if not getattr(dialog, "_sls_signals_wired", False):
+        dialog.eos_tile.clicked.connect(lambda: on_eos_btn_clicked(dialog))
+        dialog.netsock_tile.clicked.connect(lambda: on_netsock_btn_clicked(dialog))
+        if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
+            dialog.bypass_tile.clicked.connect(lambda: on_bypass_btn_clicked(dialog))
+        dialog._sls_signals_wired = True
 
     if is_slssteam_config_management_enabled() and dialog.appid not in ("0", "N/A", "unknown", "480"):
         config = get_user_config_path()
@@ -1889,7 +1761,11 @@ def init_slsonline_logic(dialog) -> None:
                     from utils.yaml_config_manager import get_launch_option, remove_launch_option
                     cur_opt = get_launch_option(config, str(dialog.appid))
                     if cur_opt and "netsock.so" in cur_opt:
-                        remove_launch_option(config, str(dialog.appid))
+                        remove_launch_option(
+                            config,
+                            str(dialog.appid),
+                            markers=("netsock.so", "LD_AUDIT", "#assella-bypass"),
+                        )
                         if hasattr(dialog, "netsock_tile"):
                             dialog.netsock_tile.setChecked(False)
                 update_eos_btn_state(dialog)
@@ -1904,8 +1780,10 @@ def init_slsonline_logic(dialog) -> None:
                             remove_fake_app_id(config, dialog.appid, cur)
                         add_fake_app_id(config, dialog.appid, name, fid)
 
-            dialog.sls_tile.clicked.connect(_tog)
-            dialog.sls_input.editingFinished.connect(_fin)
+            if not getattr(dialog, "_sls_input_signals_wired", False):
+                dialog.sls_tile.clicked.connect(_tog)
+                dialog.sls_input.editingFinished.connect(_fin)
+                dialog._sls_input_signals_wired = True
     else:
         dialog.sls_tile.setEnabled(False)
         dialog.sls_tile.update_state(False, dialog.accent_color)
@@ -1913,24 +1791,38 @@ def init_slsonline_logic(dialog) -> None:
 
     update_eos_btn_state(dialog)
 
-    from utils.dlc_helpers import is_dlc_only_mode
-    if is_dlc_only_mode(dialog.appid):
-        dialog.sls_tile.setEnabled(False)
-        dialog.sls_tile.setToolTip("Not available in DLC-Only mode")
-        dialog.sls_input.setEnabled(False)
-        dialog.eos_tile.setEnabled(False)
-        dialog.eos_tile.setToolTip("Not available in DLC-Only mode")
+    from utils.game_modes import is_standalone_game
+    if is_standalone_game(dialog.game_data):
+        stand_tip = "Unavailable for Standalone / Custom Folder games"
+        if hasattr(dialog, "sls_tile") and dialog.sls_tile:
+            dialog.sls_tile.setEnabled(False)
+            dialog.sls_tile.setToolTip(stand_tip)
+        if hasattr(dialog, "sls_input") and dialog.sls_input:
+            dialog.sls_input.setEnabled(False)
+        if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
+            dialog.netsock_tile.setEnabled(False)
+            dialog.netsock_tile.setToolTip(stand_tip)
+        if hasattr(dialog, "eos_tile") and dialog.eos_tile:
+            dialog.eos_tile.setEnabled(False)
+            dialog.eos_tile.setToolTip(stand_tip)
+        if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
+            dialog.bypass_tile.setEnabled(False)
+            dialog.bypass_tile.setToolTip(stand_tip)
+        if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
+            dialog.eos_exp_tile.setEnabled(False)
+            dialog.eos_exp_tile.setToolTip(stand_tip)
+    else:
+        from utils.dlc_helpers import is_dlc_only_mode
+        if is_dlc_only_mode(dialog.appid):
+            dialog.sls_tile.setEnabled(False)
+            dialog.sls_tile.setToolTip("Not available in DLC-Only mode")
+            dialog.sls_input.setEnabled(False)
+            dialog.eos_tile.setEnabled(False)
+            dialog.eos_tile.setToolTip("Not available in DLC-Only mode")
 
 
 def on_status_btn_clicked(dialog) -> None:
-    is_vm = bool(
-        dialog.game_data.get("is_vapor")
-        or dialog.game_data.get("is_atom")
-        or dialog.game_data.get("is_plugin_game")
-        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-    )
-    if is_vm:
+    if _is_vapor_mode(dialog):
         return
     if dialog.parent_window and hasattr(dialog.parent_window, "game_manager") and dialog.parent_window.game_manager:
         dialog.status_tile.setEnabled(False)
@@ -1946,14 +1838,7 @@ def update_status_ui(dialog, status) -> None:
 
     from utils.color_utils import get_semantic_colors
     sem_colors = get_semantic_colors(ac)
-    is_vm = bool(
-        status in ("vapor", "at0m", "at0-m")
-        or dialog.game_data.get("is_vapor")
-        or dialog.game_data.get("is_atom")
-        or dialog.game_data.get("is_plugin_game")
-        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-    )
+    is_vm = _is_vapor_mode(dialog, status)
     if is_vm:
         title = "AT0-M"
         sub = "Updates Managed by Steam"
@@ -1969,23 +1854,24 @@ def update_status_ui(dialog, status) -> None:
         dialog.status_tile.setChecked(True)
         dialog.status_tile._is_active = True
         dialog.status_tile._current_text_color = purple_text
-        dialog.status_tile.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {tonal_bg};
-                border: 1px solid {border_color};
-                border-radius: 8px;
-            }}
-            QPushButton:hover {{
-                background-color: {tonal_hover};
-                border: 1px solid rgba(225, 190, 231, 0.6);
-            }}
-            QPushButton:disabled {{
-                background-color: rgba(255, 255, 255, 0.02);
-                border: 1px solid rgba(255, 255, 255, 0.04);
-            }}
-        """)
-        dialog.status_tile.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {purple_text}; background: transparent;")
-        dialog.status_tile.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(225, 190, 231, 0.85); background: transparent;")
+        if dialog.status_tile.isVisible():
+            dialog.status_tile.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {tonal_bg};
+                    border: 1px solid {border_color};
+                    border-radius: 8px;
+                }}
+                QPushButton:hover {{
+                    background-color: {tonal_hover};
+                    border: 1px solid rgba(225, 190, 231, 0.6);
+                }}
+                QPushButton:disabled {{
+                    background-color: rgba(255, 255, 255, 0.02);
+                    border: 1px solid rgba(255, 255, 255, 0.04);
+                }}
+            """)
+            dialog.status_tile.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {purple_text}; background: transparent;")
+            dialog.status_tile.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(225, 190, 231, 0.85); background: transparent;")
         dialog.status_tile.setEnabled(False)
         update_validate_button(dialog)
         return
@@ -2009,23 +1895,24 @@ def update_status_ui(dialog, status) -> None:
         dialog.status_tile.setChecked(True)
         dialog.status_tile._is_active = True
         dialog.status_tile._current_text_color = mint_text
-        dialog.status_tile.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {tonal_bg};
-                border: 1px solid {border_color};
-                border-radius: 8px;
-            }}
-            QPushButton:hover {{
-                background-color: {tonal_hover};
-                border: 1px solid rgba(168, 245, 184, 0.6);
-            }}
-            QPushButton:disabled {{
-                background-color: rgba(255, 255, 255, 0.02);
-                border: 1px solid rgba(255, 255, 255, 0.04);
-            }}
-        """)
-        dialog.status_tile.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {mint_text}; background: transparent;")
-        dialog.status_tile.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(168, 245, 184, 0.85); background: transparent;")
+        if dialog.status_tile.isVisible():
+            dialog.status_tile.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {tonal_bg};
+                    border: 1px solid {border_color};
+                    border-radius: 8px;
+                }}
+                QPushButton:hover {{
+                    background-color: {tonal_hover};
+                    border: 1px solid rgba(168, 245, 184, 0.6);
+                }}
+                QPushButton:disabled {{
+                    background-color: rgba(255, 255, 255, 0.02);
+                    border: 1px solid rgba(255, 255, 255, 0.04);
+                }}
+            """)
+            dialog.status_tile.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {mint_text}; background: transparent;")
+            dialog.status_tile.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(168, 245, 184, 0.85); background: transparent;")
         dialog.status_tile.sub_lbl.setText(sub)
         dialog.status_tile.setEnabled(True)
 
@@ -2051,14 +1938,7 @@ def update_status_ui(dialog, status) -> None:
 def on_status_changed(dialog, changed_appid, new_status) -> None:
     if changed_appid != dialog.appid:
         return
-    is_vm = bool(
-        dialog.game_data.get("is_vapor")
-        or dialog.game_data.get("is_atom")
-        or dialog.game_data.get("is_plugin_game")
-        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-    )
-    if is_vm:
+    if _is_vapor_mode(dialog, new_status):
         new_status = "at0m"
     dialog.game_data["update_status"] = new_status
     update_status_ui(dialog, new_status)
@@ -2067,14 +1947,7 @@ def on_status_changed(dialog, changed_appid, new_status) -> None:
 def on_hubcap_status_changed(dialog, changed_appid, needs_update, update_in_progress) -> None:
     if changed_appid != dialog.appid:
         return
-    is_vm = bool(
-        dialog.game_data.get("is_vapor")
-        or dialog.game_data.get("is_atom")
-        or dialog.game_data.get("is_plugin_game")
-        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-    )
-    if is_vm:
+    if _is_vapor_mode(dialog):
         return
     dialog.game_data["hubcap_needs_update"] = needs_update
     dialog.game_data["hubcap_update_in_progress"] = update_in_progress
@@ -2145,12 +2018,7 @@ def on_pin_build_toggled(dialog, pinned: bool) -> None:
         except Exception as e:
             logger.warning(f"Failed to duplicate manifest zip on pin build activation: {e}")
     else:
-        is_vapor_mode = bool(
-            dialog.game_data.get("is_vapor")
-            or dialog.game_data.get("is_atom")
-            or dialog.game_data.get("is_plugin_game")
-            or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-        )
+        is_vapor_mode = _is_vapor_mode(dialog)
         if is_vapor_mode:
             try:
                 from core.native_steam.steam_manifest_pinning import remove_manifest_ids, get_manifest_ids
@@ -2282,140 +2150,21 @@ def get_installed_buildid(dialog) -> str:
     return ""
 
 
-def update_depot_label(dialog) -> None:
-    btn_text = "Depots: Select"
-    if dialog.settings:
-        val = dialog.settings.value(f"depot_selection/{dialog.appid}", "", type=str)
-        if val:
-            try:
-                import json
-                data = json.loads(val)
-                sel = data.get("selected", [])
-                tot = len(data.get("all_available", []))
-                if sel and tot and len(sel) < tot:
-                    btn_text = f"Depots: {len(sel)} of {tot}"
-                elif sel and tot and len(sel) == tot:
-                    btn_text = "Depots: All"
-                elif sel:
-                    btn_text = f"Depots: {len(sel)} Selected"
-                else:
-                    btn_text = "Depots: Select"
-            except Exception as e:
-                logger.debug(f"[GameDetails] Could not compute the depot button text: {e}")
-    if hasattr(dialog, "choose_depots_btn") and dialog.choose_depots_btn:
-        dialog.choose_depots_btn.setText(btn_text)
+from ui.dialogs.game_details.tools_tab import update_depot_label
 
 
 def configure_depots_wrapper(dialog) -> None:
-    dialog.parent_window._configure_depots(dialog.game_data)
+    parent = getattr(dialog, "parent_window", None)
+    if parent and hasattr(parent, "_configure_depots"):
+        parent._configure_depots(dialog.game_data)
     update_depot_label(dialog)
 
 
 def reset_depots_wrapper(dialog) -> None:
-    dialog.parent_window._reset_depot_selection(dialog.game_data)
+    parent = getattr(dialog, "parent_window", None)
+    if parent and hasattr(parent, "_reset_depot_selection"):
+        parent._reset_depot_selection(dialog.game_data)
     update_depot_label(dialog)
-
-
-def refresh_dlcdata_btn_text(dialog) -> None:
-    if not hasattr(dialog, "dlcdata_exp_btn") or not dialog.dlcdata_exp_btn:
-        return
-    try:
-        from utils.yaml_config_manager import get_user_config_path, get_dlc_data
-        cp = get_user_config_path()
-        if cp.exists() and bool(get_dlc_data(cp, dialog.appid)):
-            dialog.dlcdata_exp_btn.setText("Revert DLC from DlcData (Advanced)")
-        else:
-            dialog.dlcdata_exp_btn.setText("Move DLC to DlcData (Advanced)")
-    except Exception:
-        dialog.dlcdata_exp_btn.setText("Move DLC to DlcData (Advanced)")
-
-
-def handle_move_dlc_to_dlcdata(dialog) -> None:
-    from utils.yaml_config_manager import (
-        get_user_config_path, get_dlc_data, add_dlc_data_batch, remove_dlc_data
-    )
-    from utils.dlc_helpers import get_all_dlcs_for_app
-
-    cp = get_user_config_path()
-    if not cp.exists():
-        ThemedMessageBox.warning(dialog, "Config Not Found", "SLSsteam config.yaml could not be found.")
-        return
-
-    current_dlcs = get_dlc_data(cp, dialog.appid)
-    game_name = dialog.game_data.get("game_name", f"AppID {dialog.appid}")
-
-    if current_dlcs:
-        ans = ThemedMessageBox.question(
-            dialog,
-            "Revert DLC from DlcData",
-            f"This game currently has {len(current_dlcs)} DLC(s) configured under DlcData in SLSsteam config.yaml.\n\n"
-            f"Are you sure you want to revert and remove these DLC entries from DlcData for '{game_name}'?",
-            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-        )
-        if ans == ThemedMessageBox.StandardButton.Yes:
-            if remove_dlc_data(cp, dialog.appid):
-                ThemedMessageBox.information(
-                    dialog,
-                    "DlcData Reverted",
-                    f"✓ Successfully removed DlcData entries for '{game_name}'.",
-                )
-            else:
-                ThemedMessageBox.warning(dialog, "Action Failed", "Could not remove entries from DlcData.")
-            refresh_dlcdata_btn_text(dialog)
-        return
-
-    warn_msg = (
-        f"⚠️ EXPERIMENTAL / ADVANCED OPTION\n\n"
-        f"This will scan all DLCs for '{game_name}' (AppID {dialog.appid}) "
-        f"and write them to the DlcData section in SLSsteam config.yaml.\n\n"
-        f"Notice: This is NOT needed in normal cases! It is only required for rare games "
-        f"or games hitting Steam's 64 DLC limit where in-game DLCs do not appear unlocked.\n\n"
-        f"You can revert this action at any time using this same button.\n\n"
-        f"Do you want to proceed?"
-    )
-    ans = ThemedMessageBox.question(
-        dialog,
-        "Move DLC to DlcData (Advanced)",
-        warn_msg,
-        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-    )
-    if ans != ThemedMessageBox.StandardButton.Yes:
-        return
-
-    dialog.dlcdata_exp_btn.setEnabled(False)
-    dialog.dlcdata_exp_btn.setText("Fetching DLCs...")
-    QApplication.processEvents()
-
-    try:
-        dlc_list = get_all_dlcs_for_app(dialog.appid, dialog.game_data)
-        if not dlc_list:
-            ThemedMessageBox.information(
-                dialog,
-                "No DLCs Found",
-                f"No downloadable or store DLCs could be found for '{game_name}'.",
-            )
-            return
-
-        dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
-        ok = add_dlc_data_batch(cp, dialog.appid, dlc_dict)
-        if ok:
-            ThemedMessageBox.information(
-                dialog,
-                "DLCs Moved to DlcData",
-                f"✓ Successfully wrote {len(dlc_dict)} DLC(s) for '{game_name}' to DlcData in config.yaml.\n\n"
-                f"SLSsteam will now explicitly report all these DLCs to the game.",
-            )
-        else:
-            ThemedMessageBox.critical(
-                dialog,
-                "Write Failed",
-                "Failed to write entries to DlcData in config.yaml.",
-            )
-    except Exception as e:
-        ThemedMessageBox.critical(dialog, "Error", f"Failed to move DLCs: {e}")
-    finally:
-        dialog.dlcdata_exp_btn.setEnabled(True)
-        refresh_dlcdata_btn_text(dialog)
 
 
 def _atom_move_summary(game_name: str, res: dict) -> str:
@@ -2480,7 +2229,8 @@ def _run_atom_move_with_progress(dialog, game_data: dict, game_name: str) -> dic
     worker.start()
     loop.exec()
     worker.wait()
-    progress.close()
+    if not sip.isdeleted(progress):
+        progress.close()
     worker.deleteLater()
     return result
 
@@ -2578,6 +2328,8 @@ def on_move_to_vapor_clicked(dialog) -> None:
             return
 
     res = _run_atom_move_with_progress(dialog, game_data, game_name)
+    if sip.isdeleted(dialog):
+        return
 
     if not res.get("success"):
         ThemedMessageBox.critical(
@@ -2599,7 +2351,8 @@ def on_move_to_vapor_clicked(dialog) -> None:
     ThemedMessageBox.information(dialog, "Moved to AT0-M", _atom_move_summary(game_name, res))
 
     # Close dialog and refresh parent
-    dialog.accept()
+    if not sip.isdeleted(dialog):
+        dialog.accept()
     parent = getattr(dialog, "parent_window", None)
     if parent:
         gm = getattr(parent, "game_manager", None)
@@ -2698,13 +2451,14 @@ def on_remove_from_vapor_clicked(dialog) -> None:
 
     ThemedMessageBox.information(
         dialog,
-        "Moved to ACCELA",
-        f"'{game_name}' is now managed by ACCELA.\n"
+        "Moved to ASSella",
+        f"'{game_name}' is now managed by ASSella.\n"
         "SLSsteam config has been updated and the game files will be verified.",
     )
 
     # 7. Close dialog and refresh parent
-    dialog.accept()
+    if not sip.isdeleted(dialog):
+        dialog.accept()
     if parent:
         gm = getattr(parent, "game_manager", None)
         if gm:

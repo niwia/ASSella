@@ -250,7 +250,8 @@ class ProcessZipTask:
                         lua_timestamp = int(time.mktime(datetime.datetime(*dt).timetuple()))
                     except Exception as e:
                         logger.debug(f"[ProcessZipTask] could not read the LUA timestamp from the zip: {e}")
-                    lua_content = zip_ref.read(lua_files[0]).decode("utf-8")
+                    from utils.steam_manifest import tolerant_read_zip_member
+                    lua_content = tolerant_read_zip_member(zip_ref, lua_files[0], zip_path=zip_path).decode("utf-8", errors="ignore")
                     if lua_content:
                         ProcessZipTask._parse_lua(lua_content, game_data)
                         token = ProcessZipTask._extract_app_token(lua_content, game_data.get("appid"))
@@ -302,7 +303,8 @@ class ProcessZipTask:
                 manifest_files = {}
                 for f in zip_ref.namelist():
                     if f.endswith(".manifest"):
-                        mf_data = zip_ref.read(f)
+                        from utils.steam_manifest import tolerant_read_zip_member
+                        mf_data = tolerant_read_zip_member(zip_ref, f, zip_path=zip_path)
                         try:
                             from utils.manifest_resolver import sanitize_manifest_bytes
                             mf_data = sanitize_manifest_bytes(mf_data)

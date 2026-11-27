@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils.settings import get_settings
-from utils.yaml_config_manager import _atomic_write, _get_section_bounds
+from utils.yaml_config_manager import _atomic_write, _get_section_bounds, _normalize_flow_sections
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,9 @@ def get_manifest_ids_with_comments(config_path: Path) -> Dict[str, Tuple[str, st
         return {}
 
     try:
-        content = config_path.read_text(encoding="utf-8", errors="ignore")
+        content = _normalize_flow_sections(
+            config_path.read_text(encoding="utf-8", errors="ignore")
+        )
     except OSError as e:
         logger.error(f"[ManifestPinning] Failed to read {config_path}: {e}")
         return {}
@@ -76,6 +78,13 @@ def set_manifest_ids(
     Atomically add or update depot manifest GIDs under the ManifestIds section.
     Preserves other existing ManifestIds entries, comments, and other sections.
     """
+    manifest_map = {
+        str(d).strip(): str(gid).strip()
+        for d, gid in (manifest_map or {}).items()
+        if str(d).strip().isdigit()
+        and str(gid).strip().isdigit()
+        and int(str(gid).strip()) > 0
+    }
     if not manifest_map:
         return True
 
@@ -85,7 +94,9 @@ def set_manifest_ids(
             config_path.parent.mkdir(parents=True, exist_ok=True)
             content = "Plugins: yes\nManifestIds:\n"
         else:
-            content = config_path.read_text(encoding="utf-8", errors="ignore")
+            content = _normalize_flow_sections(
+                config_path.read_text(encoding="utf-8", errors="ignore")
+            )
 
         # Read existing ManifestIds with comments
         current_map = get_manifest_ids_with_comments(config_path)
@@ -130,7 +141,9 @@ def remove_manifest_ids(config_path: Path, depot_ids: List[str]) -> bool:
         config_path = Path(config_path)
         if not config_path.exists():
             return True
-        content = config_path.read_text(encoding="utf-8", errors="ignore")
+        content = _normalize_flow_sections(
+            config_path.read_text(encoding="utf-8", errors="ignore")
+        )
         bounds = _get_section_bounds(content, "ManifestIds")
         if not bounds:
             return True
@@ -189,18 +202,26 @@ def resolve_pinned_manifests(game_data: Dict[str, Any], appid: str) -> Dict[str,
 
     manifest_map: Dict[str, str] = {}
 
-    # 2. Check explicit manifest_overrides in game_data
+    # 2. Check explicit manifest_overrides in game_data. GID 0 means
+    # "unknown" in an adopted ACF and must never be pinned.
     overrides = game_data.get("manifest_overrides") or {}
     for d, gid in overrides.items():
-        if d and gid:
+        if d and str(gid).isdigit() and int(str(gid)) > 0:
             manifest_map[str(d)] = str(gid)
 
     # 3. Check depots structure in game_data
-    for depot_id, depot_info in (game_data.get("depots") or {}).items():
-        if isinstance(depot_info, dict):
-            gid = depot_info.get("manifest_id") or depot_info.get("gid")
-            if gid and str(gid).isdigit() and str(depot_id) not in manifest_map:
-                manifest_map[str(depot_id)] = str(gid)
+    gd_depots = game_data.get("depots")
+    if isinstance(gd_depots, dict):
+        for depot_id, depot_info in gd_depots.items():
+            if isinstance(depot_info, dict):
+                gid = depot_info.get("manifest_id") or depot_info.get("gid")
+                if (
+                    gid
+                    and str(gid).isdigit()
+                    and int(str(gid)) > 0
+                    and str(depot_id) not in manifest_map
+                ):
+                    manifest_map[str(depot_id)] = str(gid)
 
     # 4. Check installed appmanifest acf on disk if available
     try:
@@ -211,7 +232,13 @@ def resolve_pinned_manifests(game_data: Dict[str, Any], appid: str) -> Dict[str,
             for did, dinfo in (acf_data.get("AppState", {}).get("InstalledDepots") or {}).items():
                 if isinstance(dinfo, dict):
                     mid = dinfo.get("manifest")
-                    if mid and str(mid).isdigit() and str(did) not in manifest_map and str(did) != appid_str:
+                    if (
+                        mid
+                        and str(mid).isdigit()
+                        and int(str(mid)) > 0
+                        and str(did) not in manifest_map
+                        and str(did) != appid_str
+                    ):
                         manifest_map[str(did)] = str(mid)
     except Exception as e:
         logger.debug(f"[ManifestPinning] ACF manifest scan fallback error: {e}")
@@ -228,7 +255,11 @@ def resolve_pinned_manifests(game_data: Dict[str, Any], appid: str) -> Dict[str,
                         m_file = re.match(r"^(\d+)_(\d+)\.manifest$", fname)
                         if m_file:
                             did, mid = m_file.group(1), m_file.group(2)
-                            if did not in manifest_map and did != appid_str:
+                            if (
+                                int(mid) > 0
+                                and did not in manifest_map
+                                and did != appid_str
+                            ):
                                 manifest_map[did] = mid
     except Exception as e:
         logger.debug(f"[ManifestPinning] .DepotDownloader manifest scan error: {e}")
@@ -256,7 +287,11 @@ def resolve_pinned_manifests(game_data: Dict[str, Any], appid: str) -> Dict[str,
                             m_file = re.match(r"^(\d+)_(\d+)\.manifest$", base_name)
                             if m_file:
                                 did, mid = m_file.group(1), m_file.group(2)
-                                if did not in manifest_map and did != appid_str:
+                                if (
+                                    int(mid) > 0
+                                    and did not in manifest_map
+                                    and did != appid_str
+                                ):
                                     manifest_map[did] = mid
                 except Exception:
                     pass

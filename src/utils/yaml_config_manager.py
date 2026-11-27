@@ -37,6 +37,7 @@ from utils.yaml.apps import (  # noqa: F401
     _append_to_additional_apps,
     _init_config_with_app,
     add_additional_app,
+    add_additional_app_outcome,
     add_additional_apps_batch,
     add_additional_depot,
     add_additional_depots_batch,
@@ -58,6 +59,7 @@ from utils.yaml.constants import (  # noqa: F401
 
 from utils.yaml.core import (  # noqa: F401
     BatchConfigEditor,
+    WriteOutcome,
     _CONFIG_DISABLED,
     _add_dlc_batch_in_memory,
     _add_list_item_in_memory,
@@ -72,6 +74,7 @@ from utils.yaml.core import (  # noqa: F401
     _get_section_bounds,
     _get_section_end,
     _get_section_start,
+    _normalize_flow_sections,
     _read_config_content,
     _remove_entry_from_section,
     _remove_entry_in_memory,
@@ -175,6 +178,7 @@ from utils.yaml.validation import (  # noqa: F401
 
 from utils.yaml.yaml_values import (  # noqa: F401
     get_yaml_boolean_value,
+    set_yaml_boolean_content,
     update_yaml_boolean_value,
 )
 

@@ -143,7 +143,7 @@ class HighDlcPromptDialog(QDialog):
         d_lay = QVBoxLayout(self.dlc_data_btn)
         d_lay.setContentsMargins(6, 4, 6, 4)
         d_lay.setSpacing(2)
-        d_title = QLabel(f"⚡ Add All to DlcData ({self.dlc_count} DLCs)")
+        d_title = QLabel(f"Add All to DlcData ({self.dlc_count} DLCs)")
         d_title.setStyleSheet("font-weight: bold; font-size: 9.5pt; color: #FFFFFF;")
         d_sub = QLabel("Recommended: Bypasses Steam's 64 DLC limit by writing to DlcData")
         d_sub.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.70);")
@@ -171,7 +171,7 @@ class HighDlcPromptDialog(QDialog):
         m_lay = QVBoxLayout(self.manual_btn)
         m_lay.setContentsMargins(6, 4, 6, 4)
         m_lay.setSpacing(2)
-        m_title = QLabel("📝 Manual Selection...")
+        m_title = QLabel("Manual Selection...")
         m_title.setStyleSheet("font-weight: bold; font-size: 9.5pt; color: #FFFFFF;")
         m_sub = QLabel("Select individual DLCs to unlock from a checklist")
         m_sub.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.70);")
@@ -333,7 +333,7 @@ class DlcSelectionChecklistDialog(QDialog):
 
         # Search bar
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍  Search DLCs by name or AppID...")
+        self.search_input.setPlaceholderText("Search DLCs by name or AppID...")
         self.search_input.setClearButtonEnabled(True)
         self.search_input.textChanged.connect(self._on_search_text_changed)
         body.addWidget(self.search_input)

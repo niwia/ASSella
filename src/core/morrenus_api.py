@@ -272,10 +272,12 @@ def search_games(
             elif isinstance(lib_data.get("results"), list):
                 page_games = lib_data["results"]
             if total_count is None:
-                try:
-                    total_count = int(lib_data.get("total_count", 0))
-                except (TypeError, ValueError):
-                    total_count = None
+                raw_total = lib_data.get("total_count")
+                if raw_total is not None:
+                    try:
+                        total_count = int(raw_total)
+                    except (TypeError, ValueError):
+                        total_count = None
         elif isinstance(lib_data, list):
             page_games = lib_data
 
@@ -295,7 +297,10 @@ def search_games(
 
 _last_user_stats_fetch: float = 0.0
 _last_generate_usage_fetch: float = 0.0
+_user_stats_backoff_until: float = 0.0
+_generate_usage_backoff_until: float = 0.0
 _STATS_CACHE_TTL: float = 300.0  # 5-minute (300s) interval between API calls when online to avoid rate limits
+_STATS_ERROR_BACKOFF: float = 60.0
 
 
 def is_stats_cache_from_previous_utc_day(cached_stats: Any) -> bool:
@@ -441,12 +446,15 @@ def compute_api_key_expiry_info(
 
 def get_user_stats(force: bool = False) -> Dict:
     """Retrieves user statistics with cached fallback on network timeout or rate limit."""
-    global _last_user_stats_fetch
+    global _last_user_stats_fetch, _user_stats_backoff_until
     settings = get_settings()
     cached = settings.value("last_cached_user_stats", None)
 
     now = time.time()
     cache_day_expired = is_stats_cache_from_previous_utc_day(cached)
+    if not force and now < _user_stats_backoff_until:
+        logger.debug("[Hubcap] User stats in failure backoff")
+        return cached if isinstance(cached, dict) and cached else {"error": "Hubcap rate-limited / offline (backoff)"}
     if not force and not cache_day_expired and cached and (now - _last_user_stats_fetch < _STATS_CACHE_TTL):
         logger.debug("[Hubcap] Using recently cached user stats (throttled)")
         return cached
@@ -456,6 +464,7 @@ def get_user_stats(force: bool = False) -> Dict:
     res = _make_json_request("GET", "/user/stats", params={"api_key": api_key})
     if isinstance(res, dict) and "error" not in res and res:
         _last_user_stats_fetch = now
+        _user_stats_backoff_until = 0.0
         settings.setValue("last_cached_user_stats", res)
         # Mark health check cache as healthy too since user stats succeeded
         global _last_health_check_time, _cached_health_check
@@ -463,8 +472,8 @@ def get_user_stats(force: bool = False) -> Dict:
         _cached_health_check = {"status": "healthy", "source": "user_stats"}
         return res
 
-    # On rate limit (429) or error, back off for 120s
-    _last_user_stats_fetch = now + 60.0
+    # On rate limit (429) or error, back off for _STATS_ERROR_BACKOFF seconds
+    _user_stats_backoff_until = now + _STATS_ERROR_BACKOFF
     if isinstance(cached, dict) and cached:
         logger.info("Using cached user stats due to network request error / rate limit")
         if cache_day_expired:
@@ -477,11 +486,14 @@ def get_user_stats(force: bool = False) -> Dict:
 
 def get_generate_usage(force: bool = False) -> Dict:
     """Retrieves cloud generation API quotas and usage limits from /generate/usage."""
-    global _last_generate_usage_fetch
+    global _last_generate_usage_fetch, _generate_usage_backoff_until
     settings = get_settings()
     cached = settings.value("last_cached_generate_usage", None)
 
     now = time.time()
+    if not force and now < _generate_usage_backoff_until:
+        logger.debug("[Hubcap] Generate usage in failure backoff")
+        return cached if isinstance(cached, dict) and cached else {"error": "Hubcap rate-limited / offline (backoff)"}
     if not force and cached and (now - _last_generate_usage_fetch < _STATS_CACHE_TTL):
         logger.debug("[Hubcap] Using recently cached generation usage stats (throttled)")
         return cached
@@ -490,10 +502,11 @@ def get_generate_usage(force: bool = False) -> Dict:
     res = _make_json_request("GET", "/generate/usage")
     if isinstance(res, dict) and "error" not in res and res:
         _last_generate_usage_fetch = now
+        _generate_usage_backoff_until = 0.0
         settings.setValue("last_cached_generate_usage", res)
         return res
 
-    _last_generate_usage_fetch = now + 60.0
+    _generate_usage_backoff_until = now + _STATS_ERROR_BACKOFF
     if isinstance(cached, dict) and cached:
         logger.info("Using cached generation usage stats due to network request error / rate limit")
         return cached
@@ -559,6 +572,7 @@ def generate_single_manifest(
 _last_health_check_time: float = 0.0
 _cached_health_check: Optional[Dict] = None
 _HEALTH_CACHE_TTL: float = 300.0  # 5-minute (300s) cache for confirmed healthy status
+_HEALTH_ERROR_TTL: float = 60.0   # 60s negative cache so 30s health polling doesn't hammer offline tiers
 
 
 def check_health(force: bool = False) -> Dict:
@@ -566,14 +580,15 @@ def check_health(force: bool = False) -> Dict:
     Checks if the Hubcap API is healthy using the ISP bypass pipeline,
     so users with ISP bypass enabled still get accurate health status.
     Does not require an API key. Caches successful check for 5 minutes (300s)
-    to avoid burning requests against the rate limit ceiling.
-    Failed/unreachable checks are not cached to allow immediate retry.
+    and failures for 60s to avoid burning requests against the rate limit ceiling.
     """
     global _last_health_check_time, _cached_health_check
     now = time.time()
-    if not force and _cached_health_check and (now - _last_health_check_time < _HEALTH_CACHE_TTL):
-        logger.debug("[Hubcap] Using recently cached health check")
-        return _cached_health_check
+    if not force and _cached_health_check:
+        ttl = _HEALTH_ERROR_TTL if _cached_health_check.get("status") == "unhealthy" else _HEALTH_CACHE_TTL
+        if now - _last_health_check_time < ttl:
+            logger.debug("[Hubcap] Using recently cached health check")
+            return _cached_health_check
 
     url = f"{BASE_URL}/health"
     try:
@@ -596,9 +611,11 @@ def check_health(force: bool = False) -> Dict:
             _last_health_check_time = now
             _cached_health_check = rate_limited_health
             return rate_limited_health
-        _cached_health_check = None  # Do not cache failure: allow immediate retry
         error_msg = _handle_request_exception(e, "Health check")
-        return {"status": "unhealthy", "error": error_msg}
+        err_payload = {"status": "unhealthy", "error": error_msg}
+        _last_health_check_time = now
+        _cached_health_check = err_payload
+        return err_payload
 
 
 def get_selected_branch(app_id) -> str:
@@ -727,11 +744,35 @@ def download_manifest(
         r = execute_hubcap_request(
             get_session(), "GET", url, headers=headers, stream=True, timeout=60
         )
-        r.raise_for_status()
-        mark_hubcap_manifest_used()
-        with open(temp_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
+        try:
+            r.raise_for_status()
+            ctype = str(r.headers.get("Content-Type", "")).lower()
+            # A captive portal / ISP block page is served with HTTP 200. When
+            # streaming, isp_bypass cannot inspect the body, so reject obvious
+            # text payloads before they are written into the cache.
+            if "text/html" in ctype or "text/plain" in ctype:
+                raise ValueError(f"server returned non-binary payload ({ctype or 'unknown'})")
+            mark_hubcap_manifest_used()
+            with open(temp_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        finally:
+            try:
+                r.close()
+            except Exception as e:
+                logger.debug(f"[Hubcap] Error closing response stream: {e}")
+
+        # Validate the payload before it can replace a known-good bundle.
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(temp_path) as archive:
+                names = archive.namelist()
+        except (zipfile.BadZipFile, OSError) as zip_err:
+            raise ValueError(f"downloaded bundle is not a valid zip: {zip_err}") from zip_err
+        if not any(name.endswith((".lua", ".manifest")) for name in names):
+            raise ValueError("downloaded bundle contains no .lua or .manifest entries")
 
     def _cleanup_partial() -> None:
         if temp_path.exists():
@@ -824,15 +865,17 @@ def get_manifest_contents(app_id: Union[str, int], branch: str = "public") -> Di
     logger.info(f"Fetching manifest contents for app {app_id} (public bundle; requested branch={branch})")
     data = _make_json_request("GET", f"/manifest/{app_id}/contents")
 
-    if isinstance(data, dict) and "error" not in data:
-        manifests = data.get("manifests") or []
-        data["depot_ids"] = {str(m.get("depot_id", "")) for m in manifests if isinstance(m, dict) and m.get("depot_id")}
-        data["manifest_map"] = {
-            str(m["depot_id"]): str(m.get("manifest_id", ""))
-            for m in manifests
-            if isinstance(m, dict) and m.get("depot_id")
-        }
-        _contents_cache[cache_key] = (now, data)
+    if isinstance(data, dict):
+        if "error" not in data:
+            manifests = data.get("manifests") or []
+            data["depot_ids"] = {str(m.get("depot_id", "")) for m in manifests if isinstance(m, dict) and m.get("depot_id")}
+            data["manifest_map"] = {
+                str(m["depot_id"]): str(m.get("manifest_id", ""))
+                for m in manifests
+                if isinstance(m, dict) and m.get("depot_id")
+            }
+        # Negative-cache errors/404s for the same 60s TTL to avoid hammering offline/rate-limited endpoints.
+        _contents_cache[cache_key] = (now, dict(data))
 
     return data
 

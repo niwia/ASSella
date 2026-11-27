@@ -16,7 +16,14 @@ import re
 from pathlib import Path
 from typing import Dict, Optional
 
-from utils.yaml.core import _CONFIG_DISABLED, _atomic_write, _get_config_content_if_enabled, _get_section_bounds
+from utils.yaml.core import (
+    _CONFIG_DISABLED,
+    _atomic_write,
+    _get_config_content_if_enabled,
+    _get_section_bounds,
+    batch_config_edit,
+)
+from utils.yaml import core as _core
 
 logger = logging.getLogger(__name__)
 
@@ -49,64 +56,18 @@ def add_dlc_data_batch(
         if not dlc_dict:
             return True
 
-        content = _get_config_content_if_enabled(config_path, log_missing=True)
-        if content is _CONFIG_DISABLED or content is None:
+        if not _core._config_management_enabled():
             return False
 
-        bounds = _get_section_bounds(content, "DlcData")
+        with batch_config_edit(config_path) as editor:
+            editor.ensure_plugins()
+            editor.add_dlc_batch(parent_app_id, dlc_dict)
 
-        if not bounds:
-            # Create new DlcData section
-            lines = ["DlcData:", f"  {parent_app_id}:"]
-            for did, dname in dlc_dict.items():
-                cname = str(dname or f"DLC {did}").replace('"', '\\"')
-                lines.append(f'    {did}: "{cname}"')
-            new_entry = "\n".join(lines) + "\n"
-            new_content = content.rstrip() + "\n\n" + new_entry
-            return _atomic_write(config_path, new_content)
-
-        _, dlc_start, dlc_end = bounds
-        dlc_section = content[dlc_start:dlc_end]
-
-        parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_app_id)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
-        parent_match = parent_pattern.search(dlc_section)
-
-        if not parent_match:
-            # Parent AppID does not exist under DlcData yet. Insert it.
-            lines = [f"  {parent_app_id}:"]
-            for did, dname in dlc_dict.items():
-                cname = str(dname or f"DLC {did}").replace('"', '\\"')
-                lines.append(f'    {did}: "{cname}"')
-            insert_text = "\n".join(lines) + "\n"
-            insert_pos = dlc_end
-            new_content = content[:insert_pos].rstrip() + "\n" + insert_text + "\n" + content[insert_pos:].lstrip("\n")
-            return _atomic_write(config_path, new_content)
-
-        # Parent exists in DlcData section.
-        p_start = dlc_start + parent_match.end()
-        if p_start < len(content) and content[p_start] == "\r":
-            p_start += 1
-        if p_start < len(content) and content[p_start] == "\n":
-            p_start += 1
-
-        p_after = content[p_start:dlc_end]
-        next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
-        parent_end = (p_start + next_parent.start()) if next_parent else dlc_end
-
-        parent_block = content[p_start:parent_end]
-        new_dlc_lines = []
-        for did, dname in dlc_dict.items():
-            check_pat = re.compile(rf'^[ \t]*{re.escape(str(did))}[ \t]*:[ \t]*"', re.MULTILINE)
-            if not check_pat.search(parent_block):
-                cname = str(dname or f"DLC {did}").replace('"', '\\"')
-                new_dlc_lines.append(f'    {did}: "{cname}"')
-
-        if not new_dlc_lines:
-            return True  # All already exist
-
-        insert_text = "\n".join(new_dlc_lines) + "\n"
-        new_content = content[:parent_end].rstrip() + "\n" + insert_text + content[parent_end:]
-        return _atomic_write(config_path, new_content)
+        if not editor.committed_successfully:
+            return False
+        # "All entries already exist" is success here, the same as before the
+        # batch-editor refactor.
+        return True
 
     except Exception as e:
         logger.error(f"Failed to add DLC batch for '{parent_app_id}': {e}", exc_info=True)
@@ -128,7 +89,10 @@ def remove_dlc_data(
 
         _, dlc_start, dlc_end = bounds
         dlc_section = content[dlc_start:dlc_end]
-        parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_app_id)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
+        parent_pattern = re.compile(
+            rf"^[ \t]+['\"]?{re.escape(parent_app_id)}['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
         parent_match = parent_pattern.search(dlc_section)
         if not parent_match:
             return True
@@ -141,7 +105,11 @@ def remove_dlc_data(
             p_start += 1
 
         p_after = content[p_start:dlc_end]
-        next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+        next_parent = re.search(
+            r"^[ \t]+['\"]?[0-9A-Za-z_]+['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+            p_after,
+            re.MULTILINE,
+        )
         p_block_end = (p_start + next_parent.start()) if next_parent else dlc_end
 
         if dlc_id is None:
@@ -178,7 +146,10 @@ def get_dlc_data(config_path: Path, parent_app_id: str) -> Dict[str, str]:
 
         _, dlc_start, dlc_end = bounds
         dlc_section = content[dlc_start:dlc_end]
-        parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_app_id)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
+        parent_pattern = re.compile(
+            rf"^[ \t]+['\"]?{re.escape(parent_app_id)}['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
         parent_match = parent_pattern.search(dlc_section)
         if not parent_match:
             return {}
@@ -190,14 +161,31 @@ def get_dlc_data(config_path: Path, parent_app_id: str) -> Dict[str, str]:
             p_start += 1
 
         p_after = content[p_start:dlc_end]
-        next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+        next_parent = re.search(
+            r"^[ \t]+['\"]?[0-9A-Za-z_]+['\"]?[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+            p_after,
+            re.MULTILINE,
+        )
         p_end = (p_start + next_parent.start()) if next_parent else dlc_end
 
         result = {}
+        dlc_pattern = re.compile(
+            r"^[ \t]*['\"]?([0-9]+)['\"]?[ \t]*:[ \t]*"
+            r"(?:\"((?:[^\"\\]|\\.)*)\"|'((?:[^']|'')*)'|([^#\r\n]*?))"
+            r"[ \t]*(?:#[^\r\n]*)?$"
+        )
         for line in content[p_start:p_end].splitlines():
-            m = re.match(r'^[ \t]*([0-9]+)[ \t]*:[ \t]*"(.*)"[ \t]*(?:#[^\r\n]*)?$', line)
-            if m:
-                result[m.group(1)] = m.group(2)
+            m = dlc_pattern.match(line)
+            if not m:
+                continue
+            if m.group(2) is not None:
+                name = re.sub(r"\\(.)", r"\1", m.group(2))
+            elif m.group(3) is not None:
+                name = m.group(3).replace("''", "'")
+            else:
+                name = (m.group(4) or "").strip()
+            if name:
+                result[m.group(1)] = name
         return result
     except Exception:
         return {}

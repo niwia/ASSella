@@ -22,6 +22,16 @@ logger = logging.getLogger(__name__)
 
 def is_slssteam_mode_enabled() -> bool:
     """Check if Steam integration is enabled for the current platform."""
+    from utils.helpers import is_arm64
+    if is_arm64():
+        # On ARM64, allow if native SLSsteam.so is installed in ~/.local/share/SLSsteam/
+        from core.steam_helpers import get_steam_env
+        try:
+            if not get_steam_env().sls_installed():
+                return False
+        except Exception as e:
+            logger.debug(f"Failed to check SLS installation on ARM64: {e}")
+            return False
     settings = get_settings()
     if sys.platform == "linux":
         return settings.value("library_mode", False, type=bool)
@@ -37,11 +47,23 @@ def is_greenluma_wrapper_mode_enabled() -> bool:
 
 def is_slssteam_config_management_enabled() -> bool:
     """Check if SLSsteam config management is enabled in settings."""
+    from utils.helpers import is_arm64
+    if is_arm64():
+        from core.steam_helpers import get_steam_env
+        try:
+            if not get_steam_env().sls_installed():
+                return False
+        except Exception as e:
+            logger.debug(f"Failed to check SLS installation on ARM64: {e}")
+            return False
     settings = get_settings()
     return settings.value("sls_config_management", True, type=bool)
 
 def is_at0m_enabled() -> bool:
     """Check if AT0-M / Vapor mode is enabled via SLSsteam plugins."""
+    from utils.helpers import is_arm64
+    if is_arm64():
+        return False
     from utils.yaml.plugins import is_slssteam_plugins_enabled
     return is_slssteam_plugins_enabled()
 

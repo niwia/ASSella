@@ -165,6 +165,8 @@ class FetchManifestDialog(QDialog):
         self._init_ui()
         self._apply_view_mode_to_results()
         self._update_view_mode_button()
+        from core.ratings import subscribe_ratings
+        subscribe_ratings(self._on_rating_updated)
         logger.debug("FetchManifestDialog initialized.")
 
         self._request_api_status_update()
@@ -551,7 +553,9 @@ class FetchManifestDialog(QDialog):
         from utils.color_utils import get_best_foreground_color
         text_color = get_best_foreground_color(self.accent_color)
 
-        self.dl_btn = QPushButton("⬇ Download (Add to Queue)")
+        self.dl_btn = QPushButton("Download (Add to Queue)")
+        self.dl_btn.setIcon(QIcon(str(Paths.icon("file_download.svg"))))
+        self.dl_btn.setIconSize(QSize(16, 16))
         self.dl_btn.setFixedHeight(36)
         self.dl_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.dl_btn.setStyleSheet(f"""
@@ -1287,6 +1291,8 @@ class FetchManifestDialog(QDialog):
                     tier = resp.json().get("tier", "unknown").lower()
                     ok = True
                 _save_protondb_entry(str(app_id), tier, ok)
+                from core.ratings import notify_rating_updated
+                notify_rating_updated(str(app_id))
             except Exception as e:
                 logger.debug(f"ProtonDB on-demand fetch failed for {app_id}: {e}")
 
@@ -1422,7 +1428,6 @@ class FetchManifestDialog(QDialog):
         try:
             from core.native_steam.compat_tool import (
                 check_native_steam_platform_mismatch,
-                force_proton_for_app,
             )
             from ui.dialogs.platform_mismatch_dialog import (
                 PlatformMismatchDialog,
@@ -1492,7 +1497,7 @@ class FetchManifestDialog(QDialog):
                             try:
                                 from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
                                 cache = SteamDBBuildsCache()
-                                c_depots = cache.get_build_depots(rec_bid)
+                                c_depots = cache.get_build_depots(rec_bid, appid=aid_str)
                                 if c_depots:
                                     rec_overrides = {str(d): str(info.get("manifest_id") or info.get("gid", "")) for d, info in c_depots.items()}
                                 else:
@@ -1618,6 +1623,9 @@ class FetchManifestDialog(QDialog):
                     self._dismiss_loading_overlay()
                     self.status_label.setText("Download cancelled.")
                     return
+                from core.steam_helpers import ensure_steam_library, is_path_in_steam_library
+                if is_path_in_steam_library(selected_library_path):
+                    ensure_steam_library(selected_library_path)
             else:
                 self._dismiss_loading_overlay()
                 self.status_label.setText("Download cancelled.")
@@ -1874,7 +1882,7 @@ class FetchManifestDialog(QDialog):
                                     try:
                                         from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
                                         cache = SteamDBBuildsCache()
-                                        c_depots = cache.get_build_depots(rec_bid)
+                                        c_depots = cache.get_build_depots(rec_bid, appid=appid)
                                         if c_depots:
                                             patch_depots = c_depots
                                         else:
@@ -1934,6 +1942,12 @@ class FetchManifestDialog(QDialog):
                     overrides = depot_dialog.get_manifest_overrides()
                     if overrides:
                         metadata["manifest_overrides"] = overrides
+
+                if hasattr(depot_dialog, "get_selected_files"):
+                    sel_files = depot_dialog.get_selected_files()
+                    if sel_files:
+                        metadata["selected_files_list"] = sel_files
+                        logger.info(f"[FetchManifest] Preserved {len(sel_files)} selective files for download")
 
                 if getattr(depot_dialog, "_dlc_only_mode", False):
                     metadata["is_dlc_only"] = True
@@ -2078,6 +2092,10 @@ class FetchManifestDialog(QDialog):
                     dialog = SteamLibraryDialog(libraries, self, accent_color=self.accent_color)
                     if dialog.exec():
                         dest_path = dialog.get_selected_path()
+                        if dest_path:
+                            from core.steam_helpers import ensure_steam_library, is_path_in_steam_library
+                            if is_path_in_steam_library(dest_path):
+                                ensure_steam_library(dest_path)
                     else:
                         return
             else:
@@ -2128,7 +2146,37 @@ class FetchManifestDialog(QDialog):
                 y = (self.height() - scaled_pixmap.height()) // 2
                 painter.drawPixmap(x, y, scaled_pixmap)
 
+    def _on_rating_updated(self, appid: str = "*") -> None:
+        """Refresh rating badges for matching search result widgets."""
+        if not hasattr(self, "results_list") or not self.results_list:
+            return
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self.results_list):
+                return
+        except ImportError:
+            sip = None
+
+        for i in range(self.results_list.count()):
+            item = self.results_list.item(i)
+            if not item:
+                continue
+            item_appid = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            if appid not in ("*", item_appid):
+                continue
+            widget = self.results_list.itemWidget(item)
+            if widget and hasattr(widget, "update_ratings"):
+                try:
+                    if sip and sip.isdeleted(widget):
+                        continue
+                    widget._is_fetching_proton = False
+                    widget.update_ratings()
+                except Exception as e:
+                    logger.debug(f"[FetchManifest] Could not update rating for {item_appid}: {e}")
+
     def accept(self):
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
         if hasattr(self, "_origins_movie") and self._origins_movie:
             self._origins_movie.stop()
             self._origins_movie = None
@@ -2138,6 +2186,8 @@ class FetchManifestDialog(QDialog):
         super().accept()
 
     def reject(self):
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
         if hasattr(self, "_origins_movie") and self._origins_movie:
             self._origins_movie.stop()
             self._origins_movie = None
@@ -2169,6 +2219,8 @@ class FetchManifestDialog(QDialog):
         super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
         self._dismiss_loading_overlay()
         if hasattr(self, "_origins_movie") and self._origins_movie:
             self._origins_movie.stop()

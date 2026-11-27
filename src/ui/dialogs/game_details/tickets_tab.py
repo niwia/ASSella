@@ -66,6 +66,28 @@ def init_tickets_tab(dialog) -> None:
     title_lbl.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {dialog.accent_color};")
     layout.addWidget(title_lbl)
 
+    from utils.game_modes import is_standalone_game
+    if is_standalone_game(dialog.game_data):
+        tick_widget.setAcceptDrops(False)
+        placeholder_box = QFrame()
+        placeholder_box.setStyleSheet("background: rgba(255, 255, 255, 0.04); border-radius: 8px; padding: 24px;")
+        p_lay = QVBoxLayout(placeholder_box)
+        p_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        p_lay.setSpacing(10)
+        p_icon = QLabel("Unavailable for Standalone Installations")
+        p_icon.setStyleSheet(f"color: {dialog.accent_color}; font-size: 11pt; font-weight: bold;")
+        p_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        p_msg = QLabel("Tickets only apply to games managed through Steam / SLSsteam.\nThis game is installed standalone in a custom directory.")
+        p_msg.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 9pt; text-align: center;")
+        p_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        p_lay.addWidget(p_icon)
+        p_lay.addWidget(p_msg)
+        layout.addWidget(placeholder_box)
+        layout.addStretch()
+        scroll.setWidget(tick_widget)
+        dialog.stacked.addWidget(scroll)
+        return
+
     # Drag & Drop Zone Frame
     drop_zone = QFrame()
     drop_zone.setObjectName("dropZone")

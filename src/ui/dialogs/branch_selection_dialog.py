@@ -44,9 +44,7 @@ class BranchSelectionDialog:
             label=f"Select branch for: <b>{game_name or f'App {app_id}'}</b>",
             items=display_items,
         )
-        # Branch names and build IDs are short: no need for a full-width field.
-        dialog.setMinimumWidth(340)
-        dialog.field.setFixedWidth(230)
+        dialog.setMinimumWidth(360)
         dialog.adjustSize()
 
         # Pre-select saved branch if exists

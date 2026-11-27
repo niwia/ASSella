@@ -38,7 +38,7 @@ EXPECTED_SKIPS = {
 # failure: the dependency is declared in requirements.txt and must be installed.
 HARD_DEPENDENCIES = {
     "PyQt6", "psutil", "gevent", "rich", "capstone", "curl_cffi",
-    "yaml", "cryptography", "Crypto", "vdf", "steam", "requests",
+    "yaml", "cryptography", "Cryptodome", "vdf", "steam", "requests",
     "bs4", "curl_cffi.requests", "zstandard", "protobuf",
 }
 

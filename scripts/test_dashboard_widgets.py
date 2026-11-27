@@ -24,6 +24,9 @@ from PyQt6.QtCore import QPoint, QSize  # noqa: E402
 from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QLabel  # noqa: E402
 
+from ui.dialogs.library.widgets import GameItemWidget  # noqa: E402
+from ui.widgets.active_game_card import ActiveGameCard  # noqa: E402
+from ui.widgets.artwork_fade import build_faded_artwork  # noqa: E402
 from ui.widgets.recent_activity_item import RecentActivityItemWidget  # noqa: E402
 from ui.widgets.updates_panel import UpdateItemWidget, _build_faded_artwork  # noqa: E402
 
@@ -76,6 +79,142 @@ class TestBuildFadedArtwork(unittest.TestCase):
         self.assertTrue(_build_faded_artwork(None, QSize(100, 38)).isNull())
         self.assertTrue(_build_faded_artwork(QPixmap(), QSize(100, 38)).isNull())
         self.assertTrue(_build_faded_artwork(_make_sample_pixmap(), QSize(0, 38)).isNull())
+
+    def test_fade_out_right_and_left_corner_rounding(self):
+        src = _make_sample_pixmap(460, 215)
+        faded = build_faded_artwork(
+            src,
+            QSize(260, 128),
+            direction="fade_out_right",
+            fade_start=0.28,
+            fade_end=0.98,
+            start_alpha=255,
+            end_alpha=0,
+            edge_alpha=215,
+            edge_span=0.12,
+            corner_radius=11.0,
+            round_corners="left",
+        )
+        self.assertEqual(faded.size(), QSize(260, 128))
+        img = faded.toImage()
+        # Top-left corner (0, 0) clipped cleanly by 11px radius while inner solid region is opaque
+        self.assertEqual(QColor(img.pixelColor(0, 0)).alpha(), 0)
+        self.assertGreaterEqual(QColor(img.pixelColor(30, 64)).alpha(), 250)
+        # Right edge fades out completely with smooth monotonic steps
+        alphas = [QColor(img.pixelColor(x, 64)).alpha() for x in range(70, 260, 15)]
+        self.assertEqual(QColor(img.pixelColor(258, 64)).alpha(), 0)
+        self.assertGreater(alphas[0], alphas[len(alphas) // 2])
+        self.assertGreater(alphas[len(alphas) // 2], alphas[-1])
+
+
+class TestActiveGameCard(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _ensure_app()
+
+    def test_adapts_measurements_between_wide_single_game_and_compact_queue_modes(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        art_path = Path(tmp.name) / "55555.jpg"
+        _make_sample_pixmap().save(str(art_path), "JPG")
+
+        with mock.patch("utils.image_fetcher.ImageFetcher.get_cache_path", return_value=art_path):
+            card = ActiveGameCard()
+            card.set_game("55555", "Single Game Test", "#8AB4F8")
+
+            # Wide single-game layout (~780px)
+            card.resize(780, 120)
+            card.show()
+            _ensure_app().processEvents()
+            card.grab()
+            self.assertEqual(card._cached_fade_mode, "wide")
+            self.assertIsNotNone(card._scaled_pixmap)
+            wide_art_w = card._scaled_pixmap.width()
+            self.assertGreaterEqual(wide_art_w, 440)  # ~58% of 780
+
+            # Resize into compact queue side-by-side layout (~380px)
+            card.resize(380, 120)
+            _ensure_app().processEvents()
+            card.grab()
+            self.assertEqual(card._cached_fade_mode, "compact")
+            self.assertIsNotNone(card._scaled_pixmap)
+            compact_art_w = card._scaled_pixmap.width()
+            self.assertGreaterEqual(compact_art_w, 250)  # ~68% of 380
+            self.assertLess(compact_art_w, wide_art_w)
+            card.close()
+
+    def test_async_fetch_populates_uncached_artwork(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        missing_path = Path(tmp.name) / "missing.jpg"
+
+        sample_path = Path(tmp.name) / "sample.png"
+        self.assertTrue(_make_sample_pixmap().save(str(sample_path), "PNG"))
+        raw_bytes = sample_path.read_bytes()
+
+        class FakeFetcher:
+            @staticmethod
+            def get_cache_path(_appid):
+                return missing_path
+
+            @staticmethod
+            def get_header_image_url(appid):
+                return f"https://example.invalid/{appid}/header.jpg"
+
+            def __init__(self, url, parent=None):
+                self.url = url
+                self._callbacks = []
+                self.finished = mock.MagicMock()
+                self.finished.connect.side_effect = self._callbacks.append
+
+            def start(self):
+                for cb in self._callbacks:
+                    cb(raw_bytes)
+
+        with mock.patch("utils.image_fetcher.ImageFetcher", FakeFetcher):
+            card = ActiveGameCard()
+            card.set_game("77777", "Uncached Game", "#8AB4F8")
+            self.assertIsNotNone(card.pixmap)
+            self.assertFalse(card.pixmap.isNull())
+
+
+class TestGameLibraryLeftThumbnail(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _ensure_app()
+
+    def test_widened_260x128_thumbnail_has_smooth_fade_and_grayscale_support(self):
+        pm = _make_sample_pixmap(460, 215)
+        with mock.patch("utils.dlc_helpers.is_dlc_only_mode", return_value=False):
+            card = GameItemWidget(
+                {"appid": "88888", "game_name": "Library Game", "is_steam_tab": False},
+                "12.3 GB",
+                "#8AB4F8",
+                "#121214",
+                applist_2_0_enabled=True,
+            )
+            self.assertEqual(card.image_label.size(), QSize(260, 128))
+            card.set_image(pm)
+            faded = card.image_label.pixmap()
+            self.assertEqual(faded.size(), QSize(260, 128))
+            img = faded.toImage()
+            self.assertEqual(QColor(img.pixelColor(0, 0)).alpha(), 0)
+            self.assertGreaterEqual(QColor(img.pixelColor(40, 64)).alpha(), 250)
+            self.assertEqual(QColor(img.pixelColor(258, 64)).alpha(), 0)
+
+            # Steam catalogue (non-DLC) stays grayscale with the same smooth fade
+            steam_card = GameItemWidget(
+                {"appid": "88889", "game_name": "Catalogue Game", "is_steam_tab": True},
+                "5.0 GB",
+                "#8AB4F8",
+                "#121214",
+                applist_2_0_enabled=True,
+            )
+            steam_card.set_image(pm)
+            sg_img = steam_card.image_label.pixmap().toImage()
+            px = sg_img.pixelColor(40, 64)
+            self.assertLessEqual(abs(px.red() - px.green()), 2)
+            self.assertEqual(QColor(sg_img.pixelColor(258, 64)).alpha(), 0)
 
 
 class TestUpdateItemWidget(unittest.TestCase):

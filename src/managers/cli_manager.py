@@ -1197,7 +1197,10 @@ class CLITaskManager:
         selected_depots = self.game_data.get("selected_depots_list", [])
         all_manifests = self.game_data.get("manifests", {})
 
-        if not selected_depots or not all_manifests:
+        # Write whenever the selection is known, even with an empty manifest map:
+        # otherwise a game whose manifests did not come back keeps the stale ids
+        # from an older install forever (the checker compares against those).
+        if not selected_depots:
             return
 
         try:
@@ -1212,14 +1215,25 @@ class CLITaskManager:
                         parts = [p.strip() for p in line.split(":")]
                         if len(parts) >= 2:
                             existing_entries[parts[0]] = line
-                except Exception:
-                    pass
+                except Exception as read_err:
+                    self.logger.debug(f"Could not read existing entries from {depot_file}: {read_err}")
+
+            selected_set = {str(d) for d in selected_depots}
+            for did in list(existing_entries.keys()):
+                if did not in selected_set:
+                    existing_entries.pop(did, None)
 
             for depot_id_raw in selected_depots:
                 depot_id = str(depot_id_raw)
                 manifest_id = all_manifests.get(depot_id)
                 if manifest_id:
                     existing_entries[depot_id] = f"{depot_id}: {manifest_id}"
+
+            # Also update any existing depots that are present in all_manifests so
+            # tracked depots do not retain stale manifests after an update.
+            for did in list(existing_entries.keys()):
+                if did in all_manifests and all_manifests[did]:
+                    existing_entries[did] = f"{did}: {all_manifests[did]}"
 
             with open(depot_file, "w") as f:
                 for entry_line in existing_entries.values():

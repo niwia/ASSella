@@ -189,10 +189,18 @@ def run_headless_helper(app_id: int, logger: logging.Logger):
         logger.info(f"Download progress: {percent}%")
     download_task.progress_percentage.connect(on_progress_percent)
 
+    download_errors = []
+    download_task.error.connect(download_errors.append)
+
     try:
         download_task.run(game_data, selected_depots, dest_path)
     except Exception as e:
         logger.error(f"Depot download failed with error: {e}")
+        sys.exit(1)
+
+    if download_errors:
+        _err = download_errors[0]
+        logger.error(f"Depot download reported failure: {_err[1] if isinstance(_err, tuple) else _err}")
         sys.exit(1)
 
     # 5. Run post-processing
@@ -230,11 +238,11 @@ def run_headless_update_check(logger):
     logger.info("Scanning library for games...")
     game_manager._perform_scan()
 
-    from utils.game_modes import is_accela_managed, is_atom_managed
+    from utils.game_modes import is_accela_managed, is_atom_managed, is_standalone_game
 
     accela_games = [
         g for g in game_manager.games
-        if is_accela_managed(g) and not is_atom_managed(g)
+        if is_accela_managed(g) and not is_atom_managed(g) and not is_standalone_game(g)
     ]
     logger.info(f"Found {len(accela_games)} ASSella-managed game(s).")
     if not accela_games:

@@ -271,11 +271,28 @@ def test_info_tab_mutual_exclusion():
 
 
 def main() -> int:
-    test_command_and_regex()
-    test_yaml_persistence()
-    test_scanner()
-    test_dialog_ui()
-    test_info_tab_mutual_exclusion()
+    from utils.settings import get_settings
+    st = get_settings()
+    orig_lib_mode = st.value("library_mode", None)
+    orig_cfg_mgmt = st.value("sls_config_management", None)
+    st.setValue("library_mode", True)
+    st.setValue("sls_config_management", True)
+
+    try:
+        test_command_and_regex()
+        test_yaml_persistence()
+        test_scanner()
+        test_dialog_ui()
+        test_info_tab_mutual_exclusion()
+    finally:
+        if orig_lib_mode is None:
+            st.remove("library_mode")
+        else:
+            st.setValue("library_mode", orig_lib_mode)
+        if orig_cfg_mgmt is None:
+            st.remove("sls_config_management")
+        else:
+            st.setValue("sls_config_management", orig_cfg_mgmt)
 
     print(f"\n============================================================")
     if _failures:

@@ -117,12 +117,53 @@ def _experimental_mode_enabled() -> bool:
         return False
 
 
-def _is_slssteam_available() -> bool:
-    """Check if SLSsteam API pipe exists (proxy for Steam + SLSsteam running)."""
+def _is_slssteam_pipe_listening() -> bool:
+    """Check if SLSsteam API pipe/file exists and SLSsteam is actively listening.
+
+    SLSsteam creates /tmp/SLSsteam.API as a regular file monitored via an inotify
+    CFileWatcher on Linux (or optionally a FIFO in custom environments).
+    """
     if sys.platform != "linux":
         return False
-    return os.path.exists(SLSSTEAM_API_PIPE)
+    if not os.path.exists(SLSSTEAM_API_PIPE):
+        return False
+    try:
+        import stat
+        st = os.stat(SLSSTEAM_API_PIPE)
+        if stat.S_ISFIFO(st.st_mode):
+            fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+            return True
+        elif stat.S_ISREG(st.st_mode):
+            return is_slssteam_process_active()
+        return False
+    except OSError as e:
+        logger.debug(f"[sls] pipe listening check: {e}")
+        return False
 
+
+def _is_slssteam_available() -> bool:
+    """Check if SLSsteam API pipe exists and has an active reader listening."""
+    if sys.platform != "linux":
+        return False
+    from utils.helpers import is_arm64
+    if is_arm64():
+        from core.steam_helpers import get_steam_env
+        try:
+            if not get_steam_env().sls_installed():
+                return False
+        except Exception:
+            return False
+    return _is_slssteam_pipe_listening()
+
+
+STEAM_PROCESS_NAMES = {
+    "steam",
+    ".steam-wrapped",
+    "steam-wrapped",
+    "steam-original",
+    "steam.sh",
+}
 
 _proc_cache = {
     "last_check": 0.0,
@@ -132,8 +173,35 @@ _proc_cache = {
 _PROC_CACHE_TTL = 2.0  # seconds
 
 
+def _check_sls_log_for_pids(steam_pids: List[str]) -> bool:
+    """Fallback for sibling user-namespace sandboxes (e.g. NixOS bwrap) where
+    /proc/<pid>/maps returns EACCES. Checks ~/.SLSsteam.log for a matching
+    running Steam PID and a successful load marker.
+    """
+    if not steam_pids:
+        return False
+    try:
+        log_path = _get_sls_log_path()
+        if not log_path.is_file():
+            return False
+        size = log_path.stat().st_size
+        if size == 0:
+            return False
+        with open(log_path, "rb") as f:
+            if size > 65536:
+                f.seek(size - 65536)
+            data = f.read().decode("utf-8", errors="ignore")
+        if "Loaded successfully" not in data:
+            return False
+        return any(f"({pid})" in data for pid in steam_pids)
+    except OSError:
+        return False
+
+
 def _update_proc_cache_if_needed():
-    """Scan /proc at most once every _PROC_CACHE_TTL seconds."""
+    """Scan /proc at most once every _PROC_CACHE_TTL seconds.
+    Supports standard distros, NixOS wrapped binaries (.steam-wrapped), and containerized Steam.
+    """
     import time
     now = time.time()
     if now - _proc_cache["last_check"] < _PROC_CACHE_TTL:
@@ -146,6 +214,20 @@ def _update_proc_cache_if_needed():
     if sys.platform != "linux":
         return
 
+    # 1. Fast FIFO check if /tmp/SLSsteam.API is a FIFO with an active listener
+    try:
+        import stat
+        if os.path.exists(SLSSTEAM_API_PIPE):
+            st = os.stat(SLSSTEAM_API_PIPE)
+            if stat.S_ISFIFO(st.st_mode):
+                fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+                os.close(fd)
+                _proc_cache["slssteam_active"] = True
+                _proc_cache["steam_running"] = True
+                return
+    except OSError as e:
+        logger.debug(f"[sls] FIFO check skipped: {e}")
+
     try:
         steam_pids = []
         for pid_dir in os.listdir("/proc"):
@@ -155,30 +237,49 @@ def _update_proc_cache_if_needed():
                 comm_path = os.path.join("/proc", pid_dir, "comm")
                 with open(comm_path, "r", encoding="utf-8", errors="ignore") as f:
                     comm = f.read().strip()
-                if comm == "steam":
+                if comm in STEAM_PROCESS_NAMES:
                     steam_pids.append(pid_dir)
+                elif comm == "steamwebhelper":
+                    _proc_cache["steam_running"] = True
+                elif comm == "bwrap":
+                    try:
+                        with open(os.path.join("/proc", pid_dir, "cmdline"), "rb") as cf:
+                            cdata = cf.read()
+                            if b"steam" in cdata or b".steam-wrapped" in cdata:
+                                _proc_cache["steam_running"] = True
+                    except OSError as e:
+                        logger.debug(f"[sls] bwrap cmdline read: {e}")
             except OSError:
                 continue
 
         if steam_pids:
             _proc_cache["steam_running"] = True
-            for pid in steam_pids:
-                maps_path = os.path.join("/proc", pid, "maps")
-                try:
-                    if os.path.exists(maps_path):
-                        with open(maps_path, "r", encoding="utf-8", errors="ignore") as f:
-                            for line in f:
-                                if "SLSsteam.so" in line:
-                                    _proc_cache["slssteam_active"] = True
-                                    return
-                except OSError:
-                    continue
-    except OSError:
-        pass
+            if not _proc_cache["slssteam_active"]:
+                maps_eacces = False
+                for pid in steam_pids:
+                    maps_path = os.path.join("/proc", pid, "maps")
+                    try:
+                        if os.path.exists(maps_path):
+                            with open(maps_path, "r", encoding="utf-8", errors="ignore") as f:
+                                for line in f:
+                                    if "SLSsteam.so" in line:
+                                        _proc_cache["slssteam_active"] = True
+                                        return
+                    except PermissionError:
+                        maps_eacces = True
+                        continue
+                    except OSError:
+                        continue
+                if maps_eacces and os.path.exists(SLSSTEAM_API_PIPE):
+                    if _check_sls_log_for_pids(steam_pids):
+                        _proc_cache["slssteam_active"] = True
+                        return
+    except OSError as e:
+        logger.debug(f"[sls] FIFO check skipped: {e}")
 
 
 def is_slssteam_process_active() -> bool:
-    """Check if SLSsteam.so is loaded in Steam's memory space using /proc maps.
+    """Check if SLSsteam.so is loaded in Steam or listening on its API pipe.
     Cached for 2 seconds to avoid freezing the UI on repeated calls.
     """
     _update_proc_cache_if_needed()
@@ -189,6 +290,9 @@ def is_steam_process_running() -> bool:
     """Check if the steam process is currently running on the system.
     Cached for 2 seconds to avoid freezing the UI on repeated calls.
     """
+    if sys.platform == "win32":
+        from core.steam_helpers import is_steam_running
+        return is_steam_running()
     _update_proc_cache_if_needed()
     return _proc_cache["steam_running"]
 
@@ -352,6 +456,19 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False, cached_only: bo
         result["error"] = f"Failed to inspect local binary mtime: {exc}"
         return result
 
+    # NixOS store files always have mtime=1 (1970-01-01) and live under /nix/store/.
+    # They are managed by Nix, not Headcrab/ASSella, so skip the mtime check.
+    try:
+        resolved_so = os.path.realpath(local_so)
+    except OSError:
+        resolved_so = local_so
+    if resolved_so.startswith("/nix/store/") or local_mtime <= 1.0:
+        result["status"] = "up_to_date"
+        result["release_tag"] = "Nix-managed"
+        with _binary_version_cache_lock:
+            _binary_version_cache = {"timestamp": time.time(), "data": dict(result)}
+        return result
+
     # ── 2. Fetch latest GitHub release metadata ────────────────────────────
     try:
         req = urllib.request.Request(
@@ -432,24 +549,37 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False, cached_only: bo
 
 
 def _slssteam_api_send(command: str) -> bool:
-    """Send a raw command to SLSsteam via the named pipe.
+    """Send a raw command to SLSsteam via the API file/pipe.
 
-    Returns True on success.  Returns False (never raises) on any failure —
-    including the pipe being gone because Steam/SLSsteam closed mid-write.
+    Handles both standard inotify regular file (/tmp/SLSsteam.API) and FIFOs.
+    Returns True on success. Returns False (never raises) on any failure —
+    including the file being inaccessible because Steam/SLSsteam closed mid-write.
     """
-    if not _is_slssteam_available():
+    if sys.platform != "linux":
+        return False
+    if not _is_slssteam_pipe_listening():
         return False
     try:
-        with open(SLSSTEAM_API_PIPE, "w") as f:
-            f.write(command.strip() + "\n")
-            f.flush()
-        logger.info(f"SLSsteam API command sent: {command}")
+        import stat
+        st = os.stat(SLSSTEAM_API_PIPE)
+        if stat.S_ISFIFO(st.st_mode):
+            fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                payload = (command.strip() + "\n").encode("utf-8")
+                os.write(fd, payload)
+            finally:
+                os.close(fd)
+        else:
+            with open(SLSSTEAM_API_PIPE, "w", encoding="utf-8") as f:
+                f.write(command.strip() + "\n")
+                f.flush()
+        logger.info(f"SLSsteam API command sent: {command.strip()}")
         return True
     except OSError as e:
-        # ENXIO / EPIPE = pipe exists on disk but reader (SLSsteam) has gone away.
+        # ENXIO / EPIPE / write error = reader (SLSsteam) has gone away or file inaccessible.
         # Log at warning level so it's visible but doesn't crash anything.
         logger.warning(
-            f"SLSsteam API pipe write failed for '{command}': {e} "
+            f"SLSsteam API command send failed for '{command}': {e} "
             "(Steam/SLSsteam may have closed — command will be retried or skipped)"
         )
         return False
@@ -508,11 +638,20 @@ def _get_sls_log_size() -> int:
 
 
 def _write_appid_to_config(appid: str, game_name: str = "") -> bool:
-    """Write appid into SLSsteam config.yaml AdditionalApps in-place."""
-    from utils.yaml_config_manager import get_user_config_path, add_additional_app
+    """Write appid into SLSsteam config.yaml AdditionalApps in-place.
+
+    Returns True only when the entry was newly written. An already-present
+    AppID is not a fresh write: callers use this to decide whether waiting for
+    the SLSsteam license log is worthwhile.
+    """
+    from utils.yaml_config_manager import (
+        WriteOutcome,
+        add_additional_app_outcome,
+        get_user_config_path,
+    )
     config_path = get_user_config_path()
     comment = game_name if game_name else ""
-    return add_additional_app(config_path, str(appid), comment)
+    return add_additional_app_outcome(config_path, str(appid), comment) is WriteOutcome.CHANGED
 
 
 def _remove_appid_from_config(appid: str) -> bool:
@@ -520,7 +659,11 @@ def _remove_appid_from_config(appid: str) -> bool:
     from utils.yaml_config_manager import get_user_config_path, remove_additional_app, remove_launch_option
     config_path = get_user_config_path()
     try:
-        remove_launch_option(config_path, str(appid))
+        remove_launch_option(
+            config_path,
+            str(appid),
+            markers=("netsock.so", "LD_AUDIT", "#assella-bypass"),
+        )
     except Exception:
         pass
     return remove_additional_app(config_path, str(appid))
@@ -714,6 +857,17 @@ def install_via_sls(
     if not appid or appid in ("0", "N/A", "unknown"):
         return False
 
+    try:
+        from utils.dlc_helpers import is_dlc_only_context
+        if is_dlc_only_context(str(appid), game_data):
+            logger.info(
+                f"install_via_sls: DLC-only mode active for {appid} — "
+                "skipping base AppID injection/install"
+            )
+            return True
+    except Exception as e:
+        logger.debug(f"install_via_sls: DLC-only guard check error: {e}")
+
     if _shutdown_flag.is_set():
         logger.debug(f"install_via_sls: shutdown in progress — skipping for {appid}")
         return False
@@ -726,16 +880,27 @@ def install_via_sls(
         logger.debug(f"install_via_sls: prerequisites check error: {e}")
 
     # 1. Write to config in-place (always, even if Steam is closed)
+    already_present = False
+    try:
+        from utils.yaml_config_manager import get_user_config_path, get_additional_apps
+        config_path = get_user_config_path()
+        if config_path and config_path.exists():
+            already_present = str(appid) in get_additional_apps(config_path)
+    except Exception as e:
+        logger.debug(f"install_via_sls: could not check existing apps in config: {e}")
+
     try:
         written = _write_appid_to_config(appid, game_name)
     except Exception as e:
         logger.error(f"install_via_sls: failed to write {appid} to SLS config: {e}")
         written = False
 
-    if not written:
-        logger.info(f"AppID {appid} already in SLS config or write failed")
-    else:
+    if written:
         logger.info(f"Wrote AppID {appid} to SLS config")
+    elif already_present:
+        logger.info(f"AppID {appid} is already present in SLS config")
+    else:
+        logger.warning(f"Failed to write AppID {appid} to SLS config")
 
     # 2. If SLSsteam/Steam is not available, stop here — config write is sufficient
     if not _is_slssteam_available():
@@ -983,8 +1148,7 @@ def warn_sls_unavailable(context: str = "") -> str:
         issues_text = "; ".join(issues)
         msg = (
             f"{ctx_prefix}SLSsteam not available — {issues_text}. "
-            "Falling back to manual ACF write. "
-            "Make sure Steam is launched with SLSsteam loaded."
+            "Config recorded in config.yaml; Steam will register the game on next launch."
         )
     else:
         # Pipe just went away mid-operation

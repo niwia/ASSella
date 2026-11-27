@@ -39,6 +39,62 @@ def _create_empty_db(path: Path) -> None:
             )
         """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS depot_enrichments (
+                depot_id TEXT PRIMARY KEY,
+                appid TEXT,
+                name TEXT,
+                size_str TEXT,
+                size_bytes INTEGER,
+                dl_str TEXT,
+                is_dlc INTEGER,
+                oslist TEXT,
+                osarch TEXT,
+                releasestate TEXT,
+                release_src TEXT,
+                updated_at INTEGER
+            )
+        """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS missing_hubcap_depots (
+                appid TEXT NOT NULL,
+                depot_id TEXT NOT NULL,
+                manifest_id TEXT NOT NULL,
+                depot_name TEXT,
+                first_seen INTEGER,
+                PRIMARY KEY (appid, depot_id)
+            )
+        """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS at0m_update_status (
+                appid TEXT PRIMARY KEY,
+                game_title TEXT,
+                last_timeupdated INTEGER DEFAULT 0,
+                last_checked INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'up_to_date',
+                new_depots TEXT,
+                cooldown_until INTEGER DEFAULT 0
+            )
+        """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS standalone_games (
+                appid TEXT PRIMARY KEY,
+                game_name TEXT NOT NULL,
+                install_path TEXT NOT NULL,
+                buildid TEXT DEFAULT '',
+                size INTEGER DEFAULT 0,
+                created_at INTEGER DEFAULT 0
+            )
+        """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_standalone_games_path ON standalone_games(install_path);")
         conn.commit()
         conn.close()
     except Exception as e:
@@ -103,6 +159,7 @@ def _construct_full_url(header_path: str) -> Optional[str]:
 class DatabaseManager:
     _instance = None
     _lock = threading.Lock()
+    _init_lock = threading.Lock()
 
     def __new__(cls):
         with cls._lock:
@@ -112,9 +169,15 @@ class DatabaseManager:
         return cls._instance
 
     def __init__(self):
-        if self.is_initialized:
-            return
+        # Serialise the one-time initialisation: __new__ guards instance
+        # creation, but two threads could otherwise both run __init__ and open
+        # two connections (one leaked while still in use).
+        with DatabaseManager._init_lock:
+            if self.is_initialized:
+                return
+            self._initialize()
 
+    def _initialize(self):
         if zstd is None:
             logger.critical(
                 "Module 'zstandard' is missing! Database functionality will be limited. "
@@ -130,9 +193,97 @@ class DatabaseManager:
         # deep copy so mutating a returned dict can never corrupt the cache.
         self._app_info_cache: Dict[Tuple[str, bool], Tuple[int, Dict[str, Any]]] = {}
         self._depot_enrichments_cache: Dict[str, Dict[str, dict]] = {}
+        # Set once the table has been created/migrated. If startup migration
+        # fails below, the first enrichment read/write retries it instead of
+        # querying a table that may not exist.
+        self._depot_schema_ready = False
+
+        if self.conn:
+            try:
+                with self._conn_lock:
+                    cur = self.conn.cursor()
+                    self._ensure_depot_enrichments_schema(cur)
+                    self._depot_schema_ready = True
+                    self._ensure_standalone_games_table(cur)
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_apps_depots_cached ON apps(appid) WHERE depots_json IS NOT NULL;")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_depot_enrichments_appid ON depot_enrichments(appid);")
+                    self.conn.commit()
+            except Exception as e:
+                logger.debug(f"[DatabaseManager] Startup index migration notice: {e}")
 
         self.is_initialized = True
         logger.info(f"DatabaseManager initialized at: {self.db_path}")
+
+    def _ensure_depot_enrichments_ready(self, cur) -> None:
+        """Cheap no-op after a successful startup migration; retries otherwise.
+
+        ``_initialize`` swallows a migration failure so a broken legacy table
+        cannot stop the app from starting. Without this retry every later
+        enrichment query would hit a table that does not exist.
+        """
+        if getattr(self, "_depot_schema_ready", False):
+            return
+        self._ensure_depot_enrichments_schema(cur)
+        self._depot_schema_ready = True
+
+    @staticmethod
+    def _ensure_depot_enrichments_schema(cur) -> None:
+        """Create the canonical depot_enrichments table and migrate legacy rows.
+
+        A previous build created this table with an incompatible legacy schema
+        (appid INTEGER, depot_id INTEGER, size INTEGER, ...). Because every
+        writer uses ``CREATE TABLE IF NOT EXISTS``, that wrong table won the
+        race on fresh installs and every enrichment insert then failed with
+        "no column named size_str" (swallowed, so data silently vanished).
+        Rebuild a legacy table in place.
+        """
+        cur.execute("PRAGMA table_info(depot_enrichments)")
+        columns = {row[1] for row in cur.fetchall()}
+        is_legacy = bool(columns) and "size_str" not in columns
+
+        if is_legacy:
+            cur.execute("DROP TABLE IF EXISTS depot_enrichments_legacy")
+            cur.execute("ALTER TABLE depot_enrichments RENAME TO depot_enrichments_legacy")
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS depot_enrichments (
+                depot_id TEXT PRIMARY KEY,
+                appid TEXT,
+                name TEXT,
+                size_str TEXT,
+                size_bytes INTEGER,
+                dl_str TEXT,
+                is_dlc INTEGER,
+                oslist TEXT,
+                osarch TEXT,
+                releasestate TEXT,
+                release_src TEXT,
+                updated_at INTEGER
+            )
+            """
+        )
+
+        if is_legacy:
+            try:
+                cur.execute(
+                    """
+                    INSERT OR IGNORE INTO depot_enrichments
+                        (depot_id, appid, name, size_bytes, updated_at)
+                    SELECT CAST(depot_id AS TEXT), CAST(appid AS TEXT), name,
+                           COALESCE(size, 0), COALESCE(last_updated, 0)
+                    FROM depot_enrichments_legacy
+                    """
+                )
+            except sqlite3.Error as e:
+                logger.warning(f"[DatabaseManager] Legacy depot_enrichments migration skipped: {e}")
+            cur.execute("DROP TABLE depot_enrichments_legacy")
+
+        cur.execute("PRAGMA table_info(depot_enrichments)")
+        existing = {row[1] for row in cur.fetchall()}
+        for column in ("osarch", "releasestate", "release_src", "source"):
+            if column not in existing:
+                cur.execute(f"ALTER TABLE depot_enrichments ADD COLUMN {column} TEXT")
 
     def _connect_db(self) -> Optional[sqlite3.Connection]:
         try:
@@ -505,33 +656,7 @@ class DatabaseManager:
             with self._conn_lock:
                 self._depot_enrichments_cache.pop(str(appid), None)
                 cur = self.conn.cursor()
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS depot_enrichments (
-                        depot_id TEXT PRIMARY KEY,
-                        appid TEXT,
-                        name TEXT,
-                        size_str TEXT,
-                        size_bytes INTEGER,
-                        dl_str TEXT,
-                        is_dlc INTEGER,
-                        oslist TEXT,
-                        osarch TEXT,
-                        updated_at INTEGER
-                    )
-                """)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN osarch TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN release_src TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-
+                self._ensure_depot_enrichments_ready(cur)
                 now = int(time.time())
                 for dep_id, info in enrichments.items():
                     cur.execute("""
@@ -581,18 +706,7 @@ class DatabaseManager:
             with self._conn_lock:
                 self._depot_enrichments_cache.pop(aid, None)
                 cur = self.conn.cursor()
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS depot_enrichments (
-                        depot_id TEXT PRIMARY KEY, appid TEXT, name TEXT, size_str TEXT,
-                        size_bytes INTEGER, dl_str TEXT, is_dlc INTEGER, oslist TEXT,
-                        osarch TEXT, updated_at INTEGER
-                    )
-                """)
-                for col in ("releasestate", "release_src"):
-                    try:
-                        cur.execute(f"ALTER TABLE depot_enrichments ADD COLUMN {col} TEXT")
-                    except Exception as _silent_err:
-                        logger.debug("[db_manager] update_release_states: ignored %s", _silent_err, exc_info=False)
+                self._ensure_depot_enrichments_ready(cur)
                 now = int(time.time())
                 for did, (state, src) in states.items():
                     did = str(did)
@@ -622,33 +736,7 @@ class DatabaseManager:
         try:
             with self._conn_lock:
                 cur = self.conn.cursor()
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS depot_enrichments (
-                        depot_id TEXT PRIMARY KEY,
-                        appid TEXT,
-                        name TEXT,
-                        size_str TEXT,
-                        size_bytes INTEGER,
-                        dl_str TEXT,
-                        is_dlc INTEGER,
-                        oslist TEXT,
-                        osarch TEXT,
-                        updated_at INTEGER
-                    )
-                """)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN osarch TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-                try:
-                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN release_src TEXT")
-                except Exception as _silent_err:
-                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
-
+                self._ensure_depot_enrichments_ready(cur)
                 cur.execute("""
                     SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, release_src
                     FROM depot_enrichments
@@ -916,3 +1004,129 @@ class DatabaseManager:
         except Exception as e:
             logger.debug(f"[DBManager] Failed to get all AT0-M update statuses: {e}")
             return {}
+
+    # ── Standalone Custom Folder Games ──────────────────────────────────────
+    @staticmethod
+    def _ensure_standalone_games_table(cur) -> None:
+        """Creates the standalone_games table if it doesn't exist yet."""
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS standalone_games (
+                appid TEXT PRIMARY KEY,
+                game_name TEXT NOT NULL,
+                install_path TEXT NOT NULL,
+                buildid TEXT DEFAULT '',
+                size INTEGER DEFAULT 0,
+                created_at INTEGER DEFAULT 0
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_standalone_games_path ON standalone_games(install_path);")
+
+    def save_standalone_game(
+        self,
+        appid: str,
+        game_name: str,
+        install_path: str,
+        buildid: str = "",
+        size: int = 0,
+    ) -> None:
+        """Persists or updates a standalone custom folder game record."""
+        if not self.conn or not appid:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_standalone_games_table(cur)
+                now = int(time.time())
+                cur.execute(
+                    """
+                    INSERT INTO standalone_games (appid, game_name, install_path, buildid, size, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(appid) DO UPDATE SET
+                        game_name = excluded.game_name,
+                        install_path = excluded.install_path,
+                        buildid = CASE WHEN excluded.buildid != '' THEN excluded.buildid ELSE standalone_games.buildid END,
+                        size = CASE WHEN excluded.size > 0 THEN excluded.size ELSE standalone_games.size END,
+                        created_at = CASE WHEN standalone_games.created_at > 0 THEN standalone_games.created_at ELSE excluded.created_at END
+                    """,
+                    (str(appid), str(game_name), str(install_path), str(buildid or ""), int(size or 0), now),
+                )
+                self.conn.commit()
+                logger.info(f"[DBManager] Saved standalone game '{game_name}' ({appid}) at {install_path}")
+        except Exception as e:
+            logger.error(f"[DBManager] Failed to save standalone game {appid}: {e}")
+
+    def get_standalone_games(self) -> Dict[str, dict]:
+        """Return all registered standalone games keyed by str(appid)."""
+        if not self.conn:
+            return {}
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_standalone_games_table(cur)
+                cur.execute(
+                    """
+                    SELECT appid, game_name, install_path, buildid, size, created_at
+                    FROM standalone_games
+                    """
+                )
+                rows = cur.fetchall()
+                result = {}
+                for row in rows:
+                    result[str(row[0])] = {
+                        "appid": str(row[0]),
+                        "game_name": row[1] or "",
+                        "install_path": row[2] or "",
+                        "buildid": row[3] or "",
+                        "size": int(row[4] or 0),
+                        "created_at": int(row[5] or 0),
+                    }
+                return result
+        except Exception as e:
+            logger.debug(f"[DBManager] Failed to get standalone games: {e}")
+            return {}
+
+    def get_standalone_game(self, appid: str) -> Optional[dict]:
+        """Return a single standalone game record by AppID, or None."""
+        if not self.conn or not appid:
+            return None
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_standalone_games_table(cur)
+                cur.execute(
+                    """
+                    SELECT appid, game_name, install_path, buildid, size, created_at
+                    FROM standalone_games WHERE appid = ?
+                    """,
+                    (str(appid),),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "appid": str(row[0]),
+                    "game_name": row[1] or "",
+                    "install_path": row[2] or "",
+                    "buildid": row[3] or "",
+                    "size": int(row[4] or 0),
+                    "created_at": int(row[5] or 0),
+                }
+        except Exception as e:
+            logger.debug(f"[DBManager] Failed to get standalone game {appid}: {e}")
+            return None
+
+    def remove_standalone_game(self, appid: str) -> None:
+        """Removes a standalone game record by AppID."""
+        if not self.conn or not appid:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_standalone_games_table(cur)
+                cur.execute("DELETE FROM standalone_games WHERE appid = ?", (str(appid),))
+                self.conn.commit()
+                logger.info(f"[DBManager] Removed standalone game record for AppID {appid}")
+        except Exception as e:
+            logger.error(f"[DBManager] Failed to remove standalone game {appid}: {e}")

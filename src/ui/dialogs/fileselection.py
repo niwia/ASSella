@@ -37,15 +37,25 @@ class DirectDownloadThread(QThread):
         self.cmd = cmd
         self.process = None
         self._is_cancelled = False
+        self._proxy_mgr = None
 
     def run(self):
         try:
+            cmd = list(self.cmd)
+            from utils.kuroko import resolve_stealth_proxy_url
+            proxy_url, self._proxy_mgr = resolve_stealth_proxy_url()
+            if proxy_url:
+                cmd.extend(["-proxy", proxy_url])
+
+            from utils.helpers import get_dotnet_env
+            env = get_dotnet_env()
             self.process = subprocess.Popen(
-                self.cmd,
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                env=env,
             )
             for line in iter(self.process.stdout.readline, ""):
                 if self._is_cancelled:
@@ -68,6 +78,13 @@ class DirectDownloadThread(QThread):
                 self.finished_signal.emit(False, f"Download failed with exit code {self.process.returncode}")
         except Exception as ex:
             self.finished_signal.emit(False, str(ex))
+        finally:
+            mgr, self._proxy_mgr = self._proxy_mgr, None
+            if mgr is not None:
+                try:
+                    mgr.stop()
+                except Exception as e:
+                    logger.debug(f"[FileSelection] Error stopping stealth proxy manager: {e}")
 
     def cancel(self):
         self._is_cancelled = True
@@ -76,6 +93,12 @@ class DirectDownloadThread(QThread):
                 self.process.terminate()
             except Exception:
                 pass
+        mgr, self._proxy_mgr = self._proxy_mgr, None
+        if mgr is not None:
+            try:
+                mgr.stop()
+            except Exception as e:
+                logger.debug(f"[FileSelection] Error stopping stealth proxy manager on cancel: {e}")
 
 
 _DIR_ROLE = Qt.ItemDataRole.UserRole + 2

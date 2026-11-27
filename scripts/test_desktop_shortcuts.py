@@ -85,6 +85,17 @@ def main() -> int:
     print("=== bad input ===")
     check(not ds.create_shortcut("abc", "x")[0], "non-numeric AppID refused")
 
+    print("=== CP1252 non-UTF8 desktop file safety (byte 0x93) ===")
+    cp1252_file = apps / "cp1252_game.desktop"
+    cp1252_file.write_bytes(b"[Desktop Entry]\nName=Game \x93SmartQuotes\x94\nExec=steam steam://rungameid/777\n")
+    # find_shortcut should ignore non-matching without throwing UnicodeDecodeError
+    check(ds.find_shortcut("999") is None, "find_shortcut handles 0x93 without UnicodeDecodeError")
+    check(ds.find_shortcut("777") == cp1252_file, "find_shortcut finds matching CP1252 file")
+
+    from managers.game_manager_mixins.uninstall import GameManagerUninstallMixin
+    GameManagerUninstallMixin._remove_linux_shortcuts_and_icons("777")
+    check(not cp1252_file.exists(), "_remove_linux_shortcuts_and_icons cleans CP1252 desktop file without crashing")
+
     if FAILS:
         print(f"FAILED ({len(FAILS)}): {FAILS}")
         return 1

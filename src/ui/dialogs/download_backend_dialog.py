@@ -284,30 +284,11 @@ class DownloadBackendDialog(QDialog):
                 border: none;
                 outline: none;
             }
-            QCheckBox::indicator {
-                width: 15px;
-                height: 15px;
-                border: none;
-                border-radius: 3px;
-                background: rgba(255, 255, 255, 0.12);
-                outline: none;
-            }
-            QCheckBox::indicator:hover {
-                background: rgba(255, 255, 255, 0.22);
-            }
-            QCheckBox::indicator:checked {
-                background: %s;
-                border: none;
-            }
-            QCheckBox::indicator:focus {
-                border: none;
-                outline: none;
-            }
-        """ % self.accent_color)
+        """)
         body_lay.addWidget(self.remember_chk)
 
         # Custom plugin warning (visible only when Steam is chosen and bypass is active with physical plugins missing)
-        self.custom_plugin_warn_lbl = QLabel("⚠️ Custom plugins active — third-party plugin support cannot be guaranteed!")
+        self.custom_plugin_warn_lbl = QLabel("Custom plugins active — third-party plugin support cannot be guaranteed!")
         self.custom_plugin_warn_lbl.setStyleSheet("font-size: 7.5pt; color: #ffb74d; border: none; background: transparent;")
         self.custom_plugin_warn_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.custom_plugin_warn_lbl.setWordWrap(True)

@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
 from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+from utils.paths import Paths
 
 from utils.image_fetcher import ImageFetcher
 from utils.settings import get_settings
@@ -380,7 +381,9 @@ class ModernDepotSelectionDialog(QDialog):
         self.appid_val_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500; border: none; background: transparent;")
         appid_row.addWidget(self.appid_val_lbl)
 
-        copy_btn = QPushButton("📋")
+        copy_btn = QPushButton()
+        copy_btn.setIcon(QIcon(str(Paths.icon("content_copy.svg"))))
+        copy_btn.setIconSize(QSize(13, 13))
         copy_btn.setFixedSize(20, 20)
         copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         copy_btn.setToolTip("Copy App ID")
@@ -459,13 +462,17 @@ class ModernDepotSelectionDialog(QDialog):
         nav_box = QVBoxLayout()
         nav_box.setSpacing(6)
 
-        self.btn_nav_depots = QPushButton("📦  Depots")
+        self.btn_nav_depots = QPushButton("Depots")
+        self.btn_nav_depots.setIcon(QIcon(str(Paths.icon("archive.svg"))))
+        self.btn_nav_depots.setIconSize(QSize(16, 16))
         self.btn_nav_depots.setCheckable(True)
         self.btn_nav_depots.setChecked(True)
         self.btn_nav_depots.setFixedHeight(34)
         self.btn_nav_depots.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.btn_nav_dlcs = QPushButton("🏷️  DLCs")
+        self.btn_nav_dlcs = QPushButton("DLCs")
+        self.btn_nav_dlcs.setIcon(QIcon(str(Paths.icon("label.svg"))))
+        self.btn_nav_dlcs.setIconSize(QSize(16, 16))
         self.btn_nav_dlcs.setCheckable(True)
         self.btn_nav_dlcs.setFixedHeight(34)
         self.btn_nav_dlcs.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -612,7 +619,7 @@ class ModernDepotSelectionDialog(QDialog):
 
         # Search Bar
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍  Search depots...")
+        self.search_input.setPlaceholderText("Search depots...")
         self.search_input.setFixedHeight(30)
         self.search_input.setFixedWidth(200)
         self.search_input.setStyleSheet(f"""
@@ -1167,7 +1174,9 @@ class ModernDepotSelectionDialog(QDialog):
             self.table_widget.setItem(row_idx, 3, size_item)
 
             # Col 4: Per-depot Folder / File Inspection Action
-            folder_btn = QPushButton("📁")
+            folder_btn = QPushButton()
+            folder_btn.setIcon(QIcon(str(Paths.icon("folder_open.svg"))))
+            folder_btn.setIconSize(QSize(15, 15))
             folder_btn.setFixedSize(28, 24)
             folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             folder_btn.setToolTip(f"Inspect/Select files for depot {depot_id}")
@@ -1177,7 +1186,6 @@ class ModernDepotSelectionDialog(QDialog):
                     border: 1px solid rgba(255, 255, 255, 0.12);
                     border-radius: 4px;
                     color: #FFFFFF;
-                    font-size: 8.5pt;
                 }
                 QPushButton:hover {
                     background-color: rgba(255, 255, 255, 0.15);
@@ -1200,8 +1208,8 @@ class ModernDepotSelectionDialog(QDialog):
         # Update metadata counts in sidebar and filter pills
         self.depots_count_lbl.setText(f"<b style='color: {self.accent_color};'>{total_depots_count}</b> / {len(self.depots)}")
         self.dlc_size_val_lbl.setText(format_size(total_dlc_bytes))
-        self.btn_nav_depots.setText(f"📦  Depots ({total_depots_count})")
-        self.btn_nav_dlcs.setText(f"🏷️  DLCs ({dlc_depots_count})")
+        self.btn_nav_depots.setText(f"Depots ({total_depots_count})")
+        self.btn_nav_dlcs.setText(f"DLCs ({dlc_depots_count})")
 
         if hasattr(self, "pill_all"):
             self.pill_all.setText(f"All ({total_depots_count})")
@@ -1461,33 +1469,19 @@ class ModernDepotSelectionDialog(QDialog):
 
     def _on_builds_clicked(self):
         """Open historical build picker dialog."""
-        from core.steamdb_scraper import ByparrManager
-        has_byparr = ByparrManager.find_byparr_dir() is not None
         first_depot = next(iter(self.depots.keys())) if self.depots else str(self.app_id)
         active_bid = getattr(self, "_selected_build_id", None) or self.current_build_id
 
-        if not has_byparr:
-            from ui.dialogs.manual_manifest_dialog import ManualManifestDialog
-            dlg = ManualManifestDialog(
-                parent=self,
-                app_id=self.app_id,
-                game_name=self.game_name,
-                depots_dict=self.depots,
-                default_depot_id=first_depot,
-                current_build_id=active_bid,
-                accent_color=self.accent_color,
-            )
-        else:
-            from ui.dialogs.build_selection_dialog import BuildSelectionDialog
-            dlg = BuildSelectionDialog(
-                parent=self,
-                app_id=self.app_id,
-                game_name=self.game_name,
-                current_build_id=active_bid,
-                accent_color=self.accent_color,
-                depots_dict=self.depots,
-                default_depot_id=first_depot,
-            )
+        from ui.dialogs.build_selection_dialog import BuildSelectionDialog
+        dlg = BuildSelectionDialog(
+            parent=self,
+            app_id=self.app_id,
+            game_name=self.game_name,
+            current_build_id=active_bid,
+            accent_color=self.accent_color,
+            depots_dict=self.depots,
+            default_depot_id=first_depot,
+        )
 
         if dlg.exec():
             selected_bid, patch_depots = dlg.get_selected_build()
@@ -1495,7 +1489,11 @@ class ModernDepotSelectionDialog(QDialog):
                 self._selected_build_id = selected_bid
                 self.builds_btn.setText(selected_bid)
                 self.build_val_lbl.setText(selected_bid)
-                self._is_build_pinned = (selected_bid != self.current_build_id)
+                has_mid_diff = bool(patch_depots)
+                if self.current_build_id and selected_bid == self.current_build_id and not has_mid_diff:
+                    self._is_build_pinned = False
+                else:
+                    self._is_build_pinned = True
                 self._update_build_btn_style()
                 if patch_depots:
                     for did, info in patch_depots.items():
@@ -1505,136 +1503,49 @@ class ModernDepotSelectionDialog(QDialog):
 
     def _open_file_selector_for_depot(self, target_depot: str):
         """Open selective file customization dialog for a specific depot."""
-        from utils.helpers import get_base_path
-        app_id = self.app_id
+        target_mid = getattr(self, "_manifest_overrides", {}).get(str(target_depot))
+        if not target_mid and hasattr(self, "depots") and str(target_depot) in self.depots:
+            d_info = self.depots[str(target_depot)]
+            if isinstance(d_info, dict):
+                target_mid = d_info.get("manifest_id")
 
-        manifests_dir = get_base_path() / "hubcap_manifests"
-        zips = list(manifests_dir.glob(f"accela_fetch_{app_id}.zip")) + \
-               list(manifests_dir.glob(f"accela_fetch_{app_id}_*.zip"))
+        from ui.dialogs.depot_selection.dump_runner import ManifestDumpRunner
+        runner = ManifestDumpRunner(
+            self,
+            app_id=str(self.app_id),
+            depot_id=str(target_depot),
+            manifest_id=str(target_mid) if target_mid else None,
+        )
+        runner.finished.connect(lambda ok, msg, r=runner: self._on_dump_finished(r.dump, ok, msg))
+        runner.start()
 
-        if not zips:
-            ThemedMessageBox.critical(self, "Error", f"No manifest zip file found for AppID {app_id} in {manifests_dir}.")
+    def _on_dump_finished(self, dump, ok: bool, message: str):
+        if not ok or not dump:
+            if message:
+                ThemedMessageBox.critical(self, "Error", message)
             return
-        zips.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-        zip_path = str(zips[0])
 
-        import zipfile
-        temp_dir = os.path.join(tempfile.gettempdir(), f"selective_manifests_{app_id}")
-        os.makedirs(temp_dir, exist_ok=True)
-
+        from ui.dialogs.fileselection import FileSelectionDialog
+        from ui.dialogs.depot_selection.manifest_dump import discard_keys_file
+        sel_dlg = FileSelectionDialog(
+            app_id=dump.app_id,
+            depot_id=dump.depot_id,
+            manifest_txt_path=dump.txt_path,
+            parent=self,
+            manifest_file=dump.manifest_file,
+            keys_path=dump.keys_path,
+            manifest_id=dump.manifest_id,
+        )
         try:
-            from utils.steam_manifest import safe_extract_zip
-            safe_extract_zip(zip_path, temp_dir)
-        except Exception as e:
-            ThemedMessageBox.critical(self, "Error", f"Failed to extract manifest zip: {e}")
-            return
-
-        depot_key = None
-        lua_files = list(Path(temp_dir).glob("*.lua"))
-        if lua_files:
-            try:
-                with open(str(lua_files[0]), "r", encoding="utf-8") as lf:
-                    lua_content = lf.read()
-                    m = find_live(lua_content, r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)")
-                    if m:
-                        depot_key = m.group(1)
-            except Exception as _silent_err:
-                logger.debug("[modern_depot_selection] _open_file_selector_for_depot: ignored %s", _silent_err, exc_info=False)
-
-        if not depot_key:
-            try:
-                from managers.depot_key_manager import DepotKeyManager
-                cached = DepotKeyManager().get_depot_keys(app_id)
-                if target_depot in cached:
-                    depot_key = cached[target_depot]
-            except Exception as _silent_err:
-                logger.debug("[modern_depot_selection] _open_file_selector_for_depot: ignored %s", _silent_err, exc_info=False)
-
-        if not depot_key:
-            ThemedMessageBox.critical(self, "Error", f"Could not find depot key for depot {target_depot}.")
-            return
-
-        keys_path = os.path.join(temp_dir, "depot.keys")
-        try:
-            with open(keys_path, "w") as kf:
-                kf.write(f"{target_depot};{depot_key}\n")
-        except OSError as e:
-            ThemedMessageBox.critical(self, "Error", f"Failed to write keys file: {e}")
-            return
-
-        manifest_files = list(Path(temp_dir).glob(f"{target_depot}_*.manifest")) or list(Path(temp_dir).glob("*.manifest"))
-        if not manifest_files:
-            ThemedMessageBox.critical(self, "Error", f"No manifest file found for depot {target_depot}.")
-            return
-
-        manifest_path = manifest_files[0]
-        manifest_file = str(manifest_path)
-        stem = manifest_path.name.replace(".manifest", "")
-        manifest_id = stem.split("_", 1)[1] if "_" in stem else stem
-
-        progress_dialog = ThemedProgressDialog("Loading file list from manifest...", "Cancel", 0, 0, self)
-        progress_dialog.setWindowTitle("Loading Manifest")
-        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        progress_dialog.show()
-
-        from utils.helpers import get_dotnet_path, resource_path
-        dotnet_path = get_dotnet_path()
-        dll_path = resource_path(os.path.join("deps", "DepotDownloader.dll"))
-
-        cmd = [
-            dotnet_path,
-            dll_path,
-            "-app", str(app_id),
-            "-depot", str(target_depot),
-            "-manifest", str(manifest_id),
-            "-manifestfile", manifest_file,
-            "-depotkeys", keys_path,
-            "-manifest-only",
-            "-dir", temp_dir,
-        ]
-
-        class DumpThread(QThread):
-            finished_signal = pyqtSignal(bool, str)
-            def run(self):
-                try:
-                    subprocess.run(cmd, capture_output=True, text=True, check=True)
-                    self.finished_signal.emit(True, "")
-                except Exception as ex:
-                    self.finished_signal.emit(False, str(ex))
-
-        self._dump_thread = DumpThread()
-
-        def _on_finished(success: bool, err: str):
-            progress_dialog.close()
-            if not success:
-                ThemedMessageBox.critical(self, "Error", f"Failed to load file list: {err}")
-                return
-
-            txt_path = os.path.join(temp_dir, f"manifest_{target_depot}_{manifest_id}.txt")
-            if not os.path.exists(txt_path):
-                ThemedMessageBox.critical(self, "Error", "Failed to locate generated file list.")
-                return
-
-            from ui.dialogs.fileselection import FileSelectionDialog
-            sel_dlg = FileSelectionDialog(
-                app_id=app_id,
-                depot_id=target_depot,
-                manifest_txt_path=txt_path,
-                parent=self,
-                manifest_file=manifest_file,
-                keys_path=keys_path,
-                manifest_id=manifest_id,
-            )
             if sel_dlg.exec():
                 self.selected_files = sel_dlg.selected_files
                 ThemedMessageBox.information(
                     self,
                     "Selection Confirmed",
-                    f"Selected {len(self.selected_files)} file(s) for depot {target_depot}.\nPress OK at the bottom to download.",
+                    f"Selected {len(self.selected_files)} file(s) for depot {dump.depot_id}.\nPress OK at the bottom to download.",
                 )
-
-        self._dump_thread.finished_signal.connect(_on_finished)
-        self._dump_thread.start()
+        finally:
+            discard_keys_file(dump.keys_path)
 
     # Public getters matching DepotSelectionDialog interface
     def get_selected_depots(self) -> List[str]:
