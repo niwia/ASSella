@@ -1060,7 +1060,14 @@ ui_supports_unicode() {
     local loc="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
     case "$loc" in
         *UTF-8*|*utf-8*|*UTF8*|*utf8*) return 0 ;;
+        C|POSIX) return 1 ;;
     esac
+    case "${TERM_PROGRAM:-}" in
+        Apple_Terminal|iTerm.app|vscode|WezTerm|Alacritty|kitty|ghostty) return 0 ;;
+    esac
+    if command -v locale &>/dev/null && [ "$(locale charmap 2>/dev/null || true)" = "UTF-8" ]; then
+        return 0
+    fi
     return 1
 }
 
