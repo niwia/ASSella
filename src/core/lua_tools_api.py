@@ -109,20 +109,8 @@ class LuaToolsAPI:
     # --------------------------------------------------------------------------
 
     @classmethod
-    def is_unlocked(cls) -> bool:
-        """Check if LuaTools fixes feature is enabled in Settings."""
-        try:
-            from utils.settings import get_settings
-            s = get_settings()
-            return s.value("luatools_show_fixes", False, type=bool)
-        except Exception:
-            return False
-
-    @classmethod
     def list_games(cls) -> Dict[str, Any]:
         """Fetch the full catalogue of games with available fixes (1800+ games)."""
-        if not cls.is_unlocked():
-            return {"success": False, "error": "LuaTools feature is not unlocked.", "games": []}
         url = f"{API_BASE_URL}/api/denuvo/listings"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "ASSella/3.0"})
@@ -141,8 +129,6 @@ class LuaToolsAPI:
         Pass force_refresh=True to bypass cache and fetch fresh data from lua.tools.
         """
         appid_str = str(appid)
-        if not cls.is_unlocked():
-            return {"success": False, "error": "LuaTools feature is not unlocked.", "appid": appid_str, "fixes": []}
         now = time.time()
 
         if not force_refresh:
@@ -438,8 +424,6 @@ class LuaToolsAPI:
     @classmethod
     def start_pkce_login(cls) -> Tuple[bool, str]:
         """Start a local HTTP server on port 53789 and return the authorization URL."""
-        if not cls.is_unlocked():
-            return False, "LuaTools feature is not unlocked."
         with cls._pkce_lock:
             cls.cancel_pkce()
 
@@ -574,8 +558,6 @@ class LuaToolsAPI:
     @classmethod
     def resolve_fix_download(cls, fix_id: str, slot: str = "fix") -> Tuple[Optional[str], Optional[str]]:
         """Resolve signed download URL from lua.tools."""
-        if not cls.is_unlocked():
-            return None, "LuaTools feature is not unlocked."
         token = cls.get_valid_access_token()
         if not token:
             return None, "Not authenticated with lua.tools. Please connect in Settings -> LuaTools."
