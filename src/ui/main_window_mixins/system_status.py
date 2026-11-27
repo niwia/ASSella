@@ -102,7 +102,11 @@ class MainWindowSystemStatusMixin:
                 self.stealth_status_value.setStyleSheet(self._get_status_style("neutral"))
                 self.stealth_status_value.setToolTip("Stealth proxy is disabled. Click to configure.")
             else:
-                from utils.kuroko import StealthPoolManager, get_stealth_warmup_state
+                from utils.kuroko import (
+                    StealthPoolManager,
+                    get_stealth_fallback_info,
+                    get_stealth_warmup_state,
+                )
                 warm_state = get_stealth_warmup_state()
                 if warm_state == "warming":
                     self.stealth_status_value.setText("Warming...")
@@ -137,7 +141,14 @@ class MainWindowSystemStatusMixin:
                             st_label = "Active"
                     self.stealth_status_value.setText(st_label)
                     self.stealth_status_value.setStyleSheet(self._get_status_style("success"))
-                    self.stealth_status_value.setToolTip(f"Stealth proxy active ({st_label}). Click to configure.")
+                    st_tip = f"Stealth proxy active ({st_label}). Click to configure."
+                    fb = get_stealth_fallback_info()
+                    if fb.get("count"):
+                        st_tip += (
+                            f"\n{fb['count']} request(s) fell back to a direct connection. "
+                            f"Last: {fb.get('last_error') or 'unknown'}"
+                        )
+                    self.stealth_status_value.setToolTip(st_tip)
 
         if hasattr(self, "steam_updates_value") and self.steam_updates_value:
             blocked = self.check_steam_updates_blocked()

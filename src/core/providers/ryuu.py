@@ -100,7 +100,6 @@ class RyuuProvider(ManifestProvider):
         }),
     )
     rate_limit = (1, _MIN_INTERVAL_SECONDS)
-    bypass_domains = (DOMAIN,)
 
     # -- credentials -------------------------------------------------------
 
@@ -167,6 +166,7 @@ class RyuuProvider(ManifestProvider):
                 timeout=timeout,
                 stream=stream,
                 session=_session(),
+                rate_limit=self.rate_limit,
             )
             if resp.status_code == 429:
                 retry_after = float(resp.headers.get("Retry-After", 0) or 0)
@@ -290,9 +290,11 @@ class RyuuProvider(ManifestProvider):
         return self._get("/requestbranch", {"appid": app_id, "branch": branch})
 
     def check_health(self, force: bool = False) -> Dict[str, Any]:
+        # Goes through _request() like every other Ryuu call so the probe uses
+        # the Stealth transport and is paced instead of leaking a direct socket.
         try:
-            resp = requests.get(BASE_URL, timeout=10, allow_redirects=True)
-        except requests.exceptions.RequestException as e:
+            resp = self._request("GET", BASE_URL, headers={}, timeout=10)
+        except ProviderError as e:
             return {"status": "unhealthy", "error": f"Ryuu is unreachable: {e}"}
         if resp.status_code >= 500:
             return {"status": "unhealthy", "error": f"Ryuu returned HTTP {resp.status_code}"}

@@ -711,12 +711,17 @@ class At0mUpdateChecker(QObject):
             f"{len(missing_depots)} depot(s): {sorted(missing_depots)}"
         )
         sorted_missing = sorted(missing_depots)
-        from core.manifest_provider import active_provider_id
-        _active_prov = active_provider_id()
-        if _active_prov in ("ryuu", "luatools"):
-            ready_depots, awaiting_depots, index_error = sorted_missing, [], None
-        else:
+        from core.manifest_provider import active_provider_supports
+        from core.providers import Capability
+
+        # The depot-key index is a Hubcap capability. Ask the registry instead of
+        # enumerating provider ids here, so a new provider inherits the right
+        # behaviour rather than silently bootstrapping against Hubcap.
+        has_key_index = active_provider_supports(Capability.DEPOT_KEY_INDEX)
+        if has_key_index:
             ready_depots, awaiting_depots, index_error = self._classify_depots(sorted_missing)
+        else:
+            ready_depots, awaiting_depots, index_error = sorted_missing, [], None
 
         if index_error:
             # The Hubcap index is unavailable, so we cannot tell whether the
@@ -734,7 +739,7 @@ class At0mUpdateChecker(QObject):
             logger.info(f"[At0mChecker] {appid_str} cannot be determined ({index_error}).")
             return status, details
 
-        if ready_depots and _active_prov not in ("ryuu", "luatools"):
+        if ready_depots and has_key_index:
             # Verify against Hubcap /contents: if Hubcap has a manifest bundle for this app,
             # ensure the ready depots are actually included in the bundle contents.
             try:
@@ -810,8 +815,10 @@ class At0mUpdateChecker(QObject):
 
         def _worker():
             try:
-                from core.manifest_provider import active_provider_id
-                if active_provider_id() not in ("ryuu", "luatools"):
+                from core.manifest_provider import active_provider_supports
+                from core.providers import Capability
+
+                if active_provider_supports(Capability.DEPOT_KEY_INDEX):
                     # The Hubcap depot-key index is a few megabytes and takes
                     # seconds to parse, so it is fetched here - on this background
                     # thread - and never on the GUI thread.

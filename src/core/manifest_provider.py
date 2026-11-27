@@ -1,14 +1,16 @@
 """Provider facade.
 
-This is the seam the rest of Assella should talk to. It owns provider selection,
-automatic fallback, canonical cache paths and capability aggregation; the
-providers themselves only do their own acquisition.
+The seam the rest of Assella talks to. It owns provider selection, capability
+aggregation and canonical cache paths; the providers themselves only do their
+own acquisition.
 
-Phase 1 keeps behavior identical: with no ``manifest_bundle_provider`` override
-the order is Hubcap first (for bundles) and Vapor first (for single manifests),
-matching today's ``core.morrenus_api`` behavior. The legacy module remains the
-implementation for Hubcap and is still imported by existing call sites; it can
-be flipped to a re-export shim once the router is exercised everywhere.
+Selection is strict: an explicitly chosen provider serves every bundle and its
+errors are reported to the user instead of being answered by a different
+provider. The fallback chain in ``_ordered``/``_first`` is used for read-only
+aggregations (contents, health, account stats, search, depot-key index) and for
+the ``auto`` value, which no UI writes.
+
+``core.morrenus_api`` is a compatibility shim over this module.
 """
 
 from __future__ import annotations
@@ -65,9 +67,9 @@ _PROVIDER_FULL_LABELS = {
 }
 
 
-def get_active_provider_label(full: bool = False) -> str:
-    """Returns the human-friendly display label of the active manifest provider."""
-    pid = active_provider_id()
+def get_provider_label(provider_id: str, full: bool = False) -> str:
+    """Human-friendly label for ``provider_id`` (``auto`` resolves to its first pick)."""
+    pid = (provider_id or "hubcap").strip().lower()
     if pid == "auto":
         order = _bundle_order()
         pid = order[0] if order else "hubcap"
@@ -80,6 +82,11 @@ def get_active_provider_label(full: bool = False) -> str:
     if provider is not None and getattr(provider, "meta", None):
         return provider.meta.label
     return pid.title()
+
+
+def get_active_provider_label(full: bool = False) -> str:
+    """Returns the human-friendly display label of the active manifest provider."""
+    return get_provider_label(active_provider_id(), full=full)
 
 
 def active_provider_supports(capability: Capability) -> bool:
@@ -522,14 +529,25 @@ def get_cached_health(provider_id: Optional[str] = None) -> Optional[Dict[str, A
 
 
 def check_health(force: bool = False) -> Dict[str, Any]:
+    """Health of the provider the user actually selected.
+
+    Deliberately not routed through ``_first``: caching a fallback provider's
+    answer under the active id would tell the UI that e.g. LuaTools is online
+    when Hubcap is the one that responded.
+    """
     import time
     pid = active_provider_id() or "hubcap"
     if not force:
         cached = get_cached_health(pid)
         if cached is not None:
             return cached
+    res: Dict[str, Any]
     try:
-        res = _first(Capability.HEALTH, _BUNDLE_ORDER, "check_health", force=force) or {"status": "unknown"}
+        provider = registry.get(pid)
+        if provider is None or not provider.supports(Capability.HEALTH):
+            res = {"status": "unknown"}
+        else:
+            res = provider.check_health(force=force) or {"status": "unknown"}
     except CapabilityNotSupported:
         res = {"status": "unknown"}
     except Exception as e:
@@ -557,6 +575,7 @@ __all__ = [
     "get_provider",
     "providers_with",
     "active_provider_id",
+    "get_provider_label",
     "get_active_provider_label",
     "active_provider_supports",
     "get_selected_branch",
@@ -572,6 +591,7 @@ __all__ = [
     "get_generate_usage",
     "get_all_hubcap_stats",
     "check_health",
+    "get_cached_health",
     "mark_hubcap_manifest_used",
     "pop_hubcap_manifest_used",
 ]

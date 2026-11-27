@@ -5,8 +5,9 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import get_or_create_warp_config as _default_get_or_create_warp_config
 from .probe import test_and_benchmark_endpoint as _default_test_and_benchmark_endpoint
@@ -618,15 +619,63 @@ def prompt_stealth_fallback(error_message: str) -> StealthChoice:
 
 _stealth_warmup_state: str = "idle"  # "idle" | "warming" | "ready" | "offline"
 
+# Holds the tunnel opened by the warm-up. Without a strong reference the manager
+# is garbage-collected while its wireproxy subprocess keeps running, which
+# orphans a tunnel on every start-up. Kuroko's atexit hook stops it on exit.
+_warm_tunnel_holder: List[Any] = []
+
+# Requests that were meant to go through the proxy but went out direct instead.
+# A green "Stealth active" badge must not hide them, so they are counted.
+_stealth_fallbacks: Dict[str, Any] = {"count": 0, "last_error": "", "last_time": 0.0}
+_stealth_http_cooldown_until: float = 0.0
+
+
+def get_stealth_fallback_info() -> Dict[str, Any]:
+    """How many requests bypassed the proxy, and why the last one did."""
+    return dict(_stealth_fallbacks)
+
+
+def _safe_url(url: str) -> str:
+    """Strip query/fragment: signed download URLs carry tokens that must not be logged."""
+    return url.split("?", 1)[0].split("#", 1)[0]
+
+
+def _note_direct_fallback(url: str, reason: str, cooldown_sec: float = 60.0) -> None:
+    global _stealth_http_cooldown_until
+    safe = _safe_url(url)
+    _stealth_fallbacks["count"] += 1
+    _stealth_fallbacks["last_error"] = f"{reason} ({safe})"
+    now = time.time()
+    _stealth_fallbacks["last_time"] = now
+    if cooldown_sec > 0:
+        _stealth_http_cooldown_until = max(_stealth_http_cooldown_until, now + cooldown_sec)
+    logger.warning(
+        f"[Stealth] Proxy request for {safe} failed ({reason}); using a direct connection."
+    )
+
+
+def _get_warm_proxy_url() -> Optional[str]:
+    """Return proxy_url from an already-running singleton or held rotation tunnel."""
+    try:
+        from .tunnel import get_kuroko
+        shared = get_kuroko()
+        if shared.is_running and shared.proxy_url:
+            return shared.proxy_url
+    except Exception as e:
+        logger.debug(f"[Stealth] Could not read shared tunnel state: {e}")
+    for mgr in reversed(_warm_tunnel_holder):
+        try:
+            if getattr(mgr, "is_running", False) and getattr(mgr, "proxy_url", None):
+                return mgr.proxy_url
+        except Exception as e:
+            logger.debug(f"[Stealth] Could not read held tunnel state: {e}")
+    return None
+
 
 def get_stealth_warmup_state() -> str:
     """Return the current Stealth proxy warmup state ('idle', 'warming', 'ready', 'offline')."""
-    try:
-        from .tunnel import get_kuroko
-        if get_kuroko().is_running:
-            return "ready"
-    except Exception as e:
-        logger.debug(f"[Stealth] Could not read tunnel running state: {e}")
+    if _get_warm_proxy_url():
+        return "ready"
     return _stealth_warmup_state
 
 
@@ -660,7 +709,11 @@ def warmup_stealth_proxy_async(on_state_changed=None) -> None:
     def _warmup():
         global _stealth_warmup_state
         try:
-            url, _ = resolve_stealth_proxy_url()
+            url, mgr = resolve_stealth_proxy_url()
+            if mgr is not None:
+                # Keep the tunnel referenced; otherwise the manager is collected
+                # while its wireproxy child process keeps running.
+                _warm_tunnel_holder.append(mgr)
             if url:
                 _stealth_warmup_state = "ready"
                 logger.info(f"[Stealth] Pre-warmed stealth proxy at {url}")
@@ -675,6 +728,22 @@ def warmup_stealth_proxy_async(on_state_changed=None) -> None:
     threading.Thread(target=_warmup, name="kuroko-warmup", daemon=True).start()
 
 
+def _apply_rate_limit(url: str, rate_limit: Tuple[int, float]) -> None:
+    """Pace a request to ``url`` by the provider's declared ceiling."""
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower()
+        if not host:
+            return
+        max_requests, per_seconds = rate_limit
+        from utils.isp_bypass import _enforce_rate_limit
+
+        _enforce_rate_limit(host, max_requests=int(max_requests), per_seconds=float(per_seconds))
+    except Exception as e:
+        logger.debug(f"[Stealth] Rate limit not applied for {url}: {e}")
+
+
 def stealth_http_request(
     method: str,
     url: str,
@@ -684,25 +753,40 @@ def stealth_http_request(
     stream: bool = False,
     timeout: int = 30,
     session=None,
+    rate_limit: Optional[Tuple[int, float]] = None,
 ):
-    """Execute an HTTP request through the active Stealth proxy when enabled,
-    falling back to a direct request with a warning if the proxy is unreachable.
+    """Execute an HTTP request through the active Stealth proxy when enabled.
+
+    ``rate_limit`` is the provider's declared ``(requests, per_seconds)`` ceiling and
+    is enforced per host against the shared limiter, so a provider that declares
+    one is actually paced.
+
+    When the proxy is unreachable the request still goes out direct, but the
+    downgrade is counted (see :func:`get_stealth_fallback_info`) rather than only
+    logged.
     """
     import requests as _requests
 
+    proxy_enabled = False
     proxy_url = None
     try:
         from utils.settings import get_settings
         s = get_settings()
         if s.value("enable_stealth_proxy", False, type=bool):
-            from .tunnel import get_kuroko
-            shared = get_kuroko()
-            if shared.is_running and shared.proxy_url:
-                proxy_url = shared.proxy_url
+            proxy_enabled = True
+            if time.time() < _stealth_http_cooldown_until:
+                proxy_url = None
             else:
-                proxy_url, _ = resolve_stealth_proxy_url(s)
+                proxy_url = _get_warm_proxy_url()
+                if not proxy_url:
+                    proxy_url, mgr = resolve_stealth_proxy_url(s)
+                    if mgr is not None:
+                        _warm_tunnel_holder[:] = [mgr]
     except Exception as e:
         logger.debug(f"[Stealth] Could not resolve stealth proxy: {e}")
+
+    if rate_limit:
+        _apply_rate_limit(url, rate_limit)
 
     if proxy_url:
         proxies = {"http": proxy_url, "https": proxy_url}
@@ -729,10 +813,9 @@ def stealth_http_request(
                 timeout=timeout,
             )
         except Exception as proxy_err:
-            logger.warning(
-                f"[Stealth] Proxy request via {proxy_url} failed for {url} ({proxy_err}); "
-                "falling back to direct connection."
-            )
+            _note_direct_fallback(url, str(proxy_err))
+    elif proxy_enabled:
+        _note_direct_fallback(url, "no stealth endpoint available")
 
     req_fn = session.request if session is not None else _requests.request
     return req_fn(
@@ -753,6 +836,7 @@ __all__ = [
     "prompt_stealth_fallback",
     "resolve_stealth_proxy_url",
     "get_stealth_warmup_state",
+    "get_stealth_fallback_info",
     "stealth_http_request",
     "warmup_stealth_proxy_async",
 ]

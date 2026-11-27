@@ -32,7 +32,6 @@ class HubcapProvider(ManifestProvider):
         }),
     )
     rate_limit = (3, 3.05)
-    bypass_domains = ("hubcapmanifest.com",)
 
     @staticmethod
     def _impl():

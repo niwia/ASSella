@@ -12,7 +12,6 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
-import requests
 
 from core.providers.base import (
     Capability,

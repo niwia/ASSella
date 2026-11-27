@@ -1235,7 +1235,8 @@ class MainWindow(
             if self.settings
             else "hubcap"
         )
-        _init_prov_name = {"hubcap": "Hubcap", "ryuu": "Ryu", "luatools": "LuaTools"}.get(_init_prov_id, "Hubcap")
+        from core.manifest_provider import get_provider_label
+        _init_prov_name = get_provider_label(_init_prov_id)
         self.hubcap_conn_lbl = QLabel(f"{_init_prov_name}:")
         self.hubcap_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.hubcap_conn_value = QLabel("Connecting...")

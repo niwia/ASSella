@@ -17,4 +17,5 @@ from core.providers.hubcap_impl import (  # noqa: F401
     _handle_request_exception,
     compute_api_key_expiry_info,
     get_session,
+    is_stats_cache_from_previous_utc_day,
 )

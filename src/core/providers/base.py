@@ -69,9 +69,9 @@ class ManifestProvider(ABC):
 
     meta: ProviderMeta
     #: (max_requests, per_seconds) ceiling, or None when unlimited/unknown.
+    #: Enforced by the transport that serves the provider (see
+    #: utils/kuroko/pool.py::stealth_http_request).
     rate_limit: Optional[Tuple[int, float]] = None
-    #: Domains this provider needs ISP-bypass routing for.
-    bypass_domains: Tuple[str, ...] = ()
 
     def supports(self, capability: Capability) -> bool:
         return capability in self.meta.capabilities
