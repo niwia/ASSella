@@ -158,13 +158,15 @@ class RyuuProvider(ManifestProvider):
                  timeout: int = DEFAULT_TIMEOUT) -> requests.Response:
         _check_cooldown()
         try:
-            resp = _session().request(
+            from utils.kuroko import stealth_http_request
+            resp = stealth_http_request(
                 method,
                 url,
                 headers=headers,
                 params=params,
                 timeout=timeout,
                 stream=stream,
+                session=_session(),
             )
             if resp.status_code == 429:
                 retry_after = float(resp.headers.get("Retry-After", 0) or 0)

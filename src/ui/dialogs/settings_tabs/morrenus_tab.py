@@ -744,19 +744,7 @@ def create_morrenus_tab(dialog) -> QWidget:
         if checked:
             _set_active_provider("hubcap")
         else:
-            if dialog.ryuu_auth_key_edit.text().strip():
-                _set_active_provider("ryuu")
-            else:
-                from core.lua_tools_api import LuaToolsAPI
-                if LuaToolsAPI.is_authenticated():
-                    _set_active_provider("luatools")
-                else:
-                    ThemedMessageBox.warning(
-                        dialog,
-                        "Provider Configuration Required",
-                        "Please configure Ryu (auth key) or LuaTools (login) before switching away from Hubcap.",
-                    )
-                    _set_active_provider(prev)
+            _set_active_provider(prev)
 
     def _on_ryu_primary_toggled(checked: bool) -> None:
         prev = active_provider_holder["current"]
@@ -771,7 +759,7 @@ def create_morrenus_tab(dialog) -> QWidget:
             else:
                 _set_active_provider("ryuu")
         else:
-            _set_active_provider(prev if prev != "ryuu" else "hubcap")
+            _set_active_provider(prev)
 
     def _on_luatools_primary_toggled(checked: bool) -> None:
         prev = active_provider_holder["current"]
@@ -787,7 +775,7 @@ def create_morrenus_tab(dialog) -> QWidget:
             else:
                 _set_active_provider("luatools")
         else:
-            _set_active_provider(prev if prev != "luatools" else "hubcap")
+            _set_active_provider(prev)
 
     dialog.hubcap_primary_checkbox.toggled.connect(_on_hubcap_primary_toggled)
     dialog.ryu_primary_checkbox.toggled.connect(_on_ryu_primary_toggled)

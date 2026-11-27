@@ -42,6 +42,8 @@ from .pool import (
     is_network_or_proxy_error,
     prompt_stealth_fallback,
     resolve_stealth_proxy_url,
+    stealth_http_request,
+    warmup_stealth_proxy_async,
 )
 from .probe import (
     _parse_cf_trace,

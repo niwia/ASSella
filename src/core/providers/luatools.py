@@ -45,9 +45,10 @@ def check_luatools_availability(app_id: str | int) -> Dict[str, Any]:
             return dict(cached)
 
     try:
+        from utils.kuroko import stealth_http_request
         url = f"{DISCOVERY_URL}?appid={appid_str}"
         headers = {"User-Agent": DISCOVERY_USER_AGENT}
-        resp = requests.get(url, headers=headers, timeout=8)
+        resp = stealth_http_request("GET", url, headers=headers, timeout=3)
         if resp.status_code == 200:
             data = resp.json()
             if isinstance(data, dict):
@@ -114,7 +115,8 @@ class LuaToolsProvider(ManifestProvider):
                     "User-Agent": "ASSella/3.0",
                 }
                 try:
-                    resp = requests.get(url, headers=headers, stream=True, timeout=DEFAULT_TIMEOUT)
+                    from utils.kuroko import stealth_http_request
+                    resp = stealth_http_request("GET", url, headers=headers, stream=True, timeout=DEFAULT_TIMEOUT)
                     if resp.status_code == 200:
                         with open(tmp, "wb") as f:
                             for chunk in resp.iter_content(chunk_size=8192):
@@ -137,7 +139,8 @@ class LuaToolsProvider(ManifestProvider):
             sushi_url = f"{SUSHI_BASE_URL}/{app_id_str}.zip"
             logger.info(f"[LuaTools] Luie unavailable ({last_error}); trying Sushi fallback...")
             try:
-                resp = requests.get(sushi_url, stream=True, timeout=DEFAULT_TIMEOUT)
+                from utils.kuroko import stealth_http_request
+                resp = stealth_http_request("GET", sushi_url, stream=True, timeout=DEFAULT_TIMEOUT)
                 if resp.status_code == 200:
                     with open(tmp, "wb") as f:
                         for chunk in resp.iter_content(chunk_size=8192):
@@ -193,7 +196,8 @@ class LuaToolsProvider(ManifestProvider):
 
     def check_health(self, force: bool = False) -> Dict[str, Any]:
         try:
-            resp = requests.get(f"{API_BASE_URL}/api/denuvo/fixes?appid=400", timeout=8)
+            from utils.kuroko import stealth_http_request
+            resp = stealth_http_request("GET", f"{API_BASE_URL}/api/denuvo/fixes?appid=400", timeout=8)
             if resp.status_code in (200, 404):
                 return {"status": "healthy", "source": "luatools"}
             return {"status": "unhealthy", "error": f"HTTP {resp.status_code}"}

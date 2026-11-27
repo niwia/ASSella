@@ -146,6 +146,9 @@ def verify_or_download_manifest(
                 logger.debug(f"[ManifestFetcher] Error scanning standalone manifests: {e}")
 
             if not local_manifests:
+                if lua_content.strip():
+                    logger.info(f"[ManifestFetcher] Cached zip {cached_path.name} is a valid .lua-only bundle. Using cache.")
+                    return (str(cached_path), None), refetched_depots, missing_depots_info_patch
                 logger.warning(f"[ManifestFetcher] No manifests found in cached zip {cached_path}. Removing bad zip and redownloading.")
                 try:
                     cached_path.unlink(missing_ok=True)

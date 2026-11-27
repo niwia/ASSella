@@ -616,6 +616,92 @@ def prompt_stealth_fallback(error_message: str) -> StealthChoice:
     return StealthChoice(choice[0])
 
 
+def warmup_stealth_proxy_async() -> None:
+    """Pre-warm the Stealth proxy (WARP / WireGuard / Custom) on startup if enabled."""
+    try:
+        from utils.settings import get_settings
+        if not get_settings().value("enable_stealth_proxy", False, type=bool):
+            return
+    except Exception as e:
+        logger.debug(f"[Stealth] Settings check failed during warmup: {e}")
+        return
+
+    def _warmup():
+        try:
+            url, _ = resolve_stealth_proxy_url()
+            if url:
+                logger.info(f"[Stealth] Pre-warmed stealth proxy at {url}")
+        except Exception as e:
+            logger.debug(f"[Stealth] Pre-warm skipped or failed: {e}")
+
+    threading.Thread(target=_warmup, name="kuroko-warmup", daemon=True).start()
+
+
+def stealth_http_request(
+    method: str,
+    url: str,
+    *,
+    headers: Optional[dict] = None,
+    params: Optional[dict] = None,
+    stream: bool = False,
+    timeout: int = 30,
+    session=None,
+):
+    """Execute an HTTP request through the active Stealth proxy when enabled,
+    falling back to a direct request with a warning if the proxy is unreachable.
+    """
+    import requests as _requests
+
+    proxy_url = None
+    try:
+        from utils.settings import get_settings
+        s = get_settings()
+        if s.value("enable_stealth_proxy", False, type=bool):
+            proxy_url, _ = resolve_stealth_proxy_url(s)
+    except Exception as e:
+        logger.debug(f"[Stealth] Could not resolve stealth proxy: {e}")
+
+    if proxy_url:
+        proxies = {"http": proxy_url, "https": proxy_url}
+        try:
+            if proxy_url.lower().startswith("socks"):
+                from curl_cffi import requests as _cffi_requests
+                return _cffi_requests.request(
+                    method,
+                    url,
+                    headers=headers,
+                    params=params,
+                    proxies=proxies,
+                    stream=stream,
+                    timeout=timeout,
+                )
+            req_fn = session.request if session is not None else _requests.request
+            return req_fn(
+                method,
+                url,
+                headers=headers,
+                params=params,
+                proxies=proxies,
+                stream=stream,
+                timeout=timeout,
+            )
+        except Exception as proxy_err:
+            logger.warning(
+                f"[Stealth] Proxy request via {proxy_url} failed for {url} ({proxy_err}); "
+                "falling back to direct connection."
+            )
+
+    req_fn = session.request if session is not None else _requests.request
+    return req_fn(
+        method,
+        url,
+        headers=headers,
+        params=params,
+        stream=stream,
+        timeout=timeout,
+    )
+
+
 __all__ = [
     "NETWORK_ERROR_SIGNATURES",
     "StealthChoice",
@@ -623,4 +709,6 @@ __all__ = [
     "is_network_or_proxy_error",
     "prompt_stealth_fallback",
     "resolve_stealth_proxy_url",
+    "stealth_http_request",
+    "warmup_stealth_proxy_async",
 ]
