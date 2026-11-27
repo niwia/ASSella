@@ -1139,13 +1139,13 @@ class MainWindow(
         row1_layout.addStretch()
 
         # 1. Hubcap API Stats
-        hubcap_api_lbl = QLabel("Hubcap:")
-        hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
+        self.hubcap_api_lbl = QLabel("Hubcap:")
+        self.hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.hubcap_api_value = QLabel("API: --/-- | --")
         self.hubcap_api_value.setStyleSheet(row_item_style)
         hubcap_api_item = QHBoxLayout()
         hubcap_api_item.setSpacing(4)
-        hubcap_api_item.addWidget(hubcap_api_lbl)
+        hubcap_api_item.addWidget(self.hubcap_api_lbl)
         hubcap_api_item.addWidget(self.hubcap_api_value)
         row1_layout.addLayout(hubcap_api_item)
 
@@ -1228,13 +1228,13 @@ class MainWindow(
         row2_layout.addStretch()
 
         # 1. Hubcap Connection Status
-        hubcap_conn_lbl = QLabel("Hubcap:")
-        hubcap_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
+        self.hubcap_conn_lbl = QLabel("Hubcap:")
+        self.hubcap_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.hubcap_conn_value = QLabel("Connecting...")
         self.hubcap_conn_value.setStyleSheet(self._get_status_style("neutral"))
         hubcap_conn_item = QHBoxLayout()
         hubcap_conn_item.setSpacing(4)
-        hubcap_conn_item.addWidget(hubcap_conn_lbl)
+        hubcap_conn_item.addWidget(self.hubcap_conn_lbl)
         hubcap_conn_item.addWidget(self.hubcap_conn_value)
         row2_layout.addLayout(hubcap_conn_item)
 

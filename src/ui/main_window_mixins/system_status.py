@@ -496,18 +496,22 @@ class MainWindowSystemStatusMixin:
         if not self.stats_task_runner:
             self.stats_task_runner = TaskRunner(self)
 
-        is_ryu = (
-            str(self.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower() == "ryuu"
-            if self.settings
-            else False
-        )
-        if is_ryu:
+        from core.manifest_provider import get_active_provider_label, active_provider_supports, Capability
+
+        prov_short = get_active_provider_label(full=False)
+        prov_full = get_active_provider_label(full=True)
+        if hasattr(self, "hubcap_conn_lbl") and self.hubcap_conn_lbl:
+            self.hubcap_conn_lbl.setText(f"{prov_short}:")
+        if hasattr(self, "hubcap_api_lbl") and self.hubcap_api_lbl:
+            self.hubcap_api_lbl.setText(f"{prov_short}:")
+
+        if not active_provider_supports(Capability.ACCOUNT_STATS):
             if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
-                self.hubcap_api_value.setText("N/A (Ryu)")
+                self.hubcap_api_value.setText("N/A")
                 self.hubcap_api_value.setStyleSheet("color: rgba(255, 255, 255, 0.35);")
-                self.hubcap_api_value.setToolTip("Ryu (beta) does not expose an API quota endpoint.")
+                self.hubcap_api_value.setToolTip(f"No API quota tracked for {prov_full}.")
             if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-                self.active_hubcap_label.setText("Ryu: Active")
+                self.active_hubcap_label.setText(f"{prov_short}: Active")
                 self.active_hubcap_label.setStyleSheet("color: rgba(255, 255, 255, 0.5);")
             return
 
@@ -515,7 +519,7 @@ class MainWindowSystemStatusMixin:
         if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
             self.hubcap_api_value.setText("Loading...")
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-            self.active_hubcap_label.setText("Hubcap: Loading...")
+            self.active_hubcap_label.setText(f"{prov_short}: Loading...")
 
         def get_all_hubcap_stats():
             # Imported on the worker thread: morrenus_api takes ~0.1s to import.
@@ -529,26 +533,26 @@ class MainWindowSystemStatusMixin:
 
     def _check_network_connections_async(self, force: bool = False) -> None:
         """Run connection check once in background thread."""
-        is_ryu = (
-            str(self.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower() == "ryuu"
+        prov_id = (
+            str(self.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower()
             if self.settings
-            else False
+            else "hubcap"
         )
 
         def run_check():
             try:
                 from utils.network_status import run_connection_check
-                steam_ok, hubcap_ok, hubcap_mode = run_connection_check(force=force)
-                if is_ryu:
+                steam_ok, prov_ok, prov_mode = run_connection_check(force=force)
+                if prov_id == "ryuu":
                     from core.providers.registry import get as get_provider
                     ryu = get_provider("ryuu")
                     if ryu is not None:
                         health = ryu.check_health(force=force)
-                        hubcap_ok = health.get("status") == "healthy"
-                        hubcap_mode = "Ryu" if hubcap_ok else "Offline"
+                        prov_ok = health.get("status") == "healthy"
+                        prov_mode = "Direct" if prov_ok else "Offline"
             except Exception as e:
                 logger.error(f"Error running network connection check: {e}")
-                steam_ok, hubcap_ok, hubcap_mode = False, False, "Offline"
+                steam_ok, prov_ok, prov_mode = False, False, "Offline"
 
             # Update values thread-safely via QMetaObject.invokeMethod
             QMetaObject.invokeMethod(
@@ -556,29 +560,23 @@ class MainWindowSystemStatusMixin:
                 "_on_connections_checked",
                 Qt.ConnectionType.QueuedConnection,
                 Q_ARG(bool, steam_ok),
-                Q_ARG(bool, hubcap_ok),
-                Q_ARG(str, hubcap_mode),
+                Q_ARG(bool, prov_ok),
+                Q_ARG(str, prov_mode),
             )
 
         threading.Thread(target=run_check, daemon=True).start()
 
     @pyqtSlot(bool, bool, str)
-    def _on_connections_checked(self, steam_ok: bool, hubcap_ok: bool, hubcap_mode: str) -> None:
+    def _on_connections_checked(self, steam_ok: bool, prov_ok: bool, prov_mode: str) -> None:
         """Called thread-safely when background connection check completes."""
-        # 1. Update Hubcap connection label
+        from core.manifest_provider import get_active_provider_label
+
+        prov_short = get_active_provider_label(full=False)
+        if hasattr(self, "hubcap_conn_lbl") and self.hubcap_conn_lbl:
+            self.hubcap_conn_lbl.setText(f"{prov_short}:")
         if hasattr(self, "hubcap_conn_value") and self.hubcap_conn_value:
-            if hubcap_ok:
-                lbl = f"Online ({hubcap_mode})" if hubcap_mode and hubcap_mode not in ("Online", "Direct") else "Online"
-                if hubcap_mode == "Tor":
-                    lbl = "Online (Tor)"
-                elif hubcap_mode == "Wire":
-                    lbl = "Online (Wire)"
-                elif hubcap_mode == "DoH":
-                    lbl = "Online (DoH)"
-                elif hubcap_mode == "Direct":
-                    lbl = "Online (Direct)"
-                elif hubcap_mode == "Ryu":
-                    lbl = "Ryu: Online"
+            if prov_ok:
+                lbl = f"Online ({prov_mode})" if prov_mode and prov_mode not in ("Online", "Direct") else "Online"
                 self.hubcap_conn_value.setText(lbl)
                 self.hubcap_conn_value.setStyleSheet(self._get_status_style("success"))
             else:
@@ -586,7 +584,7 @@ class MainWindowSystemStatusMixin:
                 self.hubcap_conn_value.setStyleSheet(self._get_status_style("error"))
 
         # If online and tool update check is in checking/offline state, trigger check
-        if (steam_ok or hubcap_ok) and getattr(self, "_tool_update_status", "checking") in ("checking", "offline"):
+        if (steam_ok or prov_ok) and getattr(self, "_tool_update_status", "checking") in ("checking", "offline"):
             if not getattr(self, "_tool_update_check_running", False):
                 self.check_tool_updates()
 
@@ -595,17 +593,21 @@ class MainWindowSystemStatusMixin:
         if not isinstance(result, dict):
             return
 
+        from core.manifest_provider import get_active_provider_label
+        prov_short = get_active_provider_label(full=False)
+        prov_full = get_active_provider_label(full=True)
+
         stats = result.get("user_stats", {})
         _gen_usage = result.get("gen_usage", {})
 
         if not isinstance(stats, dict) or "error" in stats:
             err_msg = stats.get("error", "Unknown error") if isinstance(stats, dict) else "Invalid response"
-            logger.warning(f"Failed to load Hubcap user stats: {err_msg}")
+            logger.warning(f"Failed to load user stats: {err_msg}")
             val = "No Key" if "key is not set" in err_msg.lower() else "Error"
             if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
                 self.hubcap_api_value.setText(val)
             if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-                self.active_hubcap_label.setText(f"Hubcap: {val}")
+                self.active_hubcap_label.setText(f"{prov_short}: {val}")
             return
 
         # 1. Daily usage (Manifests)
@@ -641,7 +643,7 @@ class MainWindowSystemStatusMixin:
             exp_desc = f"{expiry_info['formatted_date']} ({expiry_info['days']}d remaining, {expiry_info['percentage']:.0f}% left)"
 
         tooltip_str = (
-            f"Hubcap API:\n"
+            f"{prov_full} API:\n"
             f"• Daily Manifests: {usage} / {limit} (resets at 00:00 UTC)\n"
             f"• API Key Expiry: {exp_desc}"
         )
@@ -650,7 +652,7 @@ class MainWindowSystemStatusMixin:
             self.hubcap_api_value.setText(quota_str)
             self.hubcap_api_value.setToolTip(tooltip_str)
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-            self.active_hubcap_label.setText(f"Hubcap: {quota_str}")
+            self.active_hubcap_label.setText(f"{prov_short}: {quota_str}")
             self.active_hubcap_label.setToolTip(tooltip_str)
 
         # Hubcap is confirmed reachable and functional: ensure visor connection label reflects Online

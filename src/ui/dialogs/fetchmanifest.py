@@ -124,15 +124,20 @@ class FetchManifestDialog(QDialog):
     def __init__(self, parent=None, select_tab: int = 0, initial_query: str = ""):
         super().__init__(parent)
         self.parent_window = parent
-        self.setWindowTitle("Fetch Manifest from Hubcap API")
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(500)
 
         self.settings = getattr(parent, "settings", None)
         if not self.settings:
             from utils.settings import get_settings
             self.settings = get_settings()
+
+        from core.manifest_provider import get_active_provider_label
+        self._provider_full = get_active_provider_label(full=True)
+        self._provider_short = get_active_provider_label(full=False)
+
+        self.setWindowTitle(f"Fetch Manifest from {self._provider_full}")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(500)
 
         self.accent_color = "#a1c9fd"
         self.background_color = "#111318"
@@ -234,7 +239,8 @@ class FetchManifestDialog(QDialog):
         window_layout.setSpacing(0)
 
         from ui.dialog_titlebar import DialogTitleBar
-        self.title_bar = DialogTitleBar(self, title="Fetch Manifest from Hubcap API", can_minimize=True, can_maximize=True)
+        prov_title = getattr(self, "_provider_full", "Manifest Provider")
+        self.title_bar = DialogTitleBar(self, title=f"Fetch Manifest from {prov_title}", can_minimize=True, can_maximize=True)
         window_layout.addWidget(self.title_bar)
 
         content_widget = QWidget()
@@ -706,6 +712,25 @@ class FetchManifestDialog(QDialog):
         health = result.get("health", {})
         is_healthy = health.get("status") == "healthy"
 
+        from core.manifest_provider import get_active_provider_label, active_provider_supports, Capability
+
+        prov_short = get_active_provider_label(full=False)
+        has_stats = active_provider_supports(Capability.ACCOUNT_STATS)
+
+        if not has_stats:
+            self.username_label.setVisible(False)
+            self.usage_label.setVisible(False)
+            if is_healthy:
+                self.api_status_text.setText(f"{prov_short}: online")
+                self.api_status_text.setStyleSheet("font-weight: 600; color: #81C784; font-size: 11px;")
+            else:
+                self.api_status_text.setText(f"{prov_short}: offline")
+                self.api_status_text.setStyleSheet("font-weight: 600; color: #FF8A80; font-size: 11px;")
+            return
+
+        self.username_label.setVisible(True)
+        self.usage_label.setVisible(True)
+
         # Update Connection Status (text-only, green for online, red for offline)
         if is_healthy:
             self.api_status_text.setText("online")
@@ -730,7 +755,15 @@ class FetchManifestDialog(QDialog):
         """Handle errors during status check silently."""
         self.top_spinner.setVisible(False)
         self.api_status_dot.setVisible(False)
-        self.api_status_text.setText("offline")
+
+        from core.manifest_provider import get_active_provider_label, active_provider_supports, Capability
+        prov_short = get_active_provider_label(full=False)
+        if not active_provider_supports(Capability.ACCOUNT_STATS):
+            self.username_label.setVisible(False)
+            self.usage_label.setVisible(False)
+            self.api_status_text.setText(f"{prov_short}: offline")
+        else:
+            self.api_status_text.setText("offline")
         self.api_status_text.setStyleSheet("font-weight: 600; color: #FF8A80; font-size: 11px;")
         logger.error(f"Status check failed: {error_info}")
 
@@ -1262,14 +1295,16 @@ class FetchManifestDialog(QDialog):
             )
             if ok and branch_choice:
                 selected_branch = branch_choice
-                self._show_loading_overlay("Downloading manifests from Hubcap...")
+                prov_label = getattr(self, "_provider_full", "provider")
+                self._show_loading_overlay(f"Downloading manifests from {prov_label}...")
             else:
                 self._dismiss_loading_overlay()
                 self.status_label.setText("Fetch cancelled.")
                 self._end_selection()
                 return
         else:
-            self._update_loading_overlay("Downloading manifests from Hubcap...")
+            prov_label = getattr(self, "_provider_full", "provider")
+            self._update_loading_overlay(f"Downloading manifests from {prov_label}...")
 
         self._discovered_branches = branches or {"public": {}}
         self._current_selected_branch = selected_branch
@@ -1740,9 +1775,10 @@ class FetchManifestDialog(QDialog):
         if not parsed_data or not parsed_data.get("depots"):
             app_id = str(self._current_fetching_appid or (parsed_data and parsed_data.get("appid")) or "")
             if not getattr(self, "_is_manifest_retry", False) and app_id:
+                prov_label = getattr(self, "_provider_full", "provider")
                 logger.warning(
                     f"[FetchManifest] Manifest data for App {app_id} was empty or unparseable ({filepath}). "
-                    "Deleting bad cache and retrying fresh full download from Hubcap..."
+                    f"Deleting bad cache and retrying fresh full download from {prov_label}..."
                 )
                 self._is_manifest_retry = True
                 try:

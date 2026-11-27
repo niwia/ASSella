@@ -191,15 +191,17 @@ class NativeSteamDownloadTask(QObject):
         if not self._is_running:
             return
 
-        # 2. Fetch Hubcap bundle
-        self.progress.emit("[Native Steam] Fetching depot keys from Hubcap...")
+        # 2. Fetch manifest bundle & depot keys
+        from core.manifest_provider import get_active_provider_label
+        prov_label = get_active_provider_label(full=False)
+        self.progress.emit(f"[Native Steam] Fetching depot keys from {prov_label}...")
         depot_keys, manifest_gids = self._fetch_hubcap_keys(game_data, appid)
         if not depot_keys:
-            msg = "No depot keys available from Hubcap for this game."
+            msg = f"No depot keys available from {prov_label} for this game."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._emit_error((RuntimeError, msg, None))
             return
-        self.progress.emit(f"[Native Steam] Got {len(depot_keys)} depot key(s) from Hubcap")
+        self.progress.emit(f"[Native Steam] Got {len(depot_keys)} depot key(s) from {prov_label}")
         if not self._is_running:
             return
 

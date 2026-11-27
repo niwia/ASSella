@@ -68,22 +68,32 @@ def main() -> int:
         check(True, "unsupported download_bundle raises CapabilityNotSupported")
 
     print("=== routing order defaults to today's behaviour ===")
-    bundle_order = [p.meta.id for p in mp._ordered(Capability.BUNDLE_DOWNLOAD, mp._BUNDLE_ORDER)]
-    check(bundle_order and bundle_order[0] == "hubcap", "bundles try hubcap first by default")
-    manifest_order = [p.meta.id for p in mp._ordered(Capability.SINGLE_MANIFEST, mp._MANIFEST_ORDER)]
-    check(manifest_order and manifest_order[0] == "vapor", "single manifests try vapor first by default")
-
     original_active = mp.active_provider_id
+    original_configured = mp._ryuu_configured
     try:
+        mp.active_provider_id = lambda: "auto"
+        mp._ryuu_configured = lambda: False
+        bundle_order = [p.meta.id for p in mp._ordered(Capability.BUNDLE_DOWNLOAD, mp._BUNDLE_ORDER)]
+        check(bundle_order and bundle_order[0] == "hubcap", "bundles try hubcap first by default")
+        manifest_order = [p.meta.id for p in mp._ordered(Capability.SINGLE_MANIFEST, mp._MANIFEST_ORDER)]
+        check(manifest_order and manifest_order[0] == "vapor", "single manifests try vapor first by default")
+
+        check(mp.get_active_provider_label() == "Hubcap", "default provider short label is Hubcap")
+        check(mp.active_provider_supports(Capability.ACCOUNT_STATS), "hubcap supports account stats")
+
         mp.active_provider_id = lambda: "ryuu"
         forced = [p.meta.id for p in mp._ordered(Capability.BUNDLE_DOWNLOAD, mp._BUNDLE_ORDER)]
         check(forced and forced[0] == "ryuu", "an explicit provider is tried first")
+        check(mp.get_active_provider_label(full=False) == "Ryu", "ryuu short label is Ryu")
+        check(mp.get_active_provider_label(full=True) == "Ryu (beta)", "ryuu full label is Ryu (beta)")
+        check(not mp.active_provider_supports(Capability.ACCOUNT_STATS), "ryuu does not claim account stats")
 
         mp.active_provider_id = lambda: "hubcap"
         no_single = [p.meta.id for p in mp._ordered(Capability.SINGLE_MANIFEST, mp._MANIFEST_ORDER)]
         check("ryuu" not in no_single, "capability filtering drops providers that cannot do the work")
     finally:
         mp.active_provider_id = original_active
+        mp._ryuu_configured = original_configured
 
     print("=== ryuu auth headers are optional for bundles, required for requests ===")
     original_key = ryuu._auth_key

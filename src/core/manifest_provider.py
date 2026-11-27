@@ -50,6 +50,48 @@ def active_provider_id() -> str:
         return "auto"
 
 
+_PROVIDER_SHORT_LABELS = {
+    "hubcap": "Hubcap",
+    "ryuu": "Ryu",
+    "vapor": "Vapor",
+}
+
+_PROVIDER_FULL_LABELS = {
+    "hubcap": "Hubcap",
+    "ryuu": "Ryu (beta)",
+    "vapor": "Vapor",
+}
+
+
+def get_active_provider_label(full: bool = False) -> str:
+    """Returns the human-friendly display label of the active manifest provider."""
+    pid = active_provider_id()
+    if pid == "auto":
+        order = _bundle_order()
+        pid = order[0] if order else "hubcap"
+
+    table = _PROVIDER_FULL_LABELS if full else _PROVIDER_SHORT_LABELS
+    if pid in table:
+        return table[pid]
+
+    provider = get_provider(pid)
+    if provider is not None and getattr(provider, "meta", None):
+        return provider.meta.label
+    return pid.title()
+
+
+def active_provider_supports(capability: Capability) -> bool:
+    """Check if the currently active provider supports a given capability."""
+    pid = active_provider_id()
+    if pid == "auto":
+        order = _bundle_order()
+        pid = order[0] if order else "hubcap"
+    provider = get_provider(pid)
+    if provider is not None:
+        return provider.supports(capability)
+    return False
+
+
 def _ordered(capability: Capability, order: Tuple[str, ...]) -> List[ManifestProvider]:
     """Providers to try for ``capability``, explicit setting first."""
     if order is _BUNDLE_ORDER:
@@ -388,6 +430,8 @@ __all__ = [
     "get_provider",
     "providers_with",
     "active_provider_id",
+    "get_active_provider_label",
+    "active_provider_supports",
     "get_selected_branch",
     "get_manifest_zip_path",
     "download_manifest",
