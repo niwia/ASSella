@@ -439,7 +439,7 @@ class MainWindow(
     def _prompt_experimental_features_once_if_needed(self) -> None:
         """Prompt user once on startup to try experimental features if not already enabled."""
         has_prompted = self.settings.value("has_prompted_experimental", False, type=bool)
-        isp_bypass = self.settings.value("isp_bypass_hubcap", False, type=bool)
+        isp_bypass = self.settings.value("isp_bypass_hubcap", True, type=bool)
         sls_acf = self.settings.value("experimental_acf_independent", False, type=bool)
 
         if not has_prompted and (not isp_bypass or not sls_acf):

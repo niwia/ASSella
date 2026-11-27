@@ -202,8 +202,20 @@ def create_advanced_tab(dialog) -> QWidget:
     dialog.enable_workshop_downloader_checkbox.toggled.connect(_on_workshop_enabled_toggled)
 
     # Apply initial disabled/enabled state based on settings
-    ws_init_on = dialog.settings.value("enable_workshop_downloader", False, type=bool)
-    _apply_ws_disabled_state(ws_init_on)
+    is_ryu = str(dialog.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower() == "ryuu"
+    if is_ryu:
+        dialog.enable_workshop_downloader_checkbox.blockSignals(True)
+        dialog.enable_workshop_downloader_checkbox.setChecked(False)
+        dialog.enable_workshop_downloader_checkbox.blockSignals(False)
+        dialog.enable_workshop_downloader_checkbox.setEnabled(False)
+        dialog.enable_workshop_downloader_checkbox.setToolTip(
+            "Workshop Downloader is disabled when Ryu (beta) is the primary manifest provider."
+        )
+        dialog.settings.setValue("enable_workshop_downloader", False)
+        _apply_ws_disabled_state(False)
+    else:
+        ws_init_on = dialog.settings.value("enable_workshop_downloader", False, type=bool)
+        _apply_ws_disabled_state(ws_init_on)
 
     layout.addWidget(ws_card)
 

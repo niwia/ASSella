@@ -157,26 +157,22 @@ class RyuuProvider(ManifestProvider):
                  params: Optional[Dict[str, Any]] = None, stream: bool = False,
                  timeout: int = DEFAULT_TIMEOUT) -> requests.Response:
         _check_cooldown()
-        from utils.isp_bypass import HubcapRateLimitError, execute_provider_request
-
         try:
-            return execute_provider_request(
-                _session(),
+            resp = _session().request(
                 method,
                 url,
                 headers=headers,
                 params=params,
                 timeout=timeout,
                 stream=stream,
-                domain=DOMAIN,
-                rate_limit=self.rate_limit,
-                attach_token=False,
-                allow_wirecutter=False,
-                provider_label="Ryuu",
             )
-        except HubcapRateLimitError as e:
-            _enter_cooldown(max(_RATE_LIMIT_COOLDOWN_SECONDS, float(getattr(e, "retry_after", 0) or 0)))
-            raise ProviderError("Ryuu rate limit reached; try again shortly.") from e
+            if resp.status_code == 429:
+                retry_after = float(resp.headers.get("Retry-After", 0) or 0)
+                _enter_cooldown(max(_RATE_LIMIT_COOLDOWN_SECONDS, retry_after))
+                raise ProviderError("Ryuu rate limit reached; try again shortly.")
+            return resp
+        except ProviderError:
+            raise
         except requests.exceptions.RequestException as e:
             raise ProviderError(f"Ryuu request failed: {e}") from e
 

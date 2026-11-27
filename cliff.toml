@@ -1,0 +1,70 @@
+# git-cliff configuration for ASSella
+# https://git-cliff.org/docs/configuration
+#
+# NOTE: the v3.2.0beta1 tag points at a main-branch sync commit, not the
+# beta release. The actual 3.2.0beta1 release commit is 0ed1b27 on `beta`
+# (src/utils/version.py -> 3.2.0beta1, BUILD_DATE 2026-11-22). Generate with:
+#   git-cliff --tag-pattern '^v3\.2\.0' 0ed1b27..v3.2.0-beta.2 -o CHANGELOG-3.2.0beta2.md
+
+[changelog]
+header = """
+# Changelog: 3.2.0beta1 → 3.2.0beta2
+
+All notable changes between the `v3.2.0beta1` release (`0ed1b27`) and the `v3.2.0-beta.2` tag, grouped from conventional commits.
+
+"""
+body = """
+{% if version %}\
+    ## [{{ version | trim_start_matches(pat="v") | replace(from="-beta.", to="beta") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+    ## [Unreleased]
+{% endif %}\
+{% for entry in commits | commit_groups(groups=commit_parsers_groups) %}
+### {{ entry.group | striptags | trim | upper_first }}
+{% for commit in entry.commits -%}
+        - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}\
+            {% if commit.breaking %}[**breaking**] {% endif %}\
+            {{ commit.message | split(pat="\n") | first | upper_first }} \
+            ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/niwia/ASSella/commit/{{ commit.id }}))
+{% endfor -%}
+{% endfor %}
+"""
+footer = """
+
+---
+
+**Full diff**: [`0ed1b27...v3.2.0-beta.2`](https://github.com/niwia/ASSella/compare/0ed1b27...v3.2.0-beta.2)
+
+_Generated with [git-cliff](https://github.com/orhun/git-cliff) v2.14.2._
+"""
+trim = true
+render_always = true
+postprocessors = [
+    { pattern = '\(#(\d+)\)', replace = '([#${1}](https://github.com/niwia/ASSella/pull/${1}))' },
+]
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+require_conventional = false
+split_commits = false
+protect_breaking_commits = false
+filter_commits = false
+fail_on_unmatched_commit = false
+topo_order = false
+topo_order_commits = true
+sort_commits = "oldest"
+commit_parsers = [
+    { message = "^feat", group = "<!-- 0 -->Added" },
+    { message = "^fix", group = "<!-- 1 -->Fixed" },
+    { message = "^perf", group = "<!-- 2 -->Performance" },
+    { message = "^refactor", group = "<!-- 3 -->Changed" },
+    { message = "^docs?", group = "<!-- 4 -->Documentation" },
+    { message = "^test", group = "<!-- 5 -->Testing" },
+    { message = "^ci", group = "<!-- 6 -->CI" },
+    { message = "^style", group = "<!-- 7 -->Styling" },
+    { message = "^build", group = "<!-- 8 -->Build" },
+    { message = "^chore", group = "<!-- 9 -->Chore" },
+    { message = "^revert", group = "<!-- 10 -->Reverted" },
+    { message = ".*", group = "<!-- 11 -->Other" },
+]

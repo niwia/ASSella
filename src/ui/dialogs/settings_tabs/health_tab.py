@@ -513,14 +513,7 @@ def create_health_tab(dialog) -> QWidget:
 
     # Checkboxes
     dialog.twp_chk_smart = None
-    dialog.twp_chk_gateway = QCheckBox()
-    dialog.twp_chk_gateway.setChecked(dialog.settings.value("isp_bypass_mode", "auto", type=str) == "auto")
-    dialog.twp_chk_gateway.toggled.connect(lambda: on_rec_setting_toggled(dialog))
-    rec_layout.addWidget(create_rec_setting_row(
-        "Hubcap Gateway (Auto)",
-        "Smart fallback routing to bypass ISP throttling and rate limits",
-        dialog.twp_chk_gateway,
-    ))
+    dialog.twp_chk_gateway = None
 
     dialog.twp_chk_sls_api = QCheckBox()
     dialog.twp_chk_sls_api.setChecked(dialog.settings.value("experimental_acf_independent", False, type=bool))
@@ -768,8 +761,6 @@ def apply_health_recommended_settings(dialog) -> None:
         dialog.twp_chk_macos.setChecked(True)
 
     dialog.settings.setValue("smart_depot_selection", True)
-    dialog.settings.setValue("isp_bypass_mode", "auto")
-    dialog.settings.setValue("isp_bypass_hubcap", True)
 
     try:
         from ui.dialogs.settings_sls import get_sls_paths

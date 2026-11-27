@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 )
 from ui.widgets.modern_dropdown import ModernComboBox
 
+from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.settings_tabs.morrenus_stats_widget import MorrenusStatsWidget
 from ui.widgets.switch_toggle import SwitchToggle
 
@@ -527,6 +528,21 @@ def create_morrenus_tab(dialog) -> QWidget:
     hubcap_layout.setContentsMargins(0, 8, 0, 0)
     hubcap_layout.setSpacing(12)
 
+    # 0. Primary Manifest Provider Toggle Card
+    hubcap_prov_card, hubcap_prov_layout = dialog._create_card_frame("Manifest Provider")
+    hubcap_prov_layout.setSpacing(6)
+    dialog.hubcap_primary_checkbox = QCheckBox("Use Hubcap as primary manifest provider")
+    dialog.hubcap_primary_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: bold;")
+    hubcap_prov_desc = QLabel(
+        "When enabled, Hubcap supplies manifest bundles and depot keys. "
+        "Toggling this off switches to Ryu (beta) if a Ryu auth key is configured."
+    )
+    hubcap_prov_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    hubcap_prov_desc.setWordWrap(True)
+    hubcap_prov_layout.addWidget(dialog.hubcap_primary_checkbox)
+    hubcap_prov_layout.addWidget(hubcap_prov_desc)
+    hubcap_layout.addWidget(hubcap_prov_card)
+
     # 1. API Key Card
     key_card, key_layout = dialog._create_card_frame("API Key")
     key_layout.setSpacing(8)
@@ -558,7 +574,148 @@ def create_morrenus_tab(dialog) -> QWidget:
     hubcap_scroll.setWidget(hubcap_container)
     integ_subtabs.addTab(hubcap_scroll, "Hubcap")
 
-    # ── Subtab 2: SteamDB ──
+    # ── Subtab 2: Ryu (beta) ──
+    ryu_scroll = QScrollArea()
+    ryu_scroll.setWidgetResizable(True)
+    ryu_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    ryu_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+    ryu_container = QWidget()
+    ryu_layout = QVBoxLayout(ryu_container)
+    ryu_layout.setContentsMargins(0, 8, 0, 0)
+    ryu_layout.setSpacing(12)
+
+    ryu_prov_card, ryu_prov_layout = dialog._create_card_frame("Manifest Provider")
+    ryu_prov_layout.setSpacing(6)
+    dialog.ryu_primary_checkbox = QCheckBox("Use Ryu (beta) as primary manifest provider")
+    dialog.ryu_primary_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: bold;")
+    ryu_prov_desc = QLabel(
+        "Requires a Ryu auth key below. When enabled, Hubcap is disabled as primary, "
+        "Workshop Downloader is disabled, and Fetch & Download Manifest accepts AppIDs only."
+    )
+    ryu_prov_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    ryu_prov_desc.setWordWrap(True)
+    ryu_prov_layout.addWidget(dialog.ryu_primary_checkbox)
+    ryu_prov_layout.addWidget(ryu_prov_desc)
+    ryu_layout.addWidget(ryu_prov_card)
+
+    ryu_key_card, ryu_key_layout = dialog._create_card_frame("Ryu Auth Key")
+    ryu_key_layout.setSpacing(8)
+    ryu_key_desc = QLabel(
+        'Permanent auth code from <a href="https://generator.ryuu.lol/login" style="color: #8ab4f8;">generator.ryuu.lol/login</a>. '
+        "Required to enable Ryu (beta) as the primary manifest provider."
+    )
+    ryu_key_desc.setOpenExternalLinks(True)
+    ryu_key_desc.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;")
+    ryu_key_desc.setWordWrap(True)
+    ryu_key_layout.addWidget(ryu_key_desc)
+
+    ryu_key_row = QHBoxLayout()
+    ryu_key_row.setSpacing(10)
+    dialog.ryuu_auth_key_edit = QLineEdit()
+    dialog.ryuu_auth_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+    dialog.ryuu_auth_key_edit.setPlaceholderText("Paste your Ryu auth key")
+    dialog.ryuu_auth_key_edit.setText(
+        str(dialog.settings.value("ryuu_auth_key", "", type=str) or "")
+    )
+    dialog.ryuu_auth_key_edit.setStyleSheet(
+        "QLineEdit { background: rgba(255,255,255,0.06); color: #FFFFFF; border: 1px solid rgba(255,255,255,0.15);"
+        " border-radius: 6px; padding: 5px 10px; font-size: 9pt; }"
+    )
+    ryu_key_row.addWidget(dialog.ryuu_auth_key_edit, 1)
+
+    def _save_ryuu_key():
+        dialog.settings.setValue("ryuu_auth_key", dialog.ryuu_auth_key_edit.text().strip())
+
+    dialog.ryuu_auth_key_edit.editingFinished.connect(_save_ryuu_key)
+
+    show_ryu_btn = QPushButton("Show")
+    show_ryu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    show_ryu_btn.setStyleSheet(
+        "QPushButton { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2);"
+        " border-radius: 6px; padding: 5px 12px; color: #FFFFFF; font-size: 8.5pt; }"
+    )
+
+    def _toggle_ryu_key_vis():
+        if dialog.ryuu_auth_key_edit.echoMode() == QLineEdit.EchoMode.Password:
+            dialog.ryuu_auth_key_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            show_ryu_btn.setText("Hide")
+        else:
+            dialog.ryuu_auth_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            show_ryu_btn.setText("Show")
+
+    show_ryu_btn.clicked.connect(_toggle_ryu_key_vis)
+    ryu_key_row.addWidget(show_ryu_btn)
+    ryu_key_layout.addLayout(ryu_key_row)
+    ryu_layout.addWidget(ryu_key_card)
+
+    ryu_layout.addStretch()
+    ryu_scroll.setWidget(ryu_container)
+    integ_subtabs.addTab(ryu_scroll, "Ryu (beta)")
+
+    def _sync_workshop_gate(is_ryu: bool) -> None:
+        ws_chk = getattr(dialog, "enable_workshop_downloader_checkbox", None)
+        if ws_chk is not None:
+            if is_ryu:
+                ws_chk.blockSignals(True)
+                ws_chk.setChecked(False)
+                ws_chk.blockSignals(False)
+                ws_chk.setEnabled(False)
+                ws_chk.setToolTip("Workshop Downloader is disabled when Ryu (beta) is the primary manifest provider.")
+            else:
+                ws_chk.setEnabled(True)
+                ws_chk.setToolTip("")
+        if is_ryu:
+            dialog.settings.setValue("enable_workshop_downloader", False)
+
+    def _set_active_provider(provider: str) -> None:
+        is_ryu = provider == "ryuu"
+        dialog.settings.setValue("manifest_bundle_provider", "ryuu" if is_ryu else "hubcap")
+        dialog.hubcap_primary_checkbox.blockSignals(True)
+        dialog.ryu_primary_checkbox.blockSignals(True)
+        dialog.hubcap_primary_checkbox.setChecked(not is_ryu)
+        dialog.ryu_primary_checkbox.setChecked(is_ryu)
+        dialog.hubcap_primary_checkbox.blockSignals(False)
+        dialog.ryu_primary_checkbox.blockSignals(False)
+        _sync_workshop_gate(is_ryu)
+
+    curr_prov = str(dialog.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower()
+    if curr_prov == "ryuu" and not dialog.ryuu_auth_key_edit.text().strip():
+        curr_prov = "hubcap"
+    _set_active_provider("ryuu" if curr_prov == "ryuu" else "hubcap")
+
+    def _on_hubcap_primary_toggled(checked: bool) -> None:
+        if checked:
+            _set_active_provider("hubcap")
+        else:
+            if not dialog.ryuu_auth_key_edit.text().strip():
+                ThemedMessageBox.warning(
+                    dialog,
+                    "Ryu Auth Key Required",
+                    "Please enter a Ryu auth key in the Ryu (beta) tab before switching away from Hubcap.",
+                )
+                _set_active_provider("hubcap")
+            else:
+                _set_active_provider("ryuu")
+
+    def _on_ryu_primary_toggled(checked: bool) -> None:
+        if checked:
+            if not dialog.ryuu_auth_key_edit.text().strip():
+                ThemedMessageBox.warning(
+                    dialog,
+                    "Ryu Auth Key Required",
+                    "Please enter your Ryu auth key first before enabling Ryu (beta) as the primary provider.",
+                )
+                _set_active_provider("hubcap")
+            else:
+                _set_active_provider("ryuu")
+        else:
+            _set_active_provider("hubcap")
+
+    dialog.hubcap_primary_checkbox.toggled.connect(_on_hubcap_primary_toggled)
+    dialog.ryu_primary_checkbox.toggled.connect(_on_ryu_primary_toggled)
+
+    # ── Subtab 3: SteamDB ──
     steamdb_scroll = QScrollArea()
     steamdb_scroll.setWidgetResizable(True)
     steamdb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -753,7 +910,7 @@ def create_morrenus_tab(dialog) -> QWidget:
     steamdb_scroll.setWidget(steamdb_container)
     integ_subtabs.addTab(steamdb_scroll, "SteamDB")
 
-    integ_subtabs.addTab(create_others_subtab(dialog), "Others")
+    integ_subtabs.addTab(create_others_subtab(dialog), "SteamGridDB")
 
     outer_layout.addWidget(integ_subtabs)
 

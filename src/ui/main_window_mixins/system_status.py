@@ -496,6 +496,21 @@ class MainWindowSystemStatusMixin:
         if not self.stats_task_runner:
             self.stats_task_runner = TaskRunner(self)
 
+        is_ryu = (
+            str(self.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower() == "ryuu"
+            if self.settings
+            else False
+        )
+        if is_ryu:
+            if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
+                self.hubcap_api_value.setText("N/A (Ryu)")
+                self.hubcap_api_value.setStyleSheet("color: rgba(255, 255, 255, 0.35);")
+                self.hubcap_api_value.setToolTip("Ryu (beta) does not expose an API quota endpoint.")
+            if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
+                self.active_hubcap_label.setText("Ryu: Active")
+                self.active_hubcap_label.setStyleSheet("color: rgba(255, 255, 255, 0.5);")
+            return
+
         # Set stats text to loading
         if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
             self.hubcap_api_value.setText("Loading...")
@@ -514,10 +529,23 @@ class MainWindowSystemStatusMixin:
 
     def _check_network_connections_async(self, force: bool = False) -> None:
         """Run connection check once in background thread."""
+        is_ryu = (
+            str(self.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower() == "ryuu"
+            if self.settings
+            else False
+        )
+
         def run_check():
             try:
                 from utils.network_status import run_connection_check
                 steam_ok, hubcap_ok, hubcap_mode = run_connection_check(force=force)
+                if is_ryu:
+                    from core.providers.registry import get as get_provider
+                    ryu = get_provider("ryuu")
+                    if ryu is not None:
+                        health = ryu.check_health(force=force)
+                        hubcap_ok = health.get("status") == "healthy"
+                        hubcap_mode = "Ryu" if hubcap_ok else "Offline"
             except Exception as e:
                 logger.error(f"Error running network connection check: {e}")
                 steam_ok, hubcap_ok, hubcap_mode = False, False, "Offline"
@@ -549,6 +577,8 @@ class MainWindowSystemStatusMixin:
                     lbl = "Online (DoH)"
                 elif hubcap_mode == "Direct":
                     lbl = "Online (Direct)"
+                elif hubcap_mode == "Ryu":
+                    lbl = "Ryu: Online"
                 self.hubcap_conn_value.setText(lbl)
                 self.hubcap_conn_value.setStyleSheet(self._get_status_style("success"))
             else:
