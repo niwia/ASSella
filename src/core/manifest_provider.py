@@ -24,8 +24,8 @@ from core.providers import registry
 
 logger = logging.getLogger(__name__)
 
-_BUNDLE_ORDER = ("hubcap", "ryuu")
-_MANIFEST_ORDER = ("vapor", "hubcap", "ryuu")
+_BUNDLE_ORDER = ("hubcap", "ryuu", "luatools")
+_MANIFEST_ORDER = ("vapor", "hubcap", "ryuu", "luatools")
 
 
 def available_providers() -> List[ManifestProvider]:
@@ -54,12 +54,14 @@ _PROVIDER_SHORT_LABELS = {
     "hubcap": "Hubcap",
     "ryuu": "Ryu",
     "vapor": "Vapor",
+    "luatools": "LuaTools",
 }
 
 _PROVIDER_FULL_LABELS = {
     "hubcap": "Hubcap",
     "ryuu": "Ryu (beta)",
     "vapor": "Vapor",
+    "luatools": "LuaTools (Luie)",
 }
 
 
@@ -363,16 +365,44 @@ def _search_steam_store(query: str, limit: int = 100) -> Dict[str, Any]:
     return {"results": results[:limit], "total_count": len(results)}
 
 
-def search_games(query: str, limit: int = 100) -> Dict[str, Any]:
+def _search_steam_community(query: str, limit: int = 100) -> Dict[str, Any]:
+    """Search Steam Community SearchApps endpoint for instant catalog search."""
+    import urllib.parse
+    import requests
+
     try:
-        result = _first(Capability.SEARCH, _BUNDLE_ORDER, "search", query, limit=limit)
-        if result and "error" not in result:
-            return result
-    except CapabilityNotSupported:
-        logger.debug("[Providers] No provider exposes search; using the Steam Store fallback.")
+        encoded = urllib.parse.quote(query.strip())
+        url = f"https://steamcommunity.com/actions/SearchApps/{encoded}"
+        resp = requests.get(url, timeout=8, headers={"User-Agent": "ASSella/3.0"})
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list):
+                results = [
+                    {
+                        "game_id": str(item.get("appid")),
+                        "game_name": item.get("name") or "Unknown",
+                        "header_image": item.get("logo") or item.get("icon") or "",
+                        "manifest_available": True,
+                    }
+                    for item in data
+                    if item.get("appid")
+                ]
+                return {"results": results[:limit], "total_count": len(results)}
     except Exception as e:
-        logger.debug("[Providers] Provider search failed, falling back to Steam: %s", e)
+        logger.debug(f"[SteamSearch] Community search failed: {e}")
     return _search_steam_store(query, limit)
+
+
+def search_games(query: str, limit: int = 100) -> Dict[str, Any]:
+    active = active_provider_id()
+    if active == "hubcap":
+        try:
+            result = _first(Capability.SEARCH, _BUNDLE_ORDER, "search", query, limit=limit)
+            if result and "error" not in result:
+                return result
+        except Exception as e:
+            logger.debug("[Providers] Hubcap search failed: %s", e)
+    return _search_steam_community(query, limit)
 
 
 def get_user_stats(force: bool = False) -> Dict[str, Any]:

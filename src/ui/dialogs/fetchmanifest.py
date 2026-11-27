@@ -386,16 +386,7 @@ class FetchManifestDialog(QDialog):
         # 1. Sleek Pill Search Input
         self._placeholder_idx = 0
         self.search_input = QLineEdit()
-        is_ryu_init = (
-            str(self.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower() == "ryuu"
-            if self.settings
-            else False
-        )
-        self.search_input.setPlaceholderText(
-            "Enter AppID only (search disabled in Ryu mode)..."
-            if is_ryu_init
-            else SEARCH_PLACEHOLDERS[0]
-        )
+        self.search_input.setPlaceholderText(SEARCH_PLACEHOLDERS[0])
         self.search_input.returnPressed.connect(self.on_search)
         self.search_input.textChanged.connect(self._on_search_text_changed)
         self.search_input.setFixedHeight(42)
@@ -791,15 +782,8 @@ class FetchManifestDialog(QDialog):
         # Restart the debounce window
         self._live_search_timer.start(400)
 
-    def _is_ryu_provider(self) -> bool:
-        if not self.settings:
-            return False
-        return str(self.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower() == "ryuu"
-
     def _fire_live_search(self) -> None:
         """Called 400ms after the last keystroke — runs a lightweight suggestion search."""
-        if self._is_ryu_provider():
-            return
         query = self.search_input.text().strip()
         if len(query) < 3 or query.isdigit():
             return
@@ -839,10 +823,6 @@ class FetchManifestDialog(QDialog):
             self._live_search_timer.stop()
 
         query = self.search_input.text().strip()
-        if self._is_ryu_provider() and not query.isdigit():
-            self.status_label.setText("Search is disabled in Ryu (beta) mode. Please enter a numeric AppID.")
-            self._set_loading_active(False)
-            return
         if len(query) < 2:
             self.status_label.setText("Enter at least 2 characters")
             self._set_loading_active(False)
@@ -2178,8 +2158,6 @@ class FetchManifestDialog(QDialog):
 
     def _rotate_placeholder(self) -> None:
         if not hasattr(self, "search_input") or not self.search_input:
-            return
-        if self._is_ryu_provider():
             return
         if self.search_input.text() or self.search_input.hasFocus():
             return

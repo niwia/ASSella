@@ -905,7 +905,7 @@ class GameDetailsDialogV2(QDialog):
         Answers from a per-window cache: the check reads the session file, and
         building the details window asks three times.
         """
-        if not self.settings.value("luatools_unlocked", False, type=bool):
+        if not self.settings.value("luatools_show_fixes", False, type=bool):
             return False
         cached = getattr(self, "_luatools_available", None)
         if cached is not None:

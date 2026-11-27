@@ -653,50 +653,70 @@ def create_morrenus_tab(dialog) -> QWidget:
     ryu_scroll.setWidget(ryu_container)
     integ_subtabs.addTab(ryu_scroll, "Ryu (beta)")
 
-    def _sync_workshop_gate(is_ryu: bool) -> None:
+    from ui.dialogs.settings_tabs.luatools_tab import create_luatools_tab
+    luatools_scroll = create_luatools_tab(dialog)
+    integ_subtabs.addTab(luatools_scroll, "LuaTools")
+
+    def _sync_workshop_gate(is_external: bool) -> None:
         ws_chk = getattr(dialog, "enable_workshop_downloader_checkbox", None)
         if ws_chk is not None:
-            if is_ryu:
+            if is_external:
                 ws_chk.blockSignals(True)
                 ws_chk.setChecked(False)
                 ws_chk.blockSignals(False)
                 ws_chk.setEnabled(False)
-                ws_chk.setToolTip("Workshop Downloader is disabled when Ryu (beta) is the primary manifest provider.")
+                ws_chk.setToolTip("Workshop Downloader is disabled when an external provider (Ryu / LuaTools) is primary.")
             else:
                 ws_chk.setEnabled(True)
                 ws_chk.setToolTip("")
-        if is_ryu:
+        if is_external:
             dialog.settings.setValue("enable_workshop_downloader", False)
 
     def _set_active_provider(provider: str) -> None:
-        is_ryu = provider == "ryuu"
-        dialog.settings.setValue("manifest_bundle_provider", "ryuu" if is_ryu else "hubcap")
+        dialog.settings.setValue("manifest_bundle_provider", provider)
         dialog.hubcap_primary_checkbox.blockSignals(True)
         dialog.ryu_primary_checkbox.blockSignals(True)
-        dialog.hubcap_primary_checkbox.setChecked(not is_ryu)
-        dialog.ryu_primary_checkbox.setChecked(is_ryu)
+        if hasattr(dialog, "luatools_primary_checkbox") and dialog.luatools_primary_checkbox:
+            dialog.luatools_primary_checkbox.blockSignals(True)
+
+        dialog.hubcap_primary_checkbox.setChecked(provider == "hubcap")
+        dialog.ryu_primary_checkbox.setChecked(provider == "ryuu")
+        if hasattr(dialog, "luatools_primary_checkbox") and dialog.luatools_primary_checkbox:
+            dialog.luatools_primary_checkbox.setChecked(provider == "luatools")
+
         dialog.hubcap_primary_checkbox.blockSignals(False)
         dialog.ryu_primary_checkbox.blockSignals(False)
-        _sync_workshop_gate(is_ryu)
+        if hasattr(dialog, "luatools_primary_checkbox") and dialog.luatools_primary_checkbox:
+            dialog.luatools_primary_checkbox.blockSignals(False)
+
+        _sync_workshop_gate(provider != "hubcap")
 
     curr_prov = str(dialog.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").lower()
     if curr_prov == "ryuu" and not dialog.ryuu_auth_key_edit.text().strip():
         curr_prov = "hubcap"
-    _set_active_provider("ryuu" if curr_prov == "ryuu" else "hubcap")
+    elif curr_prov == "luatools":
+        from core.lua_tools_api import LuaToolsAPI
+        if not LuaToolsAPI.is_authenticated():
+            curr_prov = "hubcap"
+    _set_active_provider(curr_prov)
 
     def _on_hubcap_primary_toggled(checked: bool) -> None:
         if checked:
             _set_active_provider("hubcap")
         else:
-            if not dialog.ryuu_auth_key_edit.text().strip():
-                ThemedMessageBox.warning(
-                    dialog,
-                    "Ryu Auth Key Required",
-                    "Please enter a Ryu auth key in the Ryu (beta) tab before switching away from Hubcap.",
-                )
-                _set_active_provider("hubcap")
-            else:
+            if dialog.ryuu_auth_key_edit.text().strip():
                 _set_active_provider("ryuu")
+            else:
+                from core.lua_tools_api import LuaToolsAPI
+                if LuaToolsAPI.is_authenticated():
+                    _set_active_provider("luatools")
+                else:
+                    ThemedMessageBox.warning(
+                        dialog,
+                        "Provider Configuration Required",
+                        "Please configure Ryu (auth key) or LuaTools (login) before switching away from Hubcap.",
+                    )
+                    _set_active_provider("hubcap")
 
     def _on_ryu_primary_toggled(checked: bool) -> None:
         if checked:
@@ -712,8 +732,25 @@ def create_morrenus_tab(dialog) -> QWidget:
         else:
             _set_active_provider("hubcap")
 
+    def _on_luatools_primary_toggled(checked: bool) -> None:
+        if checked:
+            from core.lua_tools_api import LuaToolsAPI
+            if not LuaToolsAPI.is_authenticated():
+                ThemedMessageBox.warning(
+                    dialog,
+                    "LuaTools Login Required",
+                    "Please log in to lua.tools in the LuaTools tab first before enabling LuaTools as the primary provider.",
+                )
+                _set_active_provider("hubcap")
+            else:
+                _set_active_provider("luatools")
+        else:
+            _set_active_provider("hubcap")
+
     dialog.hubcap_primary_checkbox.toggled.connect(_on_hubcap_primary_toggled)
     dialog.ryu_primary_checkbox.toggled.connect(_on_ryu_primary_toggled)
+    if hasattr(dialog, "luatools_primary_checkbox") and dialog.luatools_primary_checkbox:
+        dialog.luatools_primary_checkbox.toggled.connect(_on_luatools_primary_toggled)
 
     # ── Subtab 3: SteamDB ──
     steamdb_scroll = QScrollArea()

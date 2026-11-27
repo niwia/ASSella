@@ -110,11 +110,11 @@ class LuaToolsAPI:
 
     @classmethod
     def is_unlocked(cls) -> bool:
-        """Check if LuaTools feature has been unlocked via the secret search keyword."""
+        """Check if LuaTools fixes feature is enabled in Settings."""
         try:
             from utils.settings import get_settings
             s = get_settings()
-            return s.value("luatools_unlocked", False, type=bool)
+            return s.value("luatools_show_fixes", False, type=bool)
         except Exception:
             return False
 
@@ -262,13 +262,7 @@ class LuaToolsAPI:
 
     @classmethod
     def is_authenticated(cls, allow_cached: bool = True) -> bool:
-        """Check if user has an authenticated lua.tools session.
-
-        Requires that LuaTools is unlocked first. Uses local cached session by default
-        to prevent blocking network requests on UI threads.
-        """
-        if not cls.is_unlocked():
-            return False
+        """Check if user has an authenticated lua.tools session."""
         session = cls.load_session()
         if not session or not session.get("refresh_token"):
             return False
@@ -278,14 +272,7 @@ class LuaToolsAPI:
 
     @classmethod
     def get_auth_status(cls, allow_cached: bool = True) -> Dict[str, Any]:
-        """Check if a valid session exists and return account display info.
-
-        Requires that LuaTools is unlocked first. Defaults to reading the local
-        cached session without making blocking network calls.
-        """
-        if not cls.is_unlocked():
-            return {"authenticated": False}
-
+        """Check if a valid session exists and return account display info."""
         session = cls.load_session()
         if not session or not session.get("refresh_token"):
             return {"authenticated": False}
@@ -310,8 +297,6 @@ class LuaToolsAPI:
     @classmethod
     def get_valid_access_token(cls) -> Optional[str]:
         """Return a valid access token, auto-refreshing via Supabase if expired."""
-        if not cls.is_unlocked():
-            return None
         session = cls.load_session()
         if not session or not session.get("refresh_token"):
             return None
@@ -368,8 +353,6 @@ class LuaToolsAPI:
     @classmethod
     def sign_in_with_code(cls, code: str) -> Tuple[bool, str]:
         """Redeem a 6-character code from lua.tools."""
-        if not cls.is_unlocked():
-            return False, "LuaTools feature is not unlocked."
         code = code.strip().upper()
         if len(code) != 6:
             return False, "Login code must be exactly 6 characters."

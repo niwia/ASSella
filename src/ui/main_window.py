@@ -1138,14 +1138,11 @@ class MainWindow(
         row1_layout.setSpacing(20)
         row1_layout.addStretch()
 
-        # 1. Hubcap API Stats
-        self.hubcap_api_lbl = QLabel("Hubcap:")
-        self.hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
+        # 1. API Stats
         self.hubcap_api_value = QLabel("API: --/-- | --")
         self.hubcap_api_value.setStyleSheet(row_item_style)
         hubcap_api_item = QHBoxLayout()
         hubcap_api_item.setSpacing(4)
-        hubcap_api_item.addWidget(self.hubcap_api_lbl)
         hubcap_api_item.addWidget(self.hubcap_api_value)
         row1_layout.addLayout(hubcap_api_item)
 

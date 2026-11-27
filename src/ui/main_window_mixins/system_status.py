@@ -502,12 +502,10 @@ class MainWindowSystemStatusMixin:
         prov_full = get_active_provider_label(full=True)
         if hasattr(self, "hubcap_conn_lbl") and self.hubcap_conn_lbl:
             self.hubcap_conn_lbl.setText(f"{prov_short}:")
-        if hasattr(self, "hubcap_api_lbl") and self.hubcap_api_lbl:
-            self.hubcap_api_lbl.setText(f"{prov_short}:")
 
         if not active_provider_supports(Capability.ACCOUNT_STATS):
             if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
-                self.hubcap_api_value.setText("N/A")
+                self.hubcap_api_value.setText("API: N/A")
                 self.hubcap_api_value.setStyleSheet("color: rgba(255, 255, 255, 0.35);")
                 self.hubcap_api_value.setToolTip(f"No API quota tracked for {prov_full}.")
             if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
@@ -517,7 +515,7 @@ class MainWindowSystemStatusMixin:
 
         # Set stats text to loading
         if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
-            self.hubcap_api_value.setText("Loading...")
+            self.hubcap_api_value.setText("API: Loading...")
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
             self.active_hubcap_label.setText(f"{prov_short}: Loading...")
 

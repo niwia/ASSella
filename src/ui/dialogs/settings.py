@@ -518,10 +518,6 @@ class SettingsDialog(QDialog):
         if self.settings.value("konami_settings_unlocked", False, type=bool):
             add("Testing", lambda: tabs.create_mrc_settings_tab(self))
 
-        # LuaTools Settings tab unlocked via search secret keyword
-        if self.settings.value("luatools_unlocked", False, type=bool):
-            add("LuaTools", lambda: self.tab_widget.addTab(tabs.create_luatools_tab(self), "LuaTools"))
-
         # Tab changed listener
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
 

@@ -46,12 +46,13 @@ def main() -> int:
 
     print("=== built-ins are registered with their capabilities ===")
     ids = registry.ids()
-    for pid in ("hubcap", "ryuu", "vapor"):
+    for pid in ("hubcap", "ryuu", "vapor", "luatools"):
         check(pid in ids, f"provider '{pid}' is registered")
 
     hubcap = registry.get("hubcap")
     ryuu = registry.get("ryuu")
     vapor = registry.get("vapor")
+    luatools = registry.get("luatools")
 
     check(hubcap.supports(Capability.BUNDLE_DOWNLOAD), "hubcap supports bundle download")
     check(hubcap.supports(Capability.SINGLE_MANIFEST), "hubcap supports single manifests")
@@ -59,6 +60,8 @@ def main() -> int:
     check(ryuu.supports(Capability.NATIVE_BRANCH), "ryuu supports native branch bundles")
     check(not ryuu.supports(Capability.SINGLE_MANIFEST), "ryuu does not claim single-manifest generation")
     check(vapor.supports(Capability.SINGLE_MANIFEST), "vapor supports single manifests")
+    check(luatools.supports(Capability.BUNDLE_DOWNLOAD), "luatools supports bundle download")
+    check(not luatools.supports(Capability.SINGLE_MANIFEST), "luatools does not claim single manifests")
 
     print("=== unsupported operations raise a typed capability error ===")
     try:
@@ -87,6 +90,12 @@ def main() -> int:
         check(mp.get_active_provider_label(full=False) == "Ryu", "ryuu short label is Ryu")
         check(mp.get_active_provider_label(full=True) == "Ryu (beta)", "ryuu full label is Ryu (beta)")
         check(not mp.active_provider_supports(Capability.ACCOUNT_STATS), "ryuu does not claim account stats")
+
+        mp.active_provider_id = lambda: "luatools"
+        lt_forced = [p.meta.id for p in mp._ordered(Capability.BUNDLE_DOWNLOAD, mp._BUNDLE_ORDER)]
+        check(lt_forced and lt_forced[0] == "luatools", "luatools provider is tried first when active")
+        check(mp.get_active_provider_label(full=False) == "LuaTools", "luatools short label is LuaTools")
+        check(mp.get_active_provider_label(full=True) == "LuaTools (Luie)", "luatools full label is LuaTools (Luie)")
 
         mp.active_provider_id = lambda: "hubcap"
         no_single = [p.meta.id for p in mp._ordered(Capability.SINGLE_MANIFEST, mp._MANIFEST_ORDER)]

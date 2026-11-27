@@ -217,51 +217,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     t_grid.addWidget(install_byparr_btn, 3, 1, 1, 2)
 
     # 5. LuaTools Secret (Reset & Lock)
-    luatools_lbl = QLabel("LuaTools Secret:")
-    from utils.color_utils import get_raised_surface_tokens
-    _label_tokens = get_raised_surface_tokens(settings.value("background_color", "#111318", type=str))
-    luatools_lbl.setStyleSheet(f"color: {_label_tokens['ink']}; font-size: 8.5pt; font-weight: 500;")
-    t_grid.addWidget(luatools_lbl, 4, 0)
 
-    reset_luatools_btn = QPushButton("Reset & Lock LuaTools")
-    reset_luatools_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    reset_luatools_btn.setStyleSheet("""
-        QPushButton {
-            background-color: rgba(244, 67, 54, 0.15);
-            color: #EF5350;
-            border: 1px solid rgba(239, 83, 80, 0.45);
-            border-radius: 6px;
-            padding: 4px 10px;
-            font-size: 8.5pt;
-            font-weight: 500;
-        }
-        QPushButton:hover {
-            background-color: rgba(244, 67, 54, 0.28);
-        }
-    """)
-    def _on_reset_luatools():
-        settings.setValue("luatools_unlocked", False)
-        try:
-            from core.lua_tools_api import LuaToolsAPI
-            LuaToolsAPI.clear_session()
-        except Exception as e:
-            logger.warning(f"Error clearing LuaTools session during reset: {e}")
-        settings.sync()
-
-        # If LuaTools tab is open in SettingsDialog, remove it dynamically
-        for i in range(dialog.tab_widget.count()):
-            if dialog.tab_widget.tabText(i).lower() == "luatools":
-                dialog.tab_widget.removeTab(i)
-                break
-
-        ThemedMessageBox.information(
-            dialog,
-            "LuaTools Reset & Locked",
-            "The LuaTools secret feature has been disabled and its session reset.\n\n"
-            "The tab will be hidden until you type the 'luatools' keyword in the library search bar again."
-        )
-    reset_luatools_btn.clicked.connect(_on_reset_luatools)
-    t_grid.addWidget(reset_luatools_btn, 4, 1, 1, 2)
 
     test_layout.addLayout(t_grid)
 

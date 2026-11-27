@@ -1,5 +1,5 @@
 """
-luatools_tab.py - Settings tab for lua.tools authentication and account integration.
+luatools_tab.py - Settings tab for lua.tools authentication, manifest provider, and fixes.
 Supports 1-click automatic PKCE browser login and 6-character code fallback.
 """
 
@@ -15,6 +15,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QLineEdit,
     QFrame,
+    QCheckBox,
+    QScrollArea,
 )
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -82,37 +84,96 @@ DANGER_BTN_STYLE = """
 
 
 def create_luatools_tab(dialog) -> QWidget:
-    """Create the LuaTools Settings Tab."""
-    tab = QWidget()
-    main_lay = QVBoxLayout(tab)
-    main_lay.setContentsMargins(15, 15, 15, 15)
+    """Create the LuaTools Settings Tab inside Integrations."""
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+    container = QWidget()
+    main_lay = QVBoxLayout(container)
+    main_lay.setContentsMargins(0, 8, 0, 0)
     main_lay.setSpacing(12)
 
-    card, card_lay = dialog._create_card_frame("lua.tools Integration")
-    card.setStyleSheet("""
-        QFrame#SectionCard {
-            background-color: rgba(255, 255, 255, 0.03);
-            border: none;
-            border-radius: 10px;
-        }
-        QFrame#SectionCard > QLabel {
-            border: none !important;
-            background: transparent !important;
-            padding: 0px !important;
-        }
-    """)
+    # ── Card 1: Manifest Provider ──
+    prov_card, prov_layout = dialog._create_card_frame("Manifest Provider")
+    prov_layout.setSpacing(6)
 
-    intro_lbl = QLabel(
-        "Connect your lua.tools account to download community fixes, online multiplayer bypasses, "
-        "and patches directly from the LuaFix game details tab."
+    dialog.luatools_primary_checkbox = QCheckBox("Use LuaTools (Luie) as primary manifest provider")
+    dialog.luatools_primary_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: bold;")
+    prov_desc = QLabel(
+        "Requires being logged in to lua.tools below. When enabled, manifest bundles are downloaded "
+        "from lua.tools (Luie) with live availability checks."
     )
-    intro_lbl.setWordWrap(True)
-    intro_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9pt; line-height: 1.4; border: none; background: transparent;")
-    card_lay.addWidget(intro_lbl)
+    prov_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    prov_desc.setWordWrap(True)
+    prov_layout.addWidget(dialog.luatools_primary_checkbox)
+    prov_layout.addWidget(prov_desc)
 
-    card_lay.addSpacing(6)
+    prov_layout.addSpacing(6)
 
-    # Status box (borderless)
+    dialog.luatools_allow_sushi_checkbox = QCheckBox("Allow Sushi as fallback manifest source")
+    dialog.luatools_allow_sushi_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9pt;")
+    dialog.luatools_allow_sushi_checkbox.setChecked(
+        dialog.settings.value("luatools_allow_sushi", False, type=bool) if dialog.settings else False
+    )
+    sushi_desc = QLabel(
+        "Optional fallback: if Luie does not have a manifest for a game, attempt downloading from Sushi's GitHub manifest repository."
+    )
+    sushi_desc.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8pt;")
+    sushi_desc.setWordWrap(True)
+    prov_layout.addWidget(dialog.luatools_allow_sushi_checkbox)
+    prov_layout.addWidget(sushi_desc)
+
+    def _on_sushi_toggled(checked: bool):
+        if dialog.settings:
+            dialog.settings.setValue("luatools_allow_sushi", checked)
+
+    dialog.luatools_allow_sushi_checkbox.toggled.connect(_on_sushi_toggled)
+    main_lay.addWidget(prov_card)
+
+    # ── Card 2: Community Fixes & Online Patches ──
+    fixes_card, fixes_layout = dialog._create_card_frame("Community Fixes & Patches")
+    fixes_layout.setSpacing(8)
+
+    dialog.luatools_show_fixes_checkbox = QCheckBox("Show LuaTools fixes")
+    dialog.luatools_show_fixes_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: bold;")
+    show_fixes_init = (
+        dialog.settings.value("luatools_show_fixes", False, type=bool) if dialog.settings else False
+    )
+    dialog.luatools_show_fixes_checkbox.setChecked(show_fixes_init)
+    fixes_desc = QLabel(
+        "Enable to display community fixes and multiplayer bypasses in the LuaFix game details tab."
+    )
+    fixes_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    fixes_desc.setWordWrap(True)
+    fixes_layout.addWidget(dialog.luatools_show_fixes_checkbox)
+    fixes_layout.addWidget(fixes_desc)
+
+    from utils.helpers import create_checkbox_setting
+    dialog.ignore_online_fixes_checkbox = create_checkbox_setting(
+        "Ignore Online Fixes",
+        "luatools_ignore_online_fixes",
+        False,
+        dialog,
+        "Hide fixes that only contain online multiplayer patches. If a game has only online fixes, the LuaFix tab will remain hidden.",
+    )
+    dialog.ignore_online_fixes_checkbox.setEnabled(show_fixes_init)
+    fixes_layout.addWidget(dialog.ignore_online_fixes_checkbox)
+
+    def _on_show_fixes_toggled(checked: bool):
+        if dialog.settings:
+            dialog.settings.setValue("luatools_show_fixes", checked)
+        dialog.ignore_online_fixes_checkbox.setEnabled(checked)
+
+    dialog.luatools_show_fixes_checkbox.toggled.connect(_on_show_fixes_toggled)
+    main_lay.addWidget(fixes_card)
+
+    # ── Card 3: Account & Authentication ──
+    card, card_lay = dialog._create_card_frame("Account Authentication")
+    card_lay.setSpacing(8)
+
+    # Status box
     status_frame = QFrame()
     status_frame.setStyleSheet(
         "background: rgba(255, 255, 255, 0.04); border: none; border-radius: 8px;"
@@ -137,25 +198,12 @@ def create_luatools_tab(dialog) -> QWidget:
 
     card_lay.addWidget(status_frame)
 
-    # Option: Ignore Online Fixes
-    card_lay.addSpacing(4)
-    from utils.helpers import create_checkbox_setting
-    dialog.ignore_online_fixes_checkbox = create_checkbox_setting(
-        "Ignore Online Fixes",
-        "luatools_ignore_online_fixes",
-        False,
-        dialog,
-        "Hide fixes that only contain online multiplayer patches. If a game has only online fixes, the LuaFix tab will remain hidden.",
-    )
-    card_lay.addWidget(dialog.ignore_online_fixes_checkbox)
-
     # Login methods container
     dialog.luatools_login_container = QWidget()
     dialog.luatools_login_container.setStyleSheet("background: transparent; border: none;")
     login_lay = QVBoxLayout(dialog.luatools_login_container)
     login_lay.setContentsMargins(0, 8, 0, 0)
     login_lay.setSpacing(10)
-
 
     # 1. 1-Click Browser Login
     browser_title = QLabel("1-Click Browser Login")
@@ -237,7 +285,6 @@ def create_luatools_tab(dialog) -> QWidget:
     login_lay.addLayout(code_row)
 
     card_lay.addWidget(dialog.luatools_login_container)
-
     main_lay.addWidget(card)
     main_lay.addStretch()
 
@@ -245,7 +292,7 @@ def create_luatools_tab(dialog) -> QWidget:
     dialog.luatools_poll_timer = QTimer(dialog)
     dialog.luatools_poll_timer.setInterval(800)
 
-    # Helper function to refresh UI (uses local cache first to avoid blocking GUI thread)
+    # Helper function to refresh UI
     def _paint_status(status):
         if status.get("authenticated"):
             name = status.get("display_name", "Connected")
@@ -260,19 +307,9 @@ def create_luatools_tab(dialog) -> QWidget:
             dialog.luatools_disconnect_btn.setVisible(False)
             dialog.luatools_login_container.setVisible(True)
 
-    # Bumped on every refresh so a slow validation cannot overwrite a newer state.
     status_generation = {"value": 0}
 
     def update_ui_status(validate: bool = False):
-        """Paint the cached account state, optionally validating it in the background.
-
-        `validate` is passed only when the tab is opened, so opening Settings
-        costs no network call and the one refresh happens when the account
-        status is actually on screen. Both paths return early while LuaTools is
-        locked, so a locked install never touches the lua.tools backend.
-        """
-        if not LuaToolsAPI.is_unlocked():
-            return
         status_generation["value"] += 1
         generation = status_generation["value"]
         _paint_status(LuaToolsAPI.get_auth_status(allow_cached=True))
@@ -293,7 +330,7 @@ def create_luatools_tab(dialog) -> QWidget:
         def _validation_failed(error):
             if generation != status_generation["value"]:
                 return
-            logger.warning(f"[LuaTools] Could not validate the session: {error}")
+            logger.warning(f"[LuaTools] Could not validate session: {error}")
             _paint_status(LuaToolsAPI.get_auth_status(allow_cached=True))
 
         runner.run(
@@ -314,7 +351,6 @@ def create_luatools_tab(dialog) -> QWidget:
         dialog.luatools_pkce_status.setText("Opening browser... Waiting for authorization...")
         dialog.luatools_pkce_status.setVisible(True)
 
-        # Open browser
         try:
             QDesktopServices.openUrl(QUrl(auth_url))
         except Exception:
@@ -382,7 +418,7 @@ def create_luatools_tab(dialog) -> QWidget:
     dialog.luatools_redeem_btn.clicked.connect(redeem_code)
     dialog.luatools_disconnect_btn.clicked.connect(disconnect_account)
 
-    # Attach handler for lazy invocation when the LuaTools tab is accessed
     dialog.update_luatools_ui_status = update_ui_status
 
-    return tab
+    scroll.setWidget(container)
+    return scroll

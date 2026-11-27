@@ -30,8 +30,9 @@ def register_builtins() -> None:
     from core.providers.hubcap import HubcapProvider
     from core.providers.ryuu import RyuuProvider
     from core.providers.vapor import VaporProvider
+    from core.providers.luatools import LuaToolsProvider
 
-    for provider in (HubcapProvider(), VaporProvider(), RyuuProvider()):
+    for provider in (HubcapProvider(), VaporProvider(), RyuuProvider(), LuaToolsProvider()):
         registry.register(provider)
     _REGISTERED = True
 

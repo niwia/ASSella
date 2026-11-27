@@ -194,9 +194,169 @@ def create_tools_tab(dialog) -> QWidget:
     # bundled - this is the one place they can be downloaded or updated.
     layout.addWidget(create_components_card(dialog))
 
+    # Manifest Catalogs & Caches (Ryuu Games DB)
+    layout.addWidget(create_catalogs_card(dialog))
+
     layout.addStretch()
     dialog.tab_widget.addTab(tab, "Tools")
     return tab
+
+
+def create_catalogs_card(dialog):
+    """Manifest Catalogs card for downloading offline databases like Ryuu games.json."""
+    from PyQt6.QtCore import QThread, pyqtSignal
+    from PyQt6.QtWidgets import QLabel as _QLabel, QProgressBar as _QProgressBar
+
+    card, lay = dialog._create_card_frame("Manifest Catalogs & Caches")
+    lay.setSpacing(10)
+
+    from utils.helpers import get_base_path
+    db_path = get_base_path() / "ryuu_games.json"
+
+    row = QHBoxLayout()
+    row.setSpacing(12)
+
+    info_box = QVBoxLayout()
+    info_box.setSpacing(2)
+    t = _QLabel("Ryuu Games Catalog (~52 MB)")
+    t.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; background: transparent;")
+    hint = _QLabel("Full offline game manifest database from generator.ryuu.lol/files/games.json")
+    hint.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8.5pt; background: transparent;")
+    info_box.addWidget(t)
+    info_box.addWidget(hint)
+    row.addLayout(info_box, 1)
+
+    status_lbl = _QLabel()
+    status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt; background: transparent;")
+
+    progress_bar = _QProgressBar()
+    progress_bar.setRange(0, 100)
+    progress_bar.setVisible(False)
+    progress_bar.setFixedHeight(14)
+    progress_bar.setFixedWidth(120)
+    progress_bar.setStyleSheet("""
+        QProgressBar {
+            background-color: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+            text-align: center;
+            font-size: 7.5pt;
+            color: #FFFFFF;
+        }
+        QProgressBar::chunk {
+            background-color: #3B82F6;
+            border-radius: 3px;
+        }
+    """)
+
+    def _update_status():
+        if db_path.exists():
+            try:
+                sz_mb = db_path.stat().st_size / (1024 * 1024)
+                status_lbl.setText(f"Installed ({sz_mb:.1f} MB)")
+            except Exception:
+                status_lbl.setText("Installed")
+        else:
+            status_lbl.setText("Not downloaded")
+
+    _update_status()
+
+    btn = QPushButton("Download" if not db_path.exists() else "Update")
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setStyleSheet("""
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 6px;
+            color: #FFFFFF;
+            padding: 5px 12px;
+            font-size: 9pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.16);
+            border-color: rgba(255, 255, 255, 0.32);
+        }
+        QPushButton:disabled {
+            background-color: rgba(255, 255, 255, 0.04) !important;
+            border-color: rgba(255, 255, 255, 0.1) !important;
+            color: rgba(255, 255, 255, 0.3) !important;
+        }
+    """)
+
+    class _CatalogDownloader(QThread):
+        progress = pyqtSignal(int, int)
+        done = pyqtSignal(bool, str)
+
+        def run(self):
+            import urllib.request
+            tmp_path = db_path.with_suffix(".tmp")
+            url = "https://generator.ryuu.lol/files/games.json"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "ASSella"})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    total = int(resp.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    chunk_size = 64 * 1024
+                    with open(tmp_path, "wb") as f:
+                        while True:
+                            chunk = resp.read(chunk_size)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            self.progress.emit(downloaded, total)
+                if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                    tmp_path.replace(db_path)
+                    self.done.emit(True, "Catalog updated successfully.")
+                else:
+                    self.done.emit(False, "Downloaded empty file.")
+            except Exception as e:
+                logger.error(f"[CatalogDownloader] Error downloading Ryuu catalog: {e}", exc_info=True)
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError as unlink_err:
+                        logger.debug(f"[CatalogDownloader] Could not remove tmp file: {unlink_err}")
+                self.done.emit(False, str(e))
+
+    def _start_download():
+        btn.setEnabled(False)
+        progress_bar.setVisible(True)
+        progress_bar.setRange(0, 100)
+        progress_bar.setValue(0)
+        status_lbl.setText("Downloading...")
+
+        worker = _CatalogDownloader()
+        dialog._catalog_worker = worker  # keep reference alive
+
+        def _on_prog(done, total):
+            if total > 0:
+                progress_bar.setRange(0, total)
+                progress_bar.setValue(done)
+
+        def _on_finish(ok, msg):
+            progress_bar.setVisible(False)
+            btn.setEnabled(True)
+            _update_status()
+            btn.setText("Update" if db_path.exists() else "Download")
+            if ok:
+                ThemedMessageBox.information(dialog, "Catalog Download", msg)
+            else:
+                ThemedMessageBox.critical(dialog, "Download Error", f"Failed to download catalog:\n{msg}")
+
+        worker.progress.connect(_on_prog)
+        worker.done.connect(_on_finish)
+        worker.start()
+
+    btn.clicked.connect(_start_download)
+
+    row.addWidget(status_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+    row.addWidget(progress_bar, 0, Qt.AlignmentFlag.AlignVCenter)
+    row.addWidget(btn, 0, Qt.AlignmentFlag.AlignVCenter)
+    lay.addLayout(row)
+
+    return card
 
 
 def create_sls_logging_card(dialog):
