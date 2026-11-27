@@ -705,13 +705,18 @@ class At0mUpdateChecker(QObject):
             )
             return "up_to_date", {"appid": appid_str, "status": "up_to_date"}
 
-        # Step 6: ask Hubcap what it can do with the missing depots
+        # Step 6: ask Hubcap what it can do with the missing depots (or pass through for external providers)
         logger.info(
             f"[At0mChecker] App {appid_str} ({app_name}) is missing the key for "
             f"{len(missing_depots)} depot(s): {sorted(missing_depots)}"
         )
         sorted_missing = sorted(missing_depots)
-        ready_depots, awaiting_depots, index_error = self._classify_depots(sorted_missing)
+        from core.manifest_provider import active_provider_id
+        _active_prov = active_provider_id()
+        if _active_prov in ("ryuu", "luatools"):
+            ready_depots, awaiting_depots, index_error = sorted_missing, [], None
+        else:
+            ready_depots, awaiting_depots, index_error = self._classify_depots(sorted_missing)
 
         if index_error:
             # The Hubcap index is unavailable, so we cannot tell whether the
@@ -729,7 +734,7 @@ class At0mUpdateChecker(QObject):
             logger.info(f"[At0mChecker] {appid_str} cannot be determined ({index_error}).")
             return status, details
 
-        if ready_depots:
+        if ready_depots and _active_prov not in ("ryuu", "luatools"):
             # Verify against Hubcap /contents: if Hubcap has a manifest bundle for this app,
             # ensure the ready depots are actually included in the bundle contents.
             try:
@@ -805,21 +810,23 @@ class At0mUpdateChecker(QObject):
 
         def _worker():
             try:
-                # The Hubcap depot-key index is a few megabytes and takes
-                # seconds to parse, so it is fetched here - on this background
-                # thread - and never on the GUI thread.
-                from core.hubcap_key_index import get_index
-                index = get_index(allow_network=True)
-                if not index.loaded:
-                    logger.warning(
-                        f"[At0mChecker] The Hubcap depot-key index is unavailable ({index.error}); "
-                        f"key states cannot be determined."
-                    )
-                else:
-                    logger.info(
-                        f"[At0mChecker] Hubcap index ready: {len(index.existing)} depot(s) with a key, "
-                        f"{len(index.pending)} awaiting one."
-                    )
+                from core.manifest_provider import active_provider_id
+                if active_provider_id() not in ("ryuu", "luatools"):
+                    # The Hubcap depot-key index is a few megabytes and takes
+                    # seconds to parse, so it is fetched here - on this background
+                    # thread - and never on the GUI thread.
+                    from core.hubcap_key_index import get_index
+                    index = get_index(allow_network=True)
+                    if not index.loaded:
+                        logger.warning(
+                            f"[At0mChecker] The Hubcap depot-key index is unavailable ({index.error}); "
+                            f"key states cannot be determined."
+                        )
+                    else:
+                        logger.info(
+                            f"[At0mChecker] Hubcap index ready: {len(index.existing)} depot(s) with a key, "
+                            f"{len(index.pending)} awaiting one."
+                        )
 
                 all_games = self.get_all_at0m_games(live_games=live_games)
                 total = len(all_games)

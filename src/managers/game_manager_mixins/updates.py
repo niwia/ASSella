@@ -412,6 +412,10 @@ class GameManagerUpdatesMixin:
 
     def _check_hubcap_status_async(self, appid: str) -> None:
         """Fetch Hubcap status asynchronously and update game dict/UI."""
+        from core.manifest_provider import active_provider_id
+        if active_provider_id() != "hubcap":
+            return
+
         from core import morrenus_api
 
         runner = TaskRunner()

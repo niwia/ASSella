@@ -657,6 +657,13 @@ def create_morrenus_tab(dialog) -> QWidget:
     luatools_scroll = create_luatools_tab(dialog)
     integ_subtabs.addTab(luatools_scroll, "LuaTools")
 
+    def _on_integ_subtab_changed(idx: int) -> None:
+        if integ_subtabs.tabText(idx) == "LuaTools":
+            if hasattr(dialog, "update_luatools_ui_status"):
+                dialog.update_luatools_ui_status(validate=True)
+
+    integ_subtabs.currentChanged.connect(_on_integ_subtab_changed)
+
     def _sync_workshop_gate(is_external: bool) -> None:
         ws_chk = getattr(dialog, "enable_workshop_downloader_checkbox", None)
         if ws_chk is not None:

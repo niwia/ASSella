@@ -612,33 +612,38 @@ class MainWindowSystemStatusMixin:
         usage = stats.get("daily_usage", 0)
         limit = stats.get("daily_limit", 55)
 
-        # 2. Key Expiry and color-coded status
-        from core.morrenus_api import compute_api_key_expiry_info
+        # 2. Key Expiry and color-coded status (only when provider exposes expiry data)
+        expires_at = stats.get("api_key_expires_at")
+        if expires_at is not None or stats.get("is_hubcap_stats", True):
+            from core.morrenus_api import compute_api_key_expiry_info
 
-        api_key = self.settings.value("morrenus_api_key", "", type=str) if self.settings else ""
-        expiry_info = compute_api_key_expiry_info(
-            stats.get("api_key_expires_at"),
-            api_key=api_key,
-            settings=self.settings,
-        )
+            api_key = self.settings.value("morrenus_api_key", "", type=str) if self.settings else ""
+            expiry_info = compute_api_key_expiry_info(
+                expires_at,
+                api_key=api_key,
+                settings=self.settings,
+            )
 
-        time_text = expiry_info["text"]
-        accent_color = self.settings.value("accent_color", "#C06C84", type=str) if self.settings else "#C06C84"
-        from utils.color_utils import get_semantic_colors
-        sem_colors = get_semantic_colors(accent_color)
-        status_key = expiry_info.get("status", "success")
-        color = sem_colors.get(status_key, expiry_info.get("color", "#a8dab5"))
+            time_text = expiry_info["text"]
+            accent_color = self.settings.value("accent_color", "#C06C84", type=str) if self.settings else "#C06C84"
+            from utils.color_utils import get_semantic_colors
+            sem_colors = get_semantic_colors(accent_color)
+            status_key = expiry_info.get("status", "success")
+            color = sem_colors.get(status_key, expiry_info.get("color", "#a8dab5"))
 
-        quota_str = f'API: {usage}/{limit} | <span style="color: {color}; font-weight: bold;">{time_text}</span>'
+            quota_str = f'API: {usage}/{limit} | <span style="color: {color}; font-weight: bold;">{time_text}</span>'
 
-        if expiry_info["is_lifetime"]:
-            exp_desc = "Lifetime key (Never expires)"
-        elif expiry_info["is_expired"]:
-            exp_desc = f"{expiry_info['formatted_date']} (Expired)"
-        elif expiry_info["hours"] <= 24:
-            exp_desc = f"{expiry_info['formatted_date']} ({time_text} remaining, {expiry_info['percentage']:.0f}% left)"
+            if expiry_info["is_lifetime"]:
+                exp_desc = "Lifetime key (Never expires)"
+            elif expiry_info["is_expired"]:
+                exp_desc = f"{expiry_info['formatted_date']} (Expired)"
+            elif expiry_info["hours"] <= 24:
+                exp_desc = f"{expiry_info['formatted_date']} ({time_text} remaining, {expiry_info['percentage']:.0f}% left)"
+            else:
+                exp_desc = f"{expiry_info['formatted_date']} ({expiry_info['days']}d remaining, {expiry_info['percentage']:.0f}% left)"
         else:
-            exp_desc = f"{expiry_info['formatted_date']} ({expiry_info['days']}d remaining, {expiry_info['percentage']:.0f}% left)"
+            quota_str = f"API: {usage}/{limit}"
+            exp_desc = "No expiry data"
 
         tooltip_str = (
             f"{prov_full} API:\n"

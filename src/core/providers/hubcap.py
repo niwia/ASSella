@@ -41,7 +41,21 @@ class HubcapProvider(ManifestProvider):
         return hubcap_impl
 
     def download_bundle(self, app_id, branch="public", dest_path=None, force_update=True):
-        return self._impl().download_manifest(app_id, branch=branch, force_update=force_update)
+        path, err = self._impl().download_manifest(app_id, branch=branch, force_update=force_update)
+        if path and not err and dest_path is not None:
+            from pathlib import Path
+            import os
+            import shutil
+
+            src = Path(path)
+            dst = Path(dest_path)
+            if src != dst:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dst.with_suffix(".part")
+                shutil.copy2(str(src), str(tmp))
+                os.replace(str(tmp), str(dst))
+                return str(dst), None
+        return path, err
 
     def generate_manifest(self, depot_id, manifest_id, depot_key=None):
         return self._impl().generate_single_manifest(
@@ -60,8 +74,8 @@ class HubcapProvider(ManifestProvider):
     def search(self, query: str, limit: int = 100):
         return self._impl().search_games(query, limit=limit)
 
-    def get_account_stats(self):
-        return self._impl().get_all_hubcap_stats()
+    def get_account_stats(self, force: bool = False):
+        return self._impl().get_all_hubcap_stats(force=force)
 
     def get_user_stats(self, force: bool = False):
         return self._impl().get_user_stats(force=force)

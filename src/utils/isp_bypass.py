@@ -322,28 +322,25 @@ def _check_and_raise_for_status(resp: requests.Response, key: str = "hubcap") ->
 
 def _enforce_rate_limit(key: str, max_requests: int = 3, per_seconds: float = 3.05) -> None:
     """Keep outgoing requests to one provider under its declared ceiling."""
-    with _rate_lock:
-        now = time.time()
-        backoff = _rate_backoff_until.get(key, 0.0)
-        if backoff > now:
-            sleep_needed = backoff - now
-            logger.warning(f"[ISPBypass] {key} 429 backoff active. Waiting {sleep_needed:.2f}s...")
+    while True:
+        sleep_needed = 0.0
+        with _rate_lock:
+            now = time.time()
+            backoff = _rate_backoff_until.get(key, 0.0)
+            if backoff > now:
+                sleep_needed = backoff - now
+                logger.warning(f"[ISPBypass] {key} 429 backoff active. Waiting {sleep_needed:.2f}s...")
+            else:
+                stamps = _rate_timestamps.setdefault(key, [])
+                while stamps and stamps[0] <= now - per_seconds:
+                    stamps.pop(0)
+                if len(stamps) >= max_requests:
+                    sleep_needed = per_seconds - (now - stamps[0])
+                else:
+                    stamps.append(now)
+                    return
+        if sleep_needed > 0:
             time.sleep(sleep_needed)
-            now = time.time()
-
-        stamps = _rate_timestamps.setdefault(key, [])
-        while stamps and stamps[0] <= now - per_seconds:
-            stamps.pop(0)
-
-        if len(stamps) >= max_requests:
-            sleep_needed = per_seconds - (now - stamps[0])
-            if sleep_needed > 0:
-                time.sleep(sleep_needed)
-            now = time.time()
-            while stamps and stamps[0] <= now - per_seconds:
-                stamps.pop(0)
-
-        stamps.append(time.time())
 
 
 def _enforce_hubcap_rate_limit(max_requests: int = 3, per_seconds: float = 3.05) -> None:

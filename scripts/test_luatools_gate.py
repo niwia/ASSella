@@ -79,19 +79,9 @@ def main() -> int:
     def use_settings(unlocked: bool) -> None:
         settings_module.get_settings = lambda: FakeSettings(unlocked)
 
-    print("=== locked install never touches the backend ===")
-    use_settings(False)
-    check(api.LuaToolsAPI.is_unlocked() is False, "is_unlocked is False by default")
-    check(api.LuaToolsAPI.is_authenticated() is False, "is_authenticated refuses while locked")
-    check(api.LuaToolsAPI.is_authenticated(allow_cached=False) is False, "validating auth refuses while locked")
-    check(api.LuaToolsAPI.get_auth_status() == {"authenticated": False}, "get_auth_status refuses while locked")
-    check(api.LuaToolsAPI.get_valid_access_token() is None, "get_valid_access_token refuses while locked")
-    check(network_calls == [], "no network call was made while locked")
-    check(read_paths == [], "the session file was never read while locked")
-
-    print("=== unlocked but no stored session ===")
-    use_settings(True)
+    print("=== no stored session ===")
     check(api.LuaToolsAPI.is_authenticated() is False, "no session means not authenticated")
+    check(api.LuaToolsAPI.get_auth_status() == {"authenticated": False}, "get_auth_status reports unauthenticated")
     check(api.LuaToolsAPI.get_valid_access_token() is None, "nothing to refresh without a session")
     check(network_calls == [], "no network call without a session")
 

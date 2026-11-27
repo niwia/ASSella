@@ -95,81 +95,7 @@ def create_luatools_tab(dialog) -> QWidget:
     main_lay.setContentsMargins(0, 8, 0, 0)
     main_lay.setSpacing(12)
 
-    # ── Card 1: Manifest Provider ──
-    prov_card, prov_layout = dialog._create_card_frame("Manifest Provider")
-    prov_layout.setSpacing(6)
-
-    dialog.luatools_primary_checkbox = QCheckBox("Use LuaTools (Luie) as primary manifest provider")
-    dialog.luatools_primary_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: bold;")
-    prov_desc = QLabel(
-        "Requires being logged in to lua.tools below. When enabled, manifest bundles are downloaded "
-        "from lua.tools (Luie) with live availability checks."
-    )
-    prov_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
-    prov_desc.setWordWrap(True)
-    prov_layout.addWidget(dialog.luatools_primary_checkbox)
-    prov_layout.addWidget(prov_desc)
-
-    prov_layout.addSpacing(6)
-
-    dialog.luatools_allow_sushi_checkbox = QCheckBox("Allow Sushi as fallback manifest source")
-    dialog.luatools_allow_sushi_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9pt;")
-    dialog.luatools_allow_sushi_checkbox.setChecked(
-        dialog.settings.value("luatools_allow_sushi", False, type=bool) if dialog.settings else False
-    )
-    sushi_desc = QLabel(
-        "Optional fallback: if Luie does not have a manifest for a game, attempt downloading from Sushi's GitHub manifest repository."
-    )
-    sushi_desc.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8pt;")
-    sushi_desc.setWordWrap(True)
-    prov_layout.addWidget(dialog.luatools_allow_sushi_checkbox)
-    prov_layout.addWidget(sushi_desc)
-
-    def _on_sushi_toggled(checked: bool):
-        if dialog.settings:
-            dialog.settings.setValue("luatools_allow_sushi", checked)
-
-    dialog.luatools_allow_sushi_checkbox.toggled.connect(_on_sushi_toggled)
-    main_lay.addWidget(prov_card)
-
-    # ── Card 2: Community Fixes & Online Patches ──
-    fixes_card, fixes_layout = dialog._create_card_frame("Community Fixes & Patches")
-    fixes_layout.setSpacing(8)
-
-    dialog.luatools_show_fixes_checkbox = QCheckBox("Show LuaTools fixes")
-    dialog.luatools_show_fixes_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: bold;")
-    show_fixes_init = (
-        dialog.settings.value("luatools_show_fixes", False, type=bool) if dialog.settings else False
-    )
-    dialog.luatools_show_fixes_checkbox.setChecked(show_fixes_init)
-    fixes_desc = QLabel(
-        "Enable to display community fixes and multiplayer bypasses in the LuaFix game details tab."
-    )
-    fixes_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
-    fixes_desc.setWordWrap(True)
-    fixes_layout.addWidget(dialog.luatools_show_fixes_checkbox)
-    fixes_layout.addWidget(fixes_desc)
-
-    from utils.helpers import create_checkbox_setting
-    dialog.ignore_online_fixes_checkbox = create_checkbox_setting(
-        "Ignore Online Fixes",
-        "luatools_ignore_online_fixes",
-        False,
-        dialog,
-        "Hide fixes that only contain online multiplayer patches. If a game has only online fixes, the LuaFix tab will remain hidden.",
-    )
-    dialog.ignore_online_fixes_checkbox.setEnabled(show_fixes_init)
-    fixes_layout.addWidget(dialog.ignore_online_fixes_checkbox)
-
-    def _on_show_fixes_toggled(checked: bool):
-        if dialog.settings:
-            dialog.settings.setValue("luatools_show_fixes", checked)
-        dialog.ignore_online_fixes_checkbox.setEnabled(checked)
-
-    dialog.luatools_show_fixes_checkbox.toggled.connect(_on_show_fixes_toggled)
-    main_lay.addWidget(fixes_card)
-
-    # ── Card 3: Account & Authentication ──
+    # ── Card 1: Account & Authentication ──
     card, card_lay = dialog._create_card_frame("Account Authentication")
     card_lay.setSpacing(8)
 
@@ -286,6 +212,81 @@ def create_luatools_tab(dialog) -> QWidget:
 
     card_lay.addWidget(dialog.luatools_login_container)
     main_lay.addWidget(card)
+
+    # ── Card 2: Manifest Provider ──
+    prov_card, prov_layout = dialog._create_card_frame("Manifest Provider")
+    prov_layout.setSpacing(6)
+
+    dialog.luatools_primary_checkbox = QCheckBox("Use LuaTools (Luie) as primary manifest provider")
+    dialog.luatools_primary_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: bold;")
+    prov_desc = QLabel(
+        "Requires being logged in to lua.tools above. When enabled, manifest bundles are downloaded "
+        "from lua.tools (Luie) with live availability checks."
+    )
+    prov_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    prov_desc.setWordWrap(True)
+    prov_layout.addWidget(dialog.luatools_primary_checkbox)
+    prov_layout.addWidget(prov_desc)
+
+    prov_layout.addSpacing(6)
+
+    dialog.luatools_allow_sushi_checkbox = QCheckBox("Allow Sushi as fallback manifest source")
+    dialog.luatools_allow_sushi_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9pt;")
+    dialog.luatools_allow_sushi_checkbox.setChecked(
+        dialog.settings.value("luatools_allow_sushi", False, type=bool) if dialog.settings else False
+    )
+    sushi_desc = QLabel(
+        "Optional fallback: if Luie does not have a manifest for a game, attempt downloading from Sushi's GitHub manifest repository."
+    )
+    sushi_desc.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8pt;")
+    sushi_desc.setWordWrap(True)
+    prov_layout.addWidget(dialog.luatools_allow_sushi_checkbox)
+    prov_layout.addWidget(sushi_desc)
+
+    def _on_sushi_toggled(checked: bool):
+        if dialog.settings:
+            dialog.settings.setValue("luatools_allow_sushi", checked)
+
+    dialog.luatools_allow_sushi_checkbox.toggled.connect(_on_sushi_toggled)
+    main_lay.addWidget(prov_card)
+
+    # ── Card 3: Community Fixes & Online Patches ──
+    fixes_card, fixes_layout = dialog._create_card_frame("Community Fixes & Patches")
+    fixes_layout.setSpacing(8)
+
+    dialog.luatools_show_fixes_checkbox = QCheckBox("Show LuaTools fixes")
+    dialog.luatools_show_fixes_checkbox.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: bold;")
+    show_fixes_init = (
+        dialog.settings.value("luatools_show_fixes", False, type=bool) if dialog.settings else False
+    )
+    dialog.luatools_show_fixes_checkbox.setChecked(show_fixes_init)
+    fixes_desc = QLabel(
+        "Enable to display community fixes and multiplayer bypasses in the LuaFix game details tab."
+    )
+    fixes_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    fixes_desc.setWordWrap(True)
+    fixes_layout.addWidget(dialog.luatools_show_fixes_checkbox)
+    fixes_layout.addWidget(fixes_desc)
+
+    from utils.helpers import create_checkbox_setting
+    dialog.ignore_online_fixes_checkbox = create_checkbox_setting(
+        "Ignore Online Fixes",
+        "luatools_ignore_online_fixes",
+        False,
+        dialog,
+        "Hide fixes that only contain online multiplayer patches. If a game has only online fixes, the LuaFix tab will remain hidden.",
+    )
+    dialog.ignore_online_fixes_checkbox.setEnabled(show_fixes_init)
+    fixes_layout.addWidget(dialog.ignore_online_fixes_checkbox)
+
+    def _on_show_fixes_toggled(checked: bool):
+        if dialog.settings:
+            dialog.settings.setValue("luatools_show_fixes", checked)
+        dialog.ignore_online_fixes_checkbox.setEnabled(checked)
+
+    dialog.luatools_show_fixes_checkbox.toggled.connect(_on_show_fixes_toggled)
+    main_lay.addWidget(fixes_card)
+
     main_lay.addStretch()
 
     # PKCE Polling Timer
@@ -419,6 +420,7 @@ def create_luatools_tab(dialog) -> QWidget:
     dialog.luatools_disconnect_btn.clicked.connect(disconnect_account)
 
     dialog.update_luatools_ui_status = update_ui_status
+    update_ui_status(validate=False)
 
     scroll.setWidget(container)
     return scroll

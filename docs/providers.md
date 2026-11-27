@@ -19,34 +19,34 @@ code should import `core.manifest_provider`.
 - `core/providers/hubcap.py` — Hubcap provider adapter.
 - `core/providers/vapor.py` — local at0-m engine (free single manifest by GID).
 - `core/providers/ryuu.py` — Ryuu's Manifests.
-- `core/manifest_provider.py` — facade: selection, fallback, canonical cache
+- `core/providers/luatools.py` — LuaTools (Luie) + optional Sushi fallback.
+- `core/manifest_provider.py` — facade: selection, canonical cache
   paths, branch selection, capability aggregation.
 - `utils/isp_bypass.py` — `execute_provider_request(...)` (domain/rate-limit
   parameterized); `execute_hubcap_request` is a Hubcap-preserving wrapper.
 
 ## Capability matrix (verified)
 
-| Capability | vapor | hubcap | ryuu |
-|---|---|---|---|
-| `SINGLE_MANIFEST` | ✅ | ✅ | ❌ |
-| `BUNDLE_DOWNLOAD` | ❌ | ✅ | ✅ |
-| `NATIVE_BRANCH` | n/a | ❌ | ✅ |
-| `CONTENTS` | ❌ | ✅ | ❌ (derived from ZIP) |
-| `DEPOT_KEY_INDEX` | ❌ | ✅ | ❌ |
-| `SEARCH` | ❌ | ✅ | ❌ |
-| `ACCOUNT_STATS` | ❌ | ✅ | ❌ |
-| `HEALTH` | ❌ | ✅ | ✅ |
-| `REQUEST_MISSING` | ❌ | ❌ | ✅ |
+| Capability | vapor | hubcap | ryuu | luatools |
+|---|---|---|---|---|
+| `SINGLE_MANIFEST` | ✅ | ✅ | ❌ | ❌ |
+| `BUNDLE_DOWNLOAD` | ❌ | ✅ | ✅ | ✅ |
+| `NATIVE_BRANCH` | n/a | ❌ | ✅ | ❌ |
+| `CONTENTS` | ❌ | ✅ | ❌ (derived from ZIP) | ❌ (derived from ZIP) |
+| `DEPOT_KEY_INDEX` | ❌ | ✅ | ❌ | ❌ |
+| `SEARCH` | ❌ | ✅ | ❌ (optional local `ryuu_games.json`) | ❌ |
+| `ACCOUNT_STATS` | ❌ | ✅ | ❌ | ❌ |
+| `HEALTH` | ❌ | ✅ | ✅ | ✅ |
+| `REQUEST_MISSING` | ❌ | ❌ | ✅ | ❌ |
 
-## Selection & fallback
+## Selection & strictness
 
-- Setting `manifest_bundle_provider` (Settings → Downloads → General):
-  `auto` (default), `ryuu`, or `hubcap`.
-- `auto` prefers Ryuu when `ryuu_auth_key` is set, else Hubcap; the other provider
-  is always the automatic fallback.
+- Setting `manifest_bundle_provider` (Settings → Integrations):
+  `hubcap` (default), `ryuu`, or `luatools`.
+- Explicit provider selection is strict (no silent failover to another provider on error).
 - Single manifests always try the local Vapor engine first, then Hubcap.
 - Bundles without a provider `/contents` endpoint derive contents from the cached
-  ZIP; with no search provider, search falls back to the Steam Store API.
+  ZIP; with no search provider, search falls back to Steam Community SearchApps.
 
 ## Ryuu notes (verified 2026-11-27)
 

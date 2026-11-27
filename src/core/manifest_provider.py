@@ -41,13 +41,13 @@ def providers_with(capability: Capability) -> List[ManifestProvider]:
 
 
 def active_provider_id() -> str:
-    """The configured provider id, or ``auto`` (fallback chain)."""
+    """The configured provider id (defaults to ``hubcap``)."""
     try:
         from utils.settings import get_settings
 
-        return str(get_settings().value("manifest_bundle_provider", "auto", type=str) or "auto").strip().lower()
+        return str(get_settings().value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").strip().lower()
     except Exception:
-        return "auto"
+        return "hubcap"
 
 
 _PROVIDER_SHORT_LABELS = {
@@ -209,14 +209,25 @@ def _bundle_order() -> Tuple[str, ...]:
 
 def download_manifest(app_id, branch: str = "public", force_update: bool = True) -> Tuple[Optional[str], Optional[str]]:
     branch = branch or "public"
-    candidates = _ordered(Capability.BUNDLE_DOWNLOAD, _BUNDLE_ORDER)
+    explicit = active_provider_id()
+    if explicit and explicit != "auto":
+        provider = registry.get(explicit)
+        if provider is None or not provider.supports(Capability.BUNDLE_DOWNLOAD):
+            return None, f"Manifest provider '{explicit}' is not available."
+        candidates = [provider]
+    else:
+        candidates = _ordered(Capability.BUNDLE_DOWNLOAD, _BUNDLE_ORDER)
+
     if not candidates:
         return None, "No manifest provider is configured."
 
+    target = get_manifest_zip_path(app_id, branch)
     last_error: Optional[str] = None
     for provider in candidates:
         try:
-            path, err = provider.download_bundle(app_id, branch=branch, force_update=force_update)
+            path, err = provider.download_bundle(
+                app_id, branch=branch, dest_path=target, force_update=force_update
+            )
         except CapabilityNotSupported:
             logger.debug("[Providers] %s cannot download bundles", provider.meta.id)
             continue
@@ -229,7 +240,6 @@ def download_manifest(app_id, branch: str = "public", force_update: bool = True)
             last_error = err or last_error
             continue
 
-        target = get_manifest_zip_path(app_id, branch)
         if Path(path) != target:
             try:
                 Path(target).parent.mkdir(parents=True, exist_ok=True)
@@ -393,6 +403,62 @@ def _search_steam_community(query: str, limit: int = 100) -> Dict[str, Any]:
     return _search_steam_store(query, limit)
 
 
+_ryuu_catalog_cache: Dict[str, Any] = {"mtime": 0.0, "entries": None}
+
+
+def _search_ryuu_local_catalog(query: str, limit: int = 100) -> Optional[Dict[str, Any]]:
+    """Search the optional user-downloaded ryuu_games.json if present on disk."""
+    try:
+        from utils.helpers import get_base_path
+        import json
+
+        db_path = Path(get_base_path()) / "ryuu_games.json"
+        if not db_path.is_file():
+            return None
+
+        mtime = db_path.stat().st_mtime
+        if _ryuu_catalog_cache["entries"] is None or _ryuu_catalog_cache["mtime"] != mtime:
+            raw = json.loads(db_path.read_text(encoding="utf-8", errors="ignore"))
+            entries = []
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, dict):
+                        aid = str(item.get("appid") or item.get("id") or "").strip()
+                        name = str(item.get("name") or item.get("title") or "").strip()
+                        if aid and name:
+                            entries.append((aid, name, name.lower()))
+            elif isinstance(raw, dict):
+                for aid, val in raw.items():
+                    if isinstance(val, dict):
+                        name = str(val.get("name") or val.get("title") or "").strip()
+                    else:
+                        name = str(val or "").strip()
+                    if aid and name:
+                        entries.append((str(aid), name, name.lower()))
+            _ryuu_catalog_cache["entries"] = entries
+            _ryuu_catalog_cache["mtime"] = mtime
+
+        q_lower = query.strip().lower()
+        if not q_lower:
+            return None
+
+        matches = []
+        for aid, name, name_lower in _ryuu_catalog_cache["entries"]:
+            if q_lower in name_lower or q_lower == aid:
+                matches.append({
+                    "game_id": aid,
+                    "game_name": name,
+                    "header_image": f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{aid}/header.jpg",
+                    "manifest_available": True,
+                })
+                if len(matches) >= limit:
+                    break
+        return {"results": matches, "total_count": len(matches)}
+    except Exception as e:
+        logger.debug(f"[RyuuCatalog] Offline catalog search error: {e}")
+        return None
+
+
 def search_games(query: str, limit: int = 100) -> Dict[str, Any]:
     active = active_provider_id()
     if active == "hubcap":
@@ -402,6 +468,10 @@ def search_games(query: str, limit: int = 100) -> Dict[str, Any]:
                 return result
         except Exception as e:
             logger.debug("[Providers] Hubcap search failed: %s", e)
+    elif active == "ryuu":
+        local_res = _search_ryuu_local_catalog(query, limit=limit)
+        if local_res is not None and local_res.get("results"):
+            return local_res
     return _search_steam_community(query, limit)
 
 
@@ -425,7 +495,7 @@ def get_generate_usage(force: bool = False) -> Dict[str, Any]:
 
 def get_all_hubcap_stats(force: bool = False) -> Dict[str, Any]:
     try:
-        return _first(Capability.ACCOUNT_STATS, _BUNDLE_ORDER, "get_account_stats") or {}
+        return _first(Capability.ACCOUNT_STATS, _BUNDLE_ORDER, "get_account_stats", force=force) or {}
     except CapabilityNotSupported:
         return {}
     except Exception as e:

@@ -11,4 +11,10 @@ code should import :mod:`core.manifest_provider` instead.
 
 from core.manifest_provider import *  # noqa: F401,F403
 from core.manifest_provider import __all__  # noqa: F401
-from core.providers.hubcap_impl import BASE_URL  # noqa: F401
+from core.providers.hubcap_impl import (  # noqa: F401
+    BASE_URL,
+    _get_headers,
+    _handle_request_exception,
+    compute_api_key_expiry_info,
+    get_session,
+)

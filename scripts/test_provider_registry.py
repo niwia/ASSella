@@ -174,14 +174,16 @@ def main() -> int:
     working_file.write_bytes(_zip_bytes({"999.lua": "addappid(999)"}))
     working = FakeBundle((str(working_file), None))
 
+    original_active = mp.active_provider_id
     original_ordered = mp._ordered
     original_zip_path = mp.get_manifest_zip_path
     try:
+        mp.active_provider_id = lambda: "auto"
         mp._ordered = lambda cap, order: [failing, working] if cap == Capability.BUNDLE_DOWNLOAD else []
         target = tmpdir / "canonical" / "bundle.zip"
         mp.get_manifest_zip_path = lambda app_id, branch="public": target
         path, err = mp.download_manifest("999")
-        check(err is None and path == str(target), "download falls through to the first successful provider")
+        check(err is None and path == str(target), "download falls through to the first successful provider in auto mode")
         check(target.exists(), "the successful bundle is stored at the canonical path")
         check(failing.calls == 1 and working.calls == 1, "both providers were tried in order")
 
@@ -189,6 +191,7 @@ def main() -> int:
         path2, err2 = mp.download_manifest("999")
         check(path2 is None and err2 == "boom", "download reports the last provider error when all fail")
     finally:
+        mp.active_provider_id = original_active
         mp._ordered = original_ordered
         mp.get_manifest_zip_path = original_zip_path
 

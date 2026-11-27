@@ -203,6 +203,7 @@ jobs:
                        test_window_style \
                        test_top_bar_search \
                        test_luatools_gate \
+                       test_provider_registry \
                        test_language_depots \
                        test_depots_tab_state \
                        test_update_checker \
