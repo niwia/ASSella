@@ -155,6 +155,27 @@ class LuaToolsProvider(ManifestProvider):
                 raise ProviderAuthError(last_error or "LuaTools authorization required.")
             return None, last_error or "Manifest bundle download failed."
 
+        # Luie returns a plain-text .lua script rather than a .zip archive; wrap it into a ZIP if so.
+        import zipfile
+        if not zipfile.is_zipfile(tmp):
+            try:
+                raw_text = tmp.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                raw_text = ""
+            if "addappid(" in raw_text or raw_text.lstrip().startswith("--"):
+                lua_zip_fd, lua_zip_name = tempfile.mkstemp(prefix=".luatools_lua.", suffix=".zip", dir=tmp_dir)
+                os.close(lua_zip_fd)
+                lua_zip = Path(lua_zip_name)
+                try:
+                    with zipfile.ZipFile(lua_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+                        zf.writestr(f"{app_id_str}.lua", raw_text.encode("utf-8"))
+                    tmp.unlink(missing_ok=True)
+                    tmp = lua_zip
+                except Exception as wrap_err:
+                    lua_zip.unlink(missing_ok=True)
+                    tmp.unlink(missing_ok=True)
+                    return None, f"Could not package LuaTools script for {app_id_str}: {wrap_err}"
+
         flat, err = normalize_bundle(tmp, app_id_str, branch)
         if err:
             tmp.unlink(missing_ok=True)

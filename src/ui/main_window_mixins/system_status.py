@@ -541,11 +541,11 @@ class MainWindowSystemStatusMixin:
             try:
                 from utils.network_status import run_connection_check
                 steam_ok, prov_ok, prov_mode = run_connection_check(force=force)
-                if prov_id == "ryuu":
+                if prov_id in ("ryuu", "luatools"):
                     from core.providers.registry import get as get_provider
-                    ryu = get_provider("ryuu")
-                    if ryu is not None:
-                        health = ryu.check_health(force=force)
+                    prov = get_provider(prov_id)
+                    if prov is not None:
+                        health = prov.check_health(force=force)
                         prov_ok = health.get("status") == "healthy"
                         prov_mode = "Direct" if prov_ok else "Offline"
             except Exception as e:

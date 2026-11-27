@@ -1224,8 +1224,14 @@ class MainWindow(
         row2_layout.setSpacing(20)
         row2_layout.addStretch()
 
-        # 1. Hubcap Connection Status
-        self.hubcap_conn_lbl = QLabel("Hubcap:")
+        # 1. Provider Connection Status
+        _init_prov_id = (
+            str(self.settings.value("manifest_bundle_provider", "hubcap", type=str) or "hubcap").strip().lower()
+            if self.settings
+            else "hubcap"
+        )
+        _init_prov_name = {"hubcap": "Hubcap", "ryuu": "Ryu", "luatools": "LuaTools"}.get(_init_prov_id, "Hubcap")
+        self.hubcap_conn_lbl = QLabel(f"{_init_prov_name}:")
         self.hubcap_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.hubcap_conn_value = QLabel("Connecting...")
         self.hubcap_conn_value.setStyleSheet(self._get_status_style("neutral"))

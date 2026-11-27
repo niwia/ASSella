@@ -657,6 +657,34 @@ def create_morrenus_tab(dialog) -> QWidget:
     luatools_scroll = create_luatools_tab(dialog)
     integ_subtabs.addTab(luatools_scroll, "LuaTools")
 
+    # ── Subtab: OpenValve (Coming Soon Placeholder) ──
+    openvalve_tab = QWidget()
+    ov_layout = QVBoxLayout(openvalve_tab)
+    ov_layout.setContentsMargins(16, 24, 16, 24)
+    ov_layout.setSpacing(12)
+    ov_layout.addStretch()
+
+    ov_gif_lbl = QLabel()
+    ov_gif_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    ov_gif_lbl.setStyleSheet("background: transparent; border: none;")
+    from utils.paths import Paths
+    from PyQt6.QtGui import QMovie
+    ov_gif_path = Paths.resource("openvalve_placeholder.gif")
+    if ov_gif_path.is_file():
+        ov_movie = QMovie(str(ov_gif_path), parent=ov_gif_lbl)
+        ov_gif_lbl.setMovie(ov_movie)
+        ov_movie.start()
+        dialog._openvalve_movie = ov_movie
+    ov_layout.addWidget(ov_gif_lbl)
+
+    ov_title = QLabel("OpenValve — Coming Soon")
+    ov_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    ov_title.setStyleSheet("color: rgba(255, 255, 255, 0.75); font-size: 10pt; font-weight: 600; background: transparent;")
+    ov_layout.addWidget(ov_title)
+    ov_layout.addStretch()
+
+    integ_subtabs.addTab(openvalve_tab, "OpenValve")
+
     def _on_integ_subtab_changed(idx: int) -> None:
         if integ_subtabs.tabText(idx) == "LuaTools":
             if hasattr(dialog, "update_luatools_ui_status"):
